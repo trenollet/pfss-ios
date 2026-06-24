@@ -45,6 +45,12 @@ final class AppDataStore: ObservableObject {
         return number
     }
 
+    func updateCustomer(_ customer: Customer) {
+        if let index = customers.firstIndex(where: { $0.id == customer.id }) {
+            customers[index] = customer
+        }
+    }
+    
     func generateLeadNumber(for date: Date = Date()) -> String {
         generateMonthlyNumber(prefix: "LD", date: date)
     }
@@ -53,6 +59,12 @@ final class AppDataStore: ObservableObject {
         generateMonthlyNumber(prefix: "EST", date: date)
     }
 
+    func updateEstimate(_ estimate: EstimateRecord) {
+        if let index = estimates.firstIndex(where: { $0.id == estimate.id }) {
+            estimates[index] = estimate
+        }
+    }
+    
     func generateInvoiceNumber(for date: Date = Date()) -> String {
         generateMonthlyNumber(prefix: "INV", date: date)
     }
@@ -72,11 +84,22 @@ final class AppDataStore: ObservableObject {
     func addSite(_ site: CustomerSite) {
         sites.append(site)
     }
-
+    
+    func updateSite(_ site: CustomerSite) {
+        if let index = sites.firstIndex(where: { $0.id == site.id }) {
+            sites[index] = site
+        }
+    }
     func addLead(_ lead: Lead) {
         leads.append(lead)
     }
 
+    func updateLead(_ lead: Lead) {
+        if let index = leads.firstIndex(where: { $0.id == lead.id }) {
+            leads[index] = lead
+        }
+    }
+    
     func addEstimate(_ estimate: EstimateRecord) {
         estimates.append(estimate)
     }

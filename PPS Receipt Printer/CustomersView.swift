@@ -65,16 +65,23 @@ struct CustomersView: View {
 
                 Section("Customers") {
                     ForEach(store.customers) { customer in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(customer.businessName.isEmpty ? customer.contactName : customer.businessName)
-                                .font(.headline)
+                        NavigationLink {
+                            CustomerDetailView(customer: customer)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(customer.businessName.isEmpty ? customer.contactName : customer.businessName)
+                                    .font(.headline)
 
-                            Text("Contact: \(customer.contactName)")
-                            Text("Customer #: \(customer.customerNumber)")
-                                .font(.caption)
+                                Text("Contact: \(customer.contactName)")
+                                    .font(.caption)
 
-                            Text("Status: \(customer.estimateStatus.rawValue)")
-                                .font(.caption)
+                                Text("Customer #: \(customer.customerNumber)")
+                                    .font(.caption)
+
+                                Text("Status: \(customer.estimateStatus.rawValue)")
+                                    .font(.caption)
+                            }
+                            .padding(.vertical, 4)
                         }
                     }
                 }

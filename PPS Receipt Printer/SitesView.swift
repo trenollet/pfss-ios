@@ -22,9 +22,10 @@ struct SitesView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("New Site / Work Location") {
+                Section("New Site") {
                     Picker("Customer", selection: $selectedCustomerNumber) {
                         Text("Select Customer").tag("")
+
                         ForEach(store.customers) { customer in
                             Text(customerDisplayName(customer))
                                 .tag(customer.customerNumber)
@@ -57,18 +58,25 @@ struct SitesView: View {
 
                 Section("Sites") {
                     ForEach(store.sites) { site in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(site.siteName.isEmpty ? site.serviceAddress : site.siteName)
-                                .font(.headline)
+                        NavigationLink {
+                            SiteDetailView(site: site)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(site.siteName.isEmpty ? site.serviceAddress : site.siteName)
+                                    .font(.headline)
 
-                            Text(site.serviceAddress)
-                            Text("Customer #: \(site.customerNumber)")
-                                .font(.caption)
-
-                            if !site.propertyType.isEmpty {
-                                Text("Property: \(site.propertyType)")
+                                Text(site.serviceAddress)
                                     .font(.caption)
+
+                                Text("Customer #: \(site.customerNumber)")
+                                    .font(.caption)
+
+                                if !site.propertyType.isEmpty {
+                                    Text("Property: \(site.propertyType)")
+                                        .font(.caption)
+                                }
                             }
+                            .padding(.vertical, 4)
                         }
                     }
                 }
@@ -77,20 +85,13 @@ struct SitesView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
+
                     Button("Done") {
                         isInputFocused = false
                     }
                 }
             }
         }
-    }
-
-    private func customerDisplayName(_ customer: Customer) -> String {
-        if !customer.businessName.isEmpty {
-            return "\(customer.businessName) - \(customer.customerNumber)"
-        }
-
-        return "\(customer.contactName) - \(customer.customerNumber)"
     }
 
     private func addSite() {
@@ -110,5 +111,10 @@ struct SitesView: View {
         propertyType = ""
         accessNotes = ""
         workNotes = ""
+    }
+
+    private func customerDisplayName(_ customer: Customer) -> String {
+        let name = customer.businessName.isEmpty ? customer.contactName : customer.businessName
+        return "\(name) - \(customer.customerNumber)"
     }
 }

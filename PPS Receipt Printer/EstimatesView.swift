@@ -111,23 +111,27 @@ struct EstimatesView: View {
 
                 Section("Estimates") {
                     ForEach(store.estimates) { estimate in
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(estimate.estimateNumber)
-                                .font(.headline)
+                        NavigationLink {
+                            EstimateDetailView(estimate: estimate)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(estimate.estimateNumber)
+                                    .font(.headline)
 
-                            Text("Customer: \(estimate.customerNumber)")
-                                .font(.caption)
+                                Text("Customer: \(estimate.customerNumber)")
+                                    .font(.caption)
 
-                            Text("Service: \(serviceName(for: estimate))")
-                                .font(.caption)
+                                Text("Service: \(serviceName(for: estimate))")
+                                    .font(.caption)
 
-                            Text("Total: \(estimate.total, format: .currency(code: "USD"))")
-                                .font(.caption)
+                                Text("Total: \(estimate.total, format: .currency(code: "USD"))")
+                                    .font(.caption)
 
-                            Text("Status: \(estimate.status.rawValue)")
-                                .font(.caption)
+                                Text("Status: \(estimate.status.rawValue)")
+                                    .font(.caption)
+                            }
+                            .padding(.vertical, 4)
                         }
-                        .padding(.vertical, 4)
                     }
                 }
             }

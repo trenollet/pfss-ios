@@ -87,36 +87,27 @@ struct LeadsView: View {
 
                 Section("Leads") {
                     ForEach(store.leads) { lead in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(displayName(for: lead))
-                                .font(.headline)
+                        NavigationLink {
+                            LeadDetailView(lead: lead)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(displayName(for: lead))
+                                    .font(.headline)
 
-                            Text("Lead #: \(lead.leadNumber)")
-                                .font(.caption)
-
-                            Text("Service: \(serviceName(for: lead))")
-                                .font(.caption)
-
-                            Text("Value: \(lead.estimatedValue, format: .currency(code: "USD"))")
-                                .font(.caption)
-
-                            Text("Status: \(lead.status.rawValue)")
-                                .font(.caption)
-
-                            if lead.status != .converted {
-                                Button("Convert to Customer") {
-                                    store.convertLeadToCustomer(lead)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .padding(.top, 4)
-                            } else {
-                                Text("Converted to Customer")
-                                    .foregroundStyle(.green)
+                                Text("Lead #: \(lead.leadNumber)")
                                     .font(.caption)
-                                    .padding(.top, 4)
+
+                                Text("Service: \(serviceName(for: lead))")
+                                    .font(.caption)
+
+                                Text("Value: \(lead.estimatedValue, format: .currency(code: "USD"))")
+                                    .font(.caption)
+
+                                Text("Status: \(lead.status.rawValue)")
+                                    .font(.caption)
                             }
+                            .padding(.vertical, 4)
                         }
-                        .padding(.vertical, 4)
                     }
                 }
             }
