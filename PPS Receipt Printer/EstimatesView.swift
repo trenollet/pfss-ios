@@ -22,6 +22,7 @@ struct EstimatesView: View {
     @State private var salesperson = ""
     @State private var status: EstimateRecordStatus = .draft
     @State private var expirationDate = Calendar.current.date(byAdding: .day, value: 30, to: Date()) ?? Date()
+    @State private var showArchived = false
 
     @FocusState private var isInputFocused: Bool
 
@@ -39,7 +40,7 @@ struct EstimatesView: View {
                 Section("New Estimate") {
                     Picker("Lead", selection: $selectedLeadNumber) {
                         Text("None").tag("")
-                        ForEach(store.leads) { lead in
+                        ForEach(store.activeLeads) { lead in
                             Text("\(lead.leadNumber) - \(leadName(lead))")
                                 .tag(lead.leadNumber)
                         }
@@ -47,7 +48,7 @@ struct EstimatesView: View {
 
                     Picker("Customer", selection: $selectedCustomerNumber) {
                         Text("Select Customer").tag("")
-                        ForEach(store.customers) { customer in
+                        ForEach(store.activeCustomers) { customer in
                             Text(customerName(customer))
                                 .tag(customer.customerNumber)
                         }
@@ -110,7 +111,9 @@ struct EstimatesView: View {
                 }
 
                 Section("Estimates") {
-                    ForEach(store.estimates) { estimate in
+                    Toggle("Show Archived", isOn: $showArchived)
+
+                    ForEach(showArchived ? store.archivedEstimates : store.activeEstimates) { estimate in
                         NavigationLink {
                             EstimateDetailView(estimate: estimate)
                         } label: {
@@ -129,6 +132,12 @@ struct EstimatesView: View {
 
                                 Text("Status: \(estimate.status.rawValue)")
                                     .font(.caption)
+
+                                if estimate.lifecycleStatus == .archived {
+                                    Text("Archived")
+                                        .foregroundStyle(.red)
+                                        .font(.caption)
+                                }
                             }
                             .padding(.vertical, 4)
                         }

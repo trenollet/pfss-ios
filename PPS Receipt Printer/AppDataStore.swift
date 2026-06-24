@@ -25,6 +25,38 @@ final class AppDataStore: ObservableObject {
         didSet { saveData() }
     }
 
+    var activeCustomers: [Customer] {
+        customers.filter { $0.lifecycleStatus == .active }
+    }
+
+    var activeSites: [CustomerSite] {
+        sites.filter { $0.lifecycleStatus == .active }
+    }
+
+    var activeLeads: [Lead] {
+        leads.filter { $0.lifecycleStatus == .active }
+    }
+
+    var activeEstimates: [EstimateRecord] {
+        estimates.filter { $0.lifecycleStatus == .active }
+    }
+    
+    var archivedCustomers: [Customer] {
+        customers.filter { $0.lifecycleStatus == .archived }
+    }
+
+    var archivedSites: [CustomerSite] {
+        sites.filter { $0.lifecycleStatus == .archived }
+    }
+
+    var archivedLeads: [Lead] {
+        leads.filter { $0.lifecycleStatus == .archived }
+    }
+
+    var archivedEstimates: [EstimateRecord] {
+        estimates.filter { $0.lifecycleStatus == .archived }
+    }
+    
     private var nextCustomerNumber = 1 {
         didSet { saveData() }
     }
@@ -108,6 +140,54 @@ final class AppDataStore: ObservableObject {
         sites.filter { $0.customerNumber == customerNumber }
     }
 
+    func archiveCustomer(_ customer: Customer) {
+        var updated = customer
+        updated.lifecycleStatus = .archived
+        updateCustomer(updated)
+    }
+
+    func archiveSite(_ site: CustomerSite) {
+        var updated = site
+        updated.lifecycleStatus = .archived
+        updateSite(updated)
+    }
+
+    func archiveLead(_ lead: Lead) {
+        var updated = lead
+        updated.lifecycleStatus = .archived
+        updateLead(updated)
+    }
+
+    func archiveEstimate(_ estimate: EstimateRecord) {
+        var updated = estimate
+        updated.lifecycleStatus = .archived
+        updateEstimate(updated)
+    }
+    
+    func restoreCustomer(_ customer: Customer) {
+        var updated = customer
+        updated.lifecycleStatus = .active
+        updateCustomer(updated)
+    }
+
+    func restoreSite(_ site: CustomerSite) {
+        var updated = site
+        updated.lifecycleStatus = .active
+        updateSite(updated)
+    }
+
+    func restoreLead(_ lead: Lead) {
+        var updated = lead
+        updated.lifecycleStatus = .active
+        updateLead(updated)
+    }
+
+    func restoreEstimate(_ estimate: EstimateRecord) {
+        var updated = estimate
+        updated.lifecycleStatus = .active
+        updateEstimate(updated)
+    }
+    
     func convertLeadToCustomer(_ lead: Lead) {
         guard !customers.contains(where: { $0.phone == lead.phone && !$0.phone.isEmpty }) else {
             return

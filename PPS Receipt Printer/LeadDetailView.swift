@@ -82,7 +82,7 @@ struct LeadDetailView: View {
                     store.convertLeadToCustomer(lead)
                     dismiss()
                 }
-                .disabled(lead.status == .converted)
+                .disabled(lead.status == .converted || lead.lifecycleStatus == .archived)
 
                 Button("Save Changes") {
                     isInputFocused = false
@@ -90,6 +90,19 @@ struct LeadDetailView: View {
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
+
+                if lead.lifecycleStatus == .archived {
+                    Button("Restore Lead") {
+                        store.restoreLead(lead)
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button("Archive Lead", role: .destructive) {
+                        store.archiveLead(lead)
+                        dismiss()
+                    }
+                }
             }
         }
         .navigationTitle("Edit Lead")

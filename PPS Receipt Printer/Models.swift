@@ -77,6 +77,13 @@ enum PaymentStatus: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
 }
 
+enum RecordLifecycleStatus: String, CaseIterable, Identifiable, Codable {
+    case active = "Active"
+    case archived = "Archived"
+
+    var id: String { rawValue }
+}
+
 struct Customer: Identifiable, Codable {
     var id = UUID()
     var customerNumber: String
@@ -88,6 +95,7 @@ struct Customer: Identifiable, Codable {
     var estimateStatus: EstimateStatus
     var assignedEmployee: String
     var followUpDate: Date
+    var lifecycleStatus: RecordLifecycleStatus = .active
 }
 
 struct Lead: Identifiable, Codable {
@@ -105,6 +113,7 @@ struct Lead: Identifiable, Codable {
     var status: LeadStatus
     var followUpDate: Date
     var createdDate: Date
+    var lifecycleStatus: RecordLifecycleStatus = .active
 }
 struct EstimateRecord: Identifiable, Codable {
     var id = UUID()
@@ -122,6 +131,7 @@ struct EstimateRecord: Identifiable, Codable {
     var status: EstimateRecordStatus
     var createdDate: Date
     var expirationDate: Date
+    var lifecycleStatus: RecordLifecycleStatus = .active
 }
 struct CustomerSite: Identifiable, Codable {
     var id = UUID()
@@ -131,4 +141,5 @@ struct CustomerSite: Identifiable, Codable {
     var propertyType: String
     var accessNotes: String
     var workNotes: String
+    var lifecycleStatus: RecordLifecycleStatus = .active
 }

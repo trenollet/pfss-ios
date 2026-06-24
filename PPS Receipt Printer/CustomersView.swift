@@ -18,6 +18,7 @@ struct CustomersView: View {
     @State private var estimateStatus: EstimateStatus = .newLead
     @State private var assignedEmployee = ""
     @State private var followUpDate = Date()
+    @State private var showArchived = false
 
     @FocusState private var isInputFocused: Bool
 
@@ -64,7 +65,9 @@ struct CustomersView: View {
                 }
 
                 Section("Customers") {
-                    ForEach(store.customers) { customer in
+                    Toggle("Show Archived", isOn: $showArchived)
+
+                    ForEach(showArchived ? store.archivedCustomers : store.activeCustomers) { customer in
                         NavigationLink {
                             CustomerDetailView(customer: customer)
                         } label: {
@@ -80,6 +83,12 @@ struct CustomersView: View {
 
                                 Text("Status: \(customer.estimateStatus.rawValue)")
                                     .font(.caption)
+
+                                if customer.lifecycleStatus == .archived {
+                                    Text("Archived")
+                                        .foregroundStyle(.red)
+                                        .font(.caption)
+                                }
                             }
                             .padding(.vertical, 4)
                         }

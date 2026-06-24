@@ -21,7 +21,8 @@ struct LeadsView: View {
     @State private var assignedSalesperson = ""
     @State private var status: LeadStatus = .newLead
     @State private var followUpDate = Date()
-
+    @State private var showArchived = false
+    
     @FocusState private var isInputFocused: Bool
 
     private var estimatedValueAmount: Double {
@@ -86,7 +87,9 @@ struct LeadsView: View {
                 }
 
                 Section("Leads") {
-                    ForEach(store.leads) { lead in
+                    Toggle("Show Archived", isOn: $showArchived)
+
+                    ForEach(showArchived ? store.archivedLeads : store.activeLeads) { lead in
                         NavigationLink {
                             LeadDetailView(lead: lead)
                         } label: {
@@ -105,6 +108,12 @@ struct LeadsView: View {
 
                                 Text("Status: \(lead.status.rawValue)")
                                     .font(.caption)
+
+                                if lead.lifecycleStatus == .archived {
+                                    Text("Archived")
+                                        .foregroundStyle(.red)
+                                        .font(.caption)
+                                }
                             }
                             .padding(.vertical, 4)
                         }

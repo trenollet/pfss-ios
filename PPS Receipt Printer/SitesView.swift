@@ -16,6 +16,7 @@ struct SitesView: View {
     @State private var propertyType = ""
     @State private var accessNotes = ""
     @State private var workNotes = ""
+    @State private var showArchived = false
 
     @FocusState private var isInputFocused: Bool
 
@@ -26,7 +27,7 @@ struct SitesView: View {
                     Picker("Customer", selection: $selectedCustomerNumber) {
                         Text("Select Customer").tag("")
 
-                        ForEach(store.customers) { customer in
+                        ForEach(store.activeCustomers) { customer in
                             Text(customerDisplayName(customer))
                                 .tag(customer.customerNumber)
                         }
@@ -57,7 +58,9 @@ struct SitesView: View {
                 }
 
                 Section("Sites") {
-                    ForEach(store.sites) { site in
+                    Toggle("Show Archived", isOn: $showArchived)
+
+                    ForEach(showArchived ? store.archivedSites : store.activeSites) { site in
                         NavigationLink {
                             SiteDetailView(site: site)
                         } label: {
@@ -73,6 +76,12 @@ struct SitesView: View {
 
                                 if !site.propertyType.isEmpty {
                                     Text("Property: \(site.propertyType)")
+                                        .font(.caption)
+                                }
+
+                                if site.lifecycleStatus == .archived {
+                                    Text("Archived")
+                                        .foregroundStyle(.red)
                                         .font(.caption)
                                 }
                             }
