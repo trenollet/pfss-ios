@@ -10,7 +10,14 @@ struct ContentView: View {
                 .tabItem {
                     Label("Dashboard", systemImage: "chart.bar")
                 }
-
+            LeadsView()
+                .tabItem {
+                    Label("Leads", systemImage: "person.crop.circle.badge.plus")
+                }
+            EstimatesView()
+                .tabItem {
+                    Label("Estimates", systemImage: "doc.text")
+                }
             CustomersView()
                 .tabItem {
                     Label("Customers", systemImage: "person.2")

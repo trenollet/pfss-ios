@@ -7,7 +7,7 @@
 
 import Foundation
 
-enum ServiceType: String, CaseIterable, Identifiable {
+enum ServiceType: String, CaseIterable, Identifiable, Codable {
     case windowCleaning = "Window Cleaning"
     case pressureWashing = "Pressure Washing"
     case gutterCleaning = "Gutter Cleaning"
@@ -17,7 +17,7 @@ enum ServiceType: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum LeadSource: String, CaseIterable, Identifiable {
+enum LeadSource: String, CaseIterable, Identifiable, Codable {
     case website = "Website"
     case phoneCall = "Phone Call"
     case socialMedia = "Social Media"
@@ -30,7 +30,7 @@ enum LeadSource: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum EstimateStatus: String, CaseIterable, Identifiable {
+enum EstimateStatus: String, CaseIterable, Identifiable, Codable {
     case newLead = "New Lead"
     case estimateGiven = "Estimate Given"
     case followUpRequired = "Follow Up Required"
@@ -41,16 +41,35 @@ enum EstimateStatus: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 }
+enum EstimateRecordStatus: String, CaseIterable, Identifiable, Codable {
+    case draft = "Draft"
+    case sent = "Sent"
+    case approved = "Approved"
+    case rejected = "Rejected"
+    case expired = "Expired"
+    case converted = "Converted"
 
-enum DocumentType: String, CaseIterable, Identifiable {
+    var id: String { rawValue }
+}
+enum DocumentType: String, CaseIterable, Identifiable, Codable {
     case estimate = "Estimate"
     case invoice = "Invoice"
     case receipt = "Receipt"
 
     var id: String { rawValue }
 }
+enum LeadStatus: String, CaseIterable, Identifiable, Codable {
+    case newLead = "New Lead"
+    case estimateScheduled = "Estimate Scheduled"
+    case estimateGiven = "Estimate Given"
+    case followUpRequired = "Follow Up Required"
+    case approved = "Approved"
+    case rejected = "Rejected"
+    case converted = "Converted"
 
-enum PaymentStatus: String, CaseIterable, Identifiable {
+    var id: String { rawValue }
+}
+enum PaymentStatus: String, CaseIterable, Identifiable, Codable {
     case unpaid = "Unpaid"
     case paid = "Paid"
     case depositPaid = "Deposit Paid"
@@ -58,8 +77,8 @@ enum PaymentStatus: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-struct Customer: Identifiable {
-    let id = UUID()
+struct Customer: Identifiable, Codable {
+    var id = UUID()
     var customerNumber: String
     var businessName: String
     var contactName: String
@@ -71,8 +90,41 @@ struct Customer: Identifiable {
     var followUpDate: Date
 }
 
-struct CustomerSite: Identifiable {
-    let id = UUID()
+struct Lead: Identifiable, Codable {
+    var id = UUID()
+    var leadNumber: String
+    var businessName: String
+    var contactName: String
+    var phone: String
+    var email: String
+    var leadSource: LeadSource
+    var serviceRequested: ServiceType
+    var otherService: String
+    var estimatedValue: Double
+    var assignedSalesperson: String
+    var status: LeadStatus
+    var followUpDate: Date
+    var createdDate: Date
+}
+struct EstimateRecord: Identifiable, Codable {
+    var id = UUID()
+    var estimateNumber: String
+    var leadNumber: String
+    var customerNumber: String
+    var siteID: UUID?
+    var serviceType: ServiceType
+    var otherService: String
+    var serviceDetails: String
+    var subtotal: Double
+    var discount: Double
+    var total: Double
+    var salesperson: String
+    var status: EstimateRecordStatus
+    var createdDate: Date
+    var expirationDate: Date
+}
+struct CustomerSite: Identifiable, Codable {
+    var id = UUID()
     var customerNumber: String
     var siteName: String
     var serviceAddress: String
