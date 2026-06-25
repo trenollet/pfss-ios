@@ -78,6 +78,11 @@ struct EstimateDetailView: View {
                         dismiss()
                     }
                 }
+                Button("Create Job from Estimate") {
+                    store.createJobFromEstimate(estimate)
+                    dismiss()
+                }
+                .disabled(estimate.lifecycleStatus == .archived)
             }
             .navigationTitle("Edit Estimate")
         }

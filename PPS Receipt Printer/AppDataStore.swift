@@ -245,6 +245,34 @@ final class AppDataStore: ObservableObject {
         }
     }
 
+    func createJobFromEstimate(_ estimate: EstimateRecord) {
+        let job = JobRecord(
+            jobNumber: generateJobNumber(),
+            customerNumber: estimate.customerNumber,
+            siteID: estimate.siteID,
+            estimateNumber: estimate.estimateNumber,
+            serviceType: estimate.serviceType,
+            otherService: estimate.otherService,
+            subtotal: estimate.subtotal,
+            discount: estimate.discount,
+            total: estimate.total,
+            primaryTechnician: "",
+            secondaryTechnician: "",
+            scheduledDate: Date(),
+            completedDate: nil,
+            status: .toBeScheduled,
+            workNotes: estimate.serviceDetails,
+            isRecurring: false,
+            createdDate: Date()
+        )
+
+        jobs.append(job)
+
+        if let index = estimates.firstIndex(where: { $0.id == estimate.id }) {
+            estimates[index].status = .converted
+        }
+    }
+    
     private func generateMonthlyNumber(prefix: String, date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyMM"

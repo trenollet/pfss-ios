@@ -134,6 +134,7 @@ struct EstimateRecord: Identifiable, Codable {
     var serviceType: ServiceType
     var otherService: String
     var serviceDetails: String
+    var lineItems: [ServiceLineItem] = []
     var subtotal: Double
     var discount: Double
     var total: Double
@@ -163,10 +164,12 @@ struct JobRecord: Identifiable, Codable {
 
     var serviceType: ServiceType
     var otherService: String
-
+    var lineItems: [ServiceLineItem] = []
+    var subtotal: Double
+    var discount: Double
+    var total: Double
     var primaryTechnician: String
     var secondaryTechnician: String
-
     var scheduledDate: Date
     var completedDate: Date?
 
@@ -177,4 +180,13 @@ struct JobRecord: Identifiable, Codable {
     var createdDate: Date
 
     var lifecycleStatus: RecordLifecycleStatus = .active
+}
+struct ServiceLineItem: Identifiable, Codable {
+    var id = UUID()
+    var serviceType: ServiceType
+    var otherService: String
+    var description: String
+    var quantity: Double
+    var unitPrice: Double
+    var lineTotal: Double
 }

@@ -25,6 +25,11 @@ struct JobsView: View {
     @State private var workNotes = ""
     @State private var isRecurring = false
     @State private var showArchived = false
+    @State private var itemDescription = ""
+    @State private var itemQuantity = "1"
+    @State private var itemUnitPrice = ""
+    @State private var lineItems: [ServiceLineItem] = []
+    @State private var discount = ""
 
     @FocusState private var isInputFocused: Bool
 
@@ -34,6 +39,28 @@ struct JobsView: View {
 
     private var availableEstimates: [EstimateRecord] {
         store.activeEstimates.filter { $0.customerNumber == selectedCustomerNumber }
+    }
+    private var itemQuantityValue: Double {
+        Double(itemQuantity) ?? 1
+    }
+
+    private var itemUnitPriceValue: Double {
+        Double(itemUnitPrice) ?? 0
+    }
+
+    private var itemLineTotal: Double {
+        itemQuantityValue * itemUnitPriceValue
+    }
+    private var subtotalValue: Double {
+        lineItems.reduce(0) { $0 + $1.lineTotal }
+    }
+
+    private var discountValue: Double {
+        Double(discount) ?? 0
+    }
+
+    private var totalValue: Double {
+        max(subtotalValue - discountValue, 0)
     }
 
     var body: some View {
@@ -80,6 +107,35 @@ struct JobsView: View {
                     TextField("Work Notes", text: $workNotes, axis: .vertical)
                         .lineLimit(3...6)
                         .focused($isInputFocused)
+                }
+                LineItemEditorView(lineItems: $lineItems)
+                
+                Section("Pricing") {
+                    TextField("Discount", text: $discount)
+                        .keyboardType(.decimalPad)
+                        .focused($isInputFocused)
+
+                    HStack {
+                        Text("Total")
+                        Spacer()
+                        Text(totalValue, format: .currency(code: "USD"))
+                            .bold()
+                    }
+                }
+
+                TextField("Quantity", text: $itemQuantity)
+                    .keyboardType(.decimalPad)
+                    .focused($isInputFocused)
+
+                TextField("Unit Price", text: $itemUnitPrice)
+                    .keyboardType(.decimalPad)
+                    .focused($isInputFocused)
+
+                HStack {
+                    Text("Line Total")
+                    Spacer()
+                    Text(itemLineTotal, format: .currency(code: "USD"))
+                        .bold()
                 }
 
                 Section("Technicians") {
@@ -157,6 +213,7 @@ struct JobsView: View {
     }
 
     private func addJob() {
+        
         let job = JobRecord(
             jobNumber: store.generateJobNumber(),
             customerNumber: selectedCustomerNumber,
@@ -164,6 +221,10 @@ struct JobsView: View {
             estimateNumber: selectedEstimateNumber,
             serviceType: serviceType,
             otherService: otherService,
+            lineItems: lineItems,
+            subtotal: subtotalValue,
+            discount: discountValue,
+            total: totalValue,
             primaryTechnician: primaryTechnician,
             secondaryTechnician: secondaryTechnician,
             scheduledDate: scheduledDate,
@@ -172,6 +233,7 @@ struct JobsView: View {
             workNotes: workNotes,
             isRecurring: isRecurring,
             createdDate: Date()
+            
         )
 
         store.addJob(job)
@@ -181,6 +243,11 @@ struct JobsView: View {
         selectedEstimateNumber = ""
         serviceType = .windowCleaning
         otherService = ""
+        itemDescription = ""
+        itemQuantity = "1"
+        itemUnitPrice = ""
+        lineItems = []
+        discount = ""
         primaryTechnician = ""
         secondaryTechnician = ""
         scheduledDate = Date()
