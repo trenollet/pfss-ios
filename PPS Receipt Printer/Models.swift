@@ -125,7 +125,7 @@ struct Lead: Identifiable, Codable {
     var createdDate: Date
     var lifecycleStatus: RecordLifecycleStatus = .active
 }
-struct EstimateRecord: Identifiable, Codable {
+struct EstimateRecord: Identifiable, Codable, WorkOrder {
     var id = UUID()
     var estimateNumber: String
     var leadNumber: String
@@ -154,7 +154,7 @@ struct CustomerSite: Identifiable, Codable {
     var workNotes: String
     var lifecycleStatus: RecordLifecycleStatus = .active
 }
-struct JobRecord: Identifiable, Codable {
+struct JobRecord: Identifiable, Codable, WorkOrder {
     var id = UUID()
     var jobNumber: String
 
@@ -189,4 +189,21 @@ struct ServiceLineItem: Identifiable, Codable {
     var quantity: Double
     var unitPrice: Double
     var lineTotal: Double
+}
+protocol WorkOrder {
+    var lineItems: [ServiceLineItem] { get set }
+    var discount: Double { get set }
+}
+
+extension WorkOrder {
+    var calculatedSubtotal: Double {
+        PricingCalculator.subtotal(for: lineItems)
+    }
+
+    var calculatedTotal: Double {
+        PricingCalculator.total(
+            subtotal: calculatedSubtotal,
+            discount: discount
+        )
+    }
 }

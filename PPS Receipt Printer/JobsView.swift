@@ -52,7 +52,7 @@ struct JobsView: View {
         itemQuantityValue * itemUnitPriceValue
     }
     private var subtotalValue: Double {
-        lineItems.reduce(0) { $0 + $1.lineTotal }
+        PricingCalculator.subtotal(for: lineItems)
     }
 
     private var discountValue: Double {
@@ -60,7 +60,10 @@ struct JobsView: View {
     }
 
     private var totalValue: Double {
-        max(subtotalValue - discountValue, 0)
+        PricingCalculator.total(
+            subtotal: subtotalValue,
+            discount: discountValue
+        )
     }
 
     var body: some View {
@@ -108,7 +111,7 @@ struct JobsView: View {
                         .lineLimit(3...6)
                         .focused($isInputFocused)
                 }
-                LineItemEditorView(lineItems: $lineItems)
+                LineItemEditorView(lineItems: $lineItems, isInputFocused: $isInputFocused)
                 
                 Section("Pricing") {
                     TextField("Discount", text: $discount)

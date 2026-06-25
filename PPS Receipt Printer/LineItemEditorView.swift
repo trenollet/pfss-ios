@@ -16,7 +16,7 @@ struct LineItemEditorView: View {
     @State private var quantity = "1"
     @State private var unitPrice = ""
 
-    @FocusState private var isInputFocused: Bool
+    @FocusState.Binding var isInputFocused: Bool
 
     private var quantityValue: Double {
         Double(quantity) ?? 1
@@ -27,11 +27,14 @@ struct LineItemEditorView: View {
     }
 
     private var lineTotal: Double {
-        quantityValue * unitPriceValue
+        PricingCalculator.total(
+            subtotal: quantityValue * unitPriceValue,
+            discount: 0
+        )
     }
 
     var subtotal: Double {
-        lineItems.reduce(0) { $0 + $1.lineTotal }
+        PricingCalculator.subtotal(for: lineItems)
     }
 
     var body: some View {
@@ -40,63 +43,55 @@ struct LineItemEditorView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.description.isEmpty ? serviceName(for: item) : item.description)
                         .font(.headline)
-
+                    
                     Text("\(item.quantity, specifier: "%.2f") × \(item.unitPrice, format: .currency(code: "USD"))")
                         .font(.caption)
-
+                    
                     Text("Total: \(item.lineTotal, format: .currency(code: "USD"))")
                         .font(.caption)
                 }
                 .padding(.vertical, 4)
             }
             .onDelete(perform: deleteItems)
-
+            
             Picker("Service Type", selection: $serviceType) {
                 ForEach(ServiceType.allCases) { service in
                     Text(service.rawValue).tag(service)
                 }
             }
-
+            
             if serviceType == .other {
                 TextField("Other Service", text: $otherService)
                     .focused($isInputFocused)
             }
-
+            
             TextField("Description", text: $itemDescription)
                 .focused($isInputFocused)
-
+            
             TextField("Quantity", text: $quantity)
                 .keyboardType(.decimalPad)
                 .focused($isInputFocused)
-
+            
             TextField("Unit Price", text: $unitPrice)
                 .keyboardType(.decimalPad)
                 .focused($isInputFocused)
-
+            
             HStack {
                 Text("Line Total")
                 Spacer()
                 Text(lineTotal, format: .currency(code: "USD"))
                     .bold()
             }
-
+            
             Button("Add Line Item") {
                 addLineItem()
             }
-
+            
             HStack {
                 Text("Subtotal")
                 Spacer()
                 Text(subtotal, format: .currency(code: "USD"))
                     .bold()
-            }
-        }
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") {
-                    isInputFocused = false
-                }
             }
         }
     }

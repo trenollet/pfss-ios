@@ -14,11 +14,9 @@ struct EstimatesView: View {
     @State private var selectedCustomerNumber = ""
     @State private var selectedSiteID: UUID?
 
-    @State private var serviceType: ServiceType = .windowCleaning
-    @State private var otherService = ""
-    @State private var serviceDetails = ""
-    @State private var subtotal = ""
+    @State private var lineItems: [ServiceLineItem] = []
     @State private var discount = ""
+
     @State private var salesperson = ""
     @State private var status: EstimateRecordStatus = .draft
     @State private var expirationDate = Calendar.current.date(byAdding: .day, value: 30, to: Date()) ?? Date()
@@ -26,12 +24,23 @@ struct EstimatesView: View {
 
     @FocusState private var isInputFocused: Bool
 
-    private var subtotalValue: Double { Double(subtotal) ?? 0 }
-    private var discountValue: Double { Double(discount) ?? 0 }
-    private var totalValue: Double { max(subtotalValue - discountValue, 0) }
+    private var subtotalValue: Double {
+        PricingCalculator.subtotal(for: lineItems)
+    }
+
+    private var discountValue: Double {
+        Double(discount) ?? 0
+    }
+
+    private var totalValue: Double {
+        PricingCalculator.total(
+            subtotal: subtotalValue,
+            discount: discountValue
+        )
+    }
 
     private var availableSites: [CustomerSite] {
-        store.sites(for: selectedCustomerNumber)
+        store.activeSites.filter { $0.customerNumber == selectedCustomerNumber }
     }
 
     var body: some View {
@@ -62,36 +71,6 @@ struct EstimatesView: View {
                         }
                     }
 
-                    Picker("Service Type", selection: $serviceType) {
-                        ForEach(ServiceType.allCases) { service in
-                            Text(service.rawValue).tag(service)
-                        }
-                    }
-
-                    if serviceType == .other {
-                        TextField("Other Service", text: $otherService)
-                            .focused($isInputFocused)
-                    }
-
-                    TextField("Service Details", text: $serviceDetails, axis: .vertical)
-                        .lineLimit(3...6)
-                        .focused($isInputFocused)
-
-                    TextField("Subtotal", text: $subtotal)
-                        .keyboardType(.decimalPad)
-                        .focused($isInputFocused)
-
-                    TextField("Discount", text: $discount)
-                        .keyboardType(.decimalPad)
-                        .focused($isInputFocused)
-
-                    HStack {
-                        Text("Total")
-                        Spacer()
-                        Text(totalValue, format: .currency(code: "USD"))
-                            .bold()
-                    }
-
                     TextField("Salesperson", text: $salesperson)
                         .focused($isInputFocused)
 
@@ -102,12 +81,36 @@ struct EstimatesView: View {
                     }
 
                     DatePicker("Expiration Date", selection: $expirationDate, displayedComponents: .date)
+                }
 
+                LineItemEditorView(lineItems: $lineItems, isInputFocused: $isInputFocused)
+
+                Section("Pricing") {
+                    TextField("Discount", text: $discount)
+                        .keyboardType(.decimalPad)
+                        .focused($isInputFocused)
+
+                    HStack {
+                        Text("Subtotal")
+                        Spacer()
+                        Text(subtotalValue, format: .currency(code: "USD"))
+                            .bold()
+                    }
+
+                    HStack {
+                        Text("Total")
+                        Spacer()
+                        Text(totalValue, format: .currency(code: "USD"))
+                            .bold()
+                    }
+                }
+
+                Section {
                     Button("Add Estimate") {
                         isInputFocused = false
                         addEstimate()
                     }
-                    .disabled(selectedCustomerNumber.isEmpty)
+                    .disabled(selectedCustomerNumber.isEmpty || lineItems.isEmpty)
                 }
 
                 Section("Estimates") {
@@ -122,9 +125,6 @@ struct EstimatesView: View {
                                     .font(.headline)
 
                                 Text("Customer: \(estimate.customerNumber)")
-                                    .font(.caption)
-
-                                Text("Service: \(serviceName(for: estimate))")
                                     .font(.caption)
 
                                 Text("Total: \(estimate.total, format: .currency(code: "USD"))")
@@ -157,14 +157,19 @@ struct EstimatesView: View {
     }
 
     private func addEstimate() {
+        let firstItem = lineItems.first
+
         let estimate = EstimateRecord(
             estimateNumber: store.generateEstimateNumber(),
             leadNumber: selectedLeadNumber,
             customerNumber: selectedCustomerNumber,
             siteID: selectedSiteID,
-            serviceType: serviceType,
-            otherService: otherService,
-            serviceDetails: serviceDetails,
+            serviceType: firstItem?.serviceType ?? .other,
+            otherService: firstItem?.otherService ?? "",
+            serviceDetails: lineItems.map { item in
+                item.description.isEmpty ? serviceName(for: item) : item.description
+            }.joined(separator: "\n"),
+            lineItems: lineItems,
             subtotal: subtotalValue,
             discount: discountValue,
             total: totalValue,
@@ -177,10 +182,9 @@ struct EstimatesView: View {
         store.addEstimate(estimate)
 
         selectedLeadNumber = ""
-        serviceType = .windowCleaning
-        otherService = ""
-        serviceDetails = ""
-        subtotal = ""
+        selectedCustomerNumber = ""
+        selectedSiteID = nil
+        lineItems = []
         discount = ""
         salesperson = ""
         status = .draft
@@ -198,11 +202,11 @@ struct EstimatesView: View {
         return "Unnamed Lead"
     }
 
-    private func serviceName(for estimate: EstimateRecord) -> String {
-        if estimate.serviceType == .other {
-            return estimate.otherService.isEmpty ? "Other" : estimate.otherService
+    private func serviceName(for item: ServiceLineItem) -> String {
+        if item.serviceType == .other {
+            return item.otherService.isEmpty ? "Other" : item.otherService
         }
 
-        return estimate.serviceType.rawValue
+        return item.serviceType.rawValue
     }
 }

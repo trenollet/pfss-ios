@@ -13,6 +13,17 @@ struct JobDetailView: View {
 
     @State var job: JobRecord
     @FocusState private var isInputFocused: Bool
+    
+    private var subtotalValue: Double {
+        PricingCalculator.subtotal(for: job.lineItems)
+    }
+
+    private var totalValue: Double {
+        PricingCalculator.total(
+            subtotal: subtotalValue,
+            discount: job.discount
+        )
+    }
 
     var body: some View {
         Form {
@@ -57,6 +68,28 @@ struct JobDetailView: View {
                 TextField("Secondary Technician", text: $job.secondaryTechnician)
                     .focused($isInputFocused)
             }
+            
+            LineItemEditorView(lineItems: $job.lineItems, isInputFocused: $isInputFocused)
+
+            Section("Pricing") {
+                TextField("Discount", value: $job.discount, format: .number)
+                    .keyboardType(.decimalPad)
+                    .focused($isInputFocused)
+
+                HStack {
+                    Text("Subtotal")
+                    Spacer()
+                    Text(subtotalValue, format: .currency(code: "USD"))
+                        .bold()
+                }
+
+                HStack {
+                    Text("Total")
+                    Spacer()
+                    Text(totalValue, format: .currency(code: "USD"))
+                        .bold()
+                }
+            }
 
             Section("Schedule") {
                 DatePicker("Scheduled Date", selection: $job.scheduledDate, displayedComponents: [.date, .hourAndMinute])
@@ -88,7 +121,9 @@ struct JobDetailView: View {
                     if job.status == .completed && job.completedDate == nil {
                         job.completedDate = Date()
                     }
-
+                    job.lineItems = PricingCalculator.updatedLineItems(job.lineItems)
+                    job.subtotal = subtotalValue
+                    job.total = totalValue
                     store.updateJob(job)
                     dismiss()
                 }
