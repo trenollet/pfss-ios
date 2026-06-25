@@ -83,6 +83,16 @@ enum RecordLifecycleStatus: String, CaseIterable, Identifiable, Codable {
 
     var id: String { rawValue }
 }
+enum JobStatus: String, CaseIterable, Identifiable, Codable {
+    case toBeScheduled = "To Be Scheduled"
+    case scheduled = "Scheduled"
+    case assigned = "Assigned"
+    case inProgress = "In Progress"
+    case completed = "Completed"
+    case cancelled = "Cancelled"
+
+    var id: String { rawValue }
+}
 
 struct Customer: Identifiable, Codable {
     var id = UUID()
@@ -141,5 +151,30 @@ struct CustomerSite: Identifiable, Codable {
     var propertyType: String
     var accessNotes: String
     var workNotes: String
+    var lifecycleStatus: RecordLifecycleStatus = .active
+}
+struct JobRecord: Identifiable, Codable {
+    var id = UUID()
+    var jobNumber: String
+
+    var customerNumber: String
+    var siteID: UUID?
+    var estimateNumber: String
+
+    var serviceType: ServiceType
+    var otherService: String
+
+    var primaryTechnician: String
+    var secondaryTechnician: String
+
+    var scheduledDate: Date
+    var completedDate: Date?
+
+    var status: JobStatus
+    var workNotes: String
+
+    var isRecurring: Bool
+    var createdDate: Date
+
     var lifecycleStatus: RecordLifecycleStatus = .active
 }

@@ -24,7 +24,10 @@ final class AppDataStore: ObservableObject {
     @Published var estimates: [EstimateRecord] = [] {
         didSet { saveData() }
     }
-
+    @Published var jobs: [JobRecord] = [] {
+        didSet { saveData() }
+    }
+    
     var activeCustomers: [Customer] {
         customers.filter { $0.lifecycleStatus == .active }
     }
@@ -55,6 +58,14 @@ final class AppDataStore: ObservableObject {
 
     var archivedEstimates: [EstimateRecord] {
         estimates.filter { $0.lifecycleStatus == .archived }
+    }
+    
+    var activeJobs: [JobRecord] {
+        jobs.filter { $0.lifecycleStatus == .active }
+    }
+
+    var archivedJobs: [JobRecord] {
+        jobs.filter { $0.lifecycleStatus == .archived }
     }
     
     private var nextCustomerNumber = 1 {
@@ -188,6 +199,28 @@ final class AppDataStore: ObservableObject {
         updateEstimate(updated)
     }
     
+    func addJob(_ job: JobRecord) {
+        jobs.append(job)
+    }
+
+    func updateJob(_ job: JobRecord) {
+        if let index = jobs.firstIndex(where: { $0.id == job.id }) {
+            jobs[index] = job
+        }
+    }
+
+    func archiveJob(_ job: JobRecord) {
+        var updated = job
+        updated.lifecycleStatus = .archived
+        updateJob(updated)
+    }
+
+    func restoreJob(_ job: JobRecord) {
+        var updated = job
+        updated.lifecycleStatus = .active
+        updateJob(updated)
+    }
+    
     func convertLeadToCustomer(_ lead: Lead) {
         guard !customers.contains(where: { $0.phone == lead.phone && !$0.phone.isEmpty }) else {
             return
@@ -230,6 +263,7 @@ final class AppDataStore: ObservableObject {
             sites: sites,
             leads: leads,
             estimates: estimates,
+            jobs: jobs,
             nextCustomerNumber: nextCustomerNumber,
             recordSequencesByMonth: recordSequencesByMonth
         )
@@ -257,6 +291,7 @@ final class AppDataStore: ObservableObject {
             sites = snapshot.sites
             leads = snapshot.leads
             estimates = snapshot.estimates
+            jobs = snapshot.jobs
             nextCustomerNumber = snapshot.nextCustomerNumber
             recordSequencesByMonth = snapshot.recordSequencesByMonth
         } catch {
@@ -275,6 +310,7 @@ private struct AppDataSnapshot: Codable {
     var sites: [CustomerSite]
     var leads: [Lead]
     var estimates: [EstimateRecord]
+    var jobs: [JobRecord]
     var nextCustomerNumber: Int
     var recordSequencesByMonth: [String: Int]
 }

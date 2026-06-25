@@ -18,6 +18,10 @@ struct ContentView: View {
                 .tabItem {
                     Label("Estimates", systemImage: "doc.text")
                 }
+            JobsView()
+                .tabItem {
+                    Label("Jobs", systemImage: "wrench.and.screwdriver")
+                }
             CustomersView()
                 .tabItem {
                     Label("Customers", systemImage: "person.2")
