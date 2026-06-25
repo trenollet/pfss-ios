@@ -60,10 +60,7 @@ struct JobsView: View {
     }
 
     private var totalValue: Double {
-        PricingCalculator.total(
-            subtotal: subtotalValue,
-            discount: discountValue
-        )
+        PricingCalculator.total(for: lineItems, discount: discountValue)
     }
 
     var body: some View {

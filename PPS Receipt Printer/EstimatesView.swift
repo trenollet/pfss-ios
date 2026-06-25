@@ -33,10 +33,7 @@ struct EstimatesView: View {
     }
 
     private var totalValue: Double {
-        PricingCalculator.total(
-            subtotal: subtotalValue,
-            discount: discountValue
-        )
+        PricingCalculator.total(for: lineItems, discount: discountValue)
     }
 
     private var availableSites: [CustomerSite] {

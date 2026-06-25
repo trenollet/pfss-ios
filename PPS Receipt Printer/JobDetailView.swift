@@ -15,14 +15,11 @@ struct JobDetailView: View {
     @FocusState private var isInputFocused: Bool
     
     private var subtotalValue: Double {
-        PricingCalculator.subtotal(for: job.lineItems)
+        PricingCalculator.subtotal(for: job)
     }
 
     private var totalValue: Double {
-        PricingCalculator.total(
-            subtotal: subtotalValue,
-            discount: job.discount
-        )
+        PricingCalculator.total(for: job)
     }
 
     var body: some View {
@@ -122,8 +119,8 @@ struct JobDetailView: View {
                         job.completedDate = Date()
                     }
                     job.lineItems = PricingCalculator.updatedLineItems(job.lineItems)
-                    job.subtotal = subtotalValue
-                    job.total = totalValue
+                    job.subtotal = PricingCalculator.subtotal(for: job)
+                    job.total = PricingCalculator.total(for: job)
                     store.updateJob(job)
                     dismiss()
                 }

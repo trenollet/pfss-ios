@@ -15,14 +15,11 @@ struct EstimateDetailView: View {
     @FocusState private var isInputFocused: Bool
 
     private var subtotalValue: Double {
-        PricingCalculator.subtotal(for: estimate.lineItems)
+        PricingCalculator.subtotal(for: estimate)
     }
 
     private var totalValue: Double {
-        PricingCalculator.total(
-            subtotal: subtotalValue,
-            discount: estimate.discount
-        )
+        PricingCalculator.total(for: estimate)
     }
 
     var body: some View {
@@ -84,8 +81,8 @@ struct EstimateDetailView: View {
                     isInputFocused = false
 
                     estimate.lineItems = PricingCalculator.updatedLineItems(estimate.lineItems)
-                    estimate.subtotal = subtotalValue
-                    estimate.total = totalValue
+                    estimate.subtotal = PricingCalculator.subtotal(for: estimate)
+                    estimate.total = PricingCalculator.total(for: estimate)
 
                     if let firstItem = estimate.lineItems.first {
                         estimate.serviceType = firstItem.serviceType
