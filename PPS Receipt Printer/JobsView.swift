@@ -108,7 +108,7 @@ struct JobsView: View {
                         .lineLimit(3...6)
                         .focused($isInputFocused)
                 }
-                LineItemEditorView(lineItems: $lineItems, isInputFocused: $isInputFocused)
+                WorkOrderEditorView(lineItems: $lineItems, isInputFocused: $isInputFocused)
                 
                 Section("Pricing") {
                     TextField("Discount", text: $discount)

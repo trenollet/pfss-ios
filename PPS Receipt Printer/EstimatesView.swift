@@ -80,7 +80,7 @@ struct EstimatesView: View {
                     DatePicker("Expiration Date", selection: $expirationDate, displayedComponents: .date)
                 }
 
-                LineItemEditorView(lineItems: $lineItems, isInputFocused: $isInputFocused)
+                WorkOrderEditorView(lineItems: $lineItems, isInputFocused: $isInputFocused)
 
                 Section("Pricing") {
                     TextField("Discount", text: $discount)

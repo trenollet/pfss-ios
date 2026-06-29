@@ -66,7 +66,7 @@ struct JobDetailView: View {
                     .focused($isInputFocused)
             }
             
-            LineItemEditorView(lineItems: $job.lineItems, isInputFocused: $isInputFocused)
+            WorkOrderEditorView(lineItems: $job.lineItems, isInputFocused: $isInputFocused)
 
             Section("Pricing") {
                 TextField("Discount", value: $job.discount, format: .number)

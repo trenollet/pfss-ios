@@ -68,7 +68,7 @@ struct LineItemEditorView: View {
         Section("Line Items") {
             ForEach(lineItems) { item in
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(item.description.isEmpty ? serviceName(for: item) : item.description)
+                    Text(displayName(for: item))
                         .font(.headline)
 
                     Text("\(item.quantity, specifier: "%.2f") × \(item.unitPrice, format: .currency(code: "USD"))")
@@ -199,5 +199,17 @@ struct LineItemEditorView: View {
         }
 
         return item.serviceType.rawValue
+    }
+    private func displayName(for item: ServiceLineItem) -> String {
+        if let catalogItemID = item.catalogItemID,
+           let catalogItem = store.serviceCatalogItems.first(where: { $0.id == catalogItemID }) {
+            return catalogItem.itemName
+        }
+
+        if !item.description.isEmpty {
+            return item.description
+        }
+
+        return serviceName(for: item)
     }
 }

@@ -11,6 +11,8 @@ struct ServiceCatalogNewItemView: View {
     @EnvironmentObject var store: AppDataStore
     @Environment(\.dismiss) private var dismiss
 
+    var prefilledItemName: String = ""
+
     @State private var itemName = ""
     @State private var itemDescription = ""
     @State private var defaultQuantity = "1"
@@ -63,6 +65,11 @@ struct ServiceCatalogNewItemView: View {
                 }
             }
             .navigationTitle("New Catalog Item")
+            .onAppear {
+                if itemName.isEmpty {
+                    itemName = prefilledItemName
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {

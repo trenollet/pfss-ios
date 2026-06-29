@@ -43,7 +43,7 @@ struct EstimateDetailView: View {
                 DatePicker("Expiration Date", selection: $estimate.expirationDate, displayedComponents: .date)
             }
 
-            LineItemEditorView(lineItems: $estimate.lineItems, isInputFocused: $isInputFocused)
+            WorkOrderEditorView(lineItems: $estimate.lineItems, isInputFocused: $isInputFocused)
 
             Section("Pricing") {
                 TextField("Discount", value: $estimate.discount, format: .number)
