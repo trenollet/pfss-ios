@@ -183,12 +183,26 @@ struct JobRecord: Identifiable, Codable, WorkOrder {
 }
 struct ServiceLineItem: Identifiable, Codable {
     var id = UUID()
+
+    var catalogItemID: UUID?
+
     var serviceType: ServiceType
     var otherService: String
+
     var description: String
     var quantity: Double
     var unitPrice: Double
     var lineTotal: Double
+}
+struct ServiceCatalogItem: Identifiable, Codable {
+    var id = UUID()
+    var itemName: String
+    var itemDescription: String
+    var defaultQuantity: Double
+    var defaultPrice: Double
+    var usageCount: Int = 0
+    var lastUsedDate: Date?
+    var lifecycleStatus: RecordLifecycleStatus = .active
 }
 protocol WorkOrder {
     var lineItems: [ServiceLineItem] { get set }

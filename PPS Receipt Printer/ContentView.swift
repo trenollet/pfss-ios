@@ -18,6 +18,10 @@ struct ContentView: View {
                 .tabItem {
                     Label("Estimates", systemImage: "doc.text")
                 }
+            ServiceCatalogView()
+                .tabItem {
+                    Label("SC", systemImage: "catalog")
+                }
             JobsView()
                 .tabItem {
                     Label("Jobs", systemImage: "wrench.and.screwdriver")

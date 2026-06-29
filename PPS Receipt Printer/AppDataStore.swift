@@ -28,6 +28,9 @@ final class AppDataStore: ObservableObject {
         didSet { saveData() }
     }
     
+    @Published var serviceCatalogItems: [ServiceCatalogItem] = [] {
+        didSet { saveData() }
+    }
     var activeCustomers: [Customer] {
         customers.filter { $0.lifecycleStatus == .active }
     }
@@ -68,6 +71,13 @@ final class AppDataStore: ObservableObject {
         jobs.filter { $0.lifecycleStatus == .archived }
     }
     
+    var activeServiceCatalogItems: [ServiceCatalogItem] {
+        serviceCatalogItems.filter { $0.lifecycleStatus == .active }
+    }
+
+    var archivedServiceCatalogItems: [ServiceCatalogItem] {
+        serviceCatalogItems.filter { $0.lifecycleStatus == .archived }
+    }
     private var nextCustomerNumber = 1 {
         didSet { saveData() }
     }
@@ -221,6 +231,32 @@ final class AppDataStore: ObservableObject {
         updateJob(updated)
     }
     
+    func addServiceCatalogItem(_ item: ServiceCatalogItem) {
+        serviceCatalogItems.append(item)
+    }
+
+    func updateServiceCatalogItem(_ item: ServiceCatalogItem) {
+        if let index = serviceCatalogItems.firstIndex(where: { $0.id == item.id }) {
+            serviceCatalogItems[index] = item
+        }
+    }
+    func recordCatalogItemUsed(_ item: ServiceCatalogItem) {
+        if let index = serviceCatalogItems.firstIndex(where: { $0.id == item.id }) {
+            serviceCatalogItems[index].usageCount += 1
+            serviceCatalogItems[index].lastUsedDate = Date()
+        }
+    }
+    func archiveServiceCatalogItem(_ item: ServiceCatalogItem) {
+        var updated = item
+        updated.lifecycleStatus = .archived
+        updateServiceCatalogItem(updated)
+    }
+
+    func restoreServiceCatalogItem(_ item: ServiceCatalogItem) {
+        var updated = item
+        updated.lifecycleStatus = .active
+        updateServiceCatalogItem(updated)
+    }
     func convertLeadToCustomer(_ lead: Lead) {
         guard !customers.contains(where: { $0.phone == lead.phone && !$0.phone.isEmpty }) else {
             return
@@ -292,6 +328,7 @@ final class AppDataStore: ObservableObject {
             leads: leads,
             estimates: estimates,
             jobs: jobs,
+            serviceCatalogItems: serviceCatalogItems,
             nextCustomerNumber: nextCustomerNumber,
             recordSequencesByMonth: recordSequencesByMonth
         )
@@ -320,6 +357,7 @@ final class AppDataStore: ObservableObject {
             leads = snapshot.leads
             estimates = snapshot.estimates
             jobs = snapshot.jobs
+            serviceCatalogItems = snapshot.serviceCatalogItems
             nextCustomerNumber = snapshot.nextCustomerNumber
             recordSequencesByMonth = snapshot.recordSequencesByMonth
         } catch {
@@ -339,6 +377,7 @@ private struct AppDataSnapshot: Codable {
     var leads: [Lead]
     var estimates: [EstimateRecord]
     var jobs: [JobRecord]
+    var serviceCatalogItems: [ServiceCatalogItem]
     var nextCustomerNumber: Int
     var recordSequencesByMonth: [String: Int]
 }
