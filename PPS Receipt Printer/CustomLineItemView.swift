@@ -11,6 +11,7 @@ struct CustomLineItemView: View {
     @Environment(\.dismiss) private var dismiss
 
     @Binding var lineItems: [ServiceLineItem]
+    var onFinished: (() -> Void)? = nil
 
     @State private var serviceType: ServiceType = .windowCleaning
     @State private var otherService = ""
@@ -105,5 +106,6 @@ struct CustomLineItemView: View {
 
         lineItems.append(item)
         dismiss()
+        onFinished?()
     }
 }

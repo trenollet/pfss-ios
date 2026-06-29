@@ -14,21 +14,21 @@ struct ContentView: View {
                 .tabItem {
                     Label("Leads", systemImage: "person.crop.circle.badge.plus")
                 }
+            CustomersView()
+                .tabItem {
+                    Label("Customers", systemImage: "person.2")
+                }
+            JobsView()
+                .tabItem {
+                    Label("Jobs", systemImage: "wrench.and.screwdriver")
+                }
             EstimatesView()
                 .tabItem {
                     Label("Estimates", systemImage: "doc.text")
                 }
             ServiceCatalogView()
                 .tabItem {
-                    Label("SC", systemImage: "catalog")
-                }
-            JobsView()
-                .tabItem {
-                    Label("Jobs", systemImage: "wrench.and.screwdriver")
-                }
-            CustomersView()
-                .tabItem {
-                    Label("Customers", systemImage: "person.2")
+                    Label("Items", systemImage: "book.pages")
                 }
 
             SitesView()

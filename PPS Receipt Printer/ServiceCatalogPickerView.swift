@@ -13,9 +13,12 @@ struct ServiceCatalogPickerView: View {
 
     @Binding var lineItems: [ServiceLineItem]
 
+    var onFinished: () -> Void
+
     @State private var searchText = ""
     @State private var showingNewCatalogItem = false
     @State private var showingCustomItem = false
+    @State private var selectedCatalogItem: ServiceCatalogItem?
 
     private var filteredItems: [ServiceCatalogItem] {
         let search = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -76,7 +79,7 @@ struct ServiceCatalogPickerView: View {
                     Section(searchText.isEmpty ? "Most Used Services" : "Search Results") {
                         ForEach(filteredItems) { item in
                             Button {
-                                addCatalogItem(item)
+                                selectedCatalogItem = item
                             } label: {
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(item.itemName)
@@ -113,6 +116,17 @@ struct ServiceCatalogPickerView: View {
                     }
                 }
             }
+            .sheet(item: $selectedCatalogItem) { item in
+                EditableLineItemView(
+                    lineItems: $lineItems,
+                    catalogItem: item,
+                    existingLineItem: nil,
+                    onFinished: {
+                        onFinished()
+                    }
+                )
+                .environmentObject(store)
+            }
             .sheet(isPresented: $showingNewCatalogItem) {
                 ServiceCatalogNewItemView(
                     prefilledItemName: suggestedNewItemName
@@ -120,26 +134,13 @@ struct ServiceCatalogPickerView: View {
                 .environmentObject(store)
             }
             .sheet(isPresented: $showingCustomItem) {
-                CustomLineItemView(lineItems: $lineItems)
+                CustomLineItemView(
+                    lineItems: $lineItems,
+                    onFinished: {
+                        onFinished()
+                    }
+                )
             }
         }
-    }
-
-    private func addCatalogItem(_ catalogItem: ServiceCatalogItem) {
-        let lineTotal = catalogItem.defaultQuantity * catalogItem.defaultPrice
-
-        let item = ServiceLineItem(
-            catalogItemID: catalogItem.id,
-            serviceType: .other,
-            otherService: catalogItem.itemName,
-            description: catalogItem.itemDescription,
-            quantity: catalogItem.defaultQuantity,
-            unitPrice: catalogItem.defaultPrice,
-            lineTotal: lineTotal
-        )
-
-        lineItems.append(item)
-        store.recordCatalogItemUsed(catalogItem)
-        dismiss()
     }
 }

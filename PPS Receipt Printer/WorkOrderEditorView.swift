@@ -28,15 +28,22 @@ struct WorkOrderEditorView: View {
             }
             .buttonStyle(.borderedProminent)
 
-            LineItemEditorView(
+            LineItemListView(
                 lineItems: $lineItems,
                 isInputFocused: $isInputFocused
+            )
+            WorkOrderTotalsView(
+                lineItems: lineItems,
+                discount: 0
             )
         }
         .sheet(isPresented: $showingCatalogPicker) {
 
             ServiceCatalogPickerView(
-                lineItems: $lineItems
+                lineItems: $lineItems,
+                onFinished: {
+                    showingCatalogPicker = false
+                }
             )
             .environmentObject(store)
         }
