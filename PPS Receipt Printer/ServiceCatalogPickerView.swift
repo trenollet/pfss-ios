@@ -21,27 +21,10 @@ struct ServiceCatalogPickerView: View {
     @State private var selectedCatalogItem: ServiceCatalogItem?
 
     private var filteredItems: [ServiceCatalogItem] {
-        let search = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let source = store.activeServiceCatalogItems
-
-        let results: [ServiceCatalogItem]
-
-        if search.isEmpty {
-            results = source
-        } else {
-            results = source.filter { item in
-                item.itemName.localizedCaseInsensitiveContains(search)
-                || item.itemDescription.localizedCaseInsensitiveContains(search)
-            }
-        }
-
-        return results.sorted {
-            if $0.usageCount != $1.usageCount {
-                return $0.usageCount > $1.usageCount
-            }
-
-            return ($0.lastUsedDate ?? .distantPast) > ($1.lastUsedDate ?? .distantPast)
-        }
+        CatalogRankingEngine.rankedItems(
+            query: searchText,
+            catalogItems: store.activeServiceCatalogItems
+        )
     }
 
     private var suggestedNewItemName: String {

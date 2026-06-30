@@ -17,26 +17,10 @@ struct ServiceCatalogView: View {
     private var filteredItems: [ServiceCatalogItem] {
         let source = showArchived ? store.archivedServiceCatalogItems : store.activeServiceCatalogItems
 
-        let searched = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let results: [ServiceCatalogItem]
-
-        if searched.isEmpty {
-            results = source
-        } else {
-            results = source.filter { item in
-                item.itemName.localizedCaseInsensitiveContains(searched)
-                || item.itemDescription.localizedCaseInsensitiveContains(searched)
-            }
-        }
-
-        return results.sorted {
-            if $0.usageCount != $1.usageCount {
-                return $0.usageCount > $1.usageCount
-            }
-
-            return ($0.lastUsedDate ?? .distantPast) > ($1.lastUsedDate ?? .distantPast)
-        }
+        return CatalogRankingEngine.rankedItems(
+            query: searchText,
+            catalogItems: source
+        )
     }
 
     var body: some View {
