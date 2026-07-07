@@ -139,6 +139,5 @@ struct EditableLineItemView: View {
         }
 
         dismiss()
-        onFinished?()
     }
 }

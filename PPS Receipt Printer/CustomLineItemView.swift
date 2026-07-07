@@ -106,6 +106,5 @@ struct CustomLineItemView: View {
 
         lineItems.append(item)
         dismiss()
-        onFinished?()
     }
 }

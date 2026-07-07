@@ -31,6 +31,9 @@ final class AppDataStore: ObservableObject {
     @Published var serviceCatalogItems: [ServiceCatalogItem] = [] {
         didSet { saveData() }
     }
+    @Published var recommendationRules: [RecommendationRule] = [] {
+        didSet { saveData() }
+    }
     var activeCustomers: [Customer] {
         customers.filter { $0.lifecycleStatus == .active }
     }
@@ -156,7 +159,19 @@ final class AppDataStore: ObservableObject {
     func addEstimate(_ estimate: EstimateRecord) {
         estimates.append(estimate)
     }
+    func addRecommendationRule(_ rule: RecommendationRule) {
+        recommendationRules.append(rule)
+    }
 
+    func updateRecommendationRule(_ rule: RecommendationRule) {
+        if let index = recommendationRules.firstIndex(where: { $0.id == rule.id }) {
+            recommendationRules[index] = rule
+        }
+    }
+
+    func deleteRecommendationRule(_ rule: RecommendationRule) {
+        recommendationRules.removeAll { $0.id == rule.id }
+    }
     func sites(for customerNumber: String) -> [CustomerSite] {
         sites.filter { $0.customerNumber == customerNumber }
     }
@@ -308,6 +323,36 @@ final class AppDataStore: ObservableObject {
             estimates[index].status = .converted
         }
     }
+    func seedRecommendationRulesIfNeeded() {
+        guard recommendationRules.isEmpty else { return }
+
+        let catalog = activeServiceCatalogItems
+
+        func item(named name: String) -> ServiceCatalogItem? {
+            catalog.first {
+                $0.itemName.localizedCaseInsensitiveContains(name)
+            }
+        }
+
+        guard
+            let windows = item(named: "Window"),
+            let tracks = item(named: "Track"),
+            let screens = item(named: "Screen")
+        else {
+            return
+        }
+
+        recommendationRules.append(
+            RecommendationRule(
+                triggerCatalogItemID: windows.id,
+                recommendedCatalogItemIDs: [
+                    tracks.id,
+                    screens.id
+                ],
+                notes: "Default recommendation"
+            )
+        )
+    }
     
     private func generateMonthlyNumber(prefix: String, date: Date) -> String {
         let formatter = DateFormatter()
@@ -330,7 +375,8 @@ final class AppDataStore: ObservableObject {
             jobs: jobs,
             serviceCatalogItems: serviceCatalogItems,
             nextCustomerNumber: nextCustomerNumber,
-            recordSequencesByMonth: recordSequencesByMonth
+            recordSequencesByMonth: recordSequencesByMonth,
+            recommendationRules: recommendationRules,
         )
 
         do {
@@ -360,6 +406,8 @@ final class AppDataStore: ObservableObject {
             serviceCatalogItems = snapshot.serviceCatalogItems
             nextCustomerNumber = snapshot.nextCustomerNumber
             recordSequencesByMonth = snapshot.recordSequencesByMonth
+            recommendationRules = snapshot.recommendationRules
+            seedRecommendationRulesIfNeeded()
         } catch {
             print("Failed to load app data: \(error.localizedDescription)")
         }
@@ -380,4 +428,5 @@ private struct AppDataSnapshot: Codable {
     var serviceCatalogItems: [ServiceCatalogItem]
     var nextCustomerNumber: Int
     var recordSequencesByMonth: [String: Int]
+    var recommendationRules: [RecommendationRule]
 }

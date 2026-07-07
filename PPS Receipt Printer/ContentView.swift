@@ -3,7 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var store = AppDataStore()
     @StateObject private var printer = BluetoothPrinter()
-
+    
     var body: some View {
         TabView {
             DashboardView()
@@ -30,18 +30,26 @@ struct ContentView: View {
                 .tabItem {
                     Label("Items", systemImage: "book.pages")
                 }
-
+            
             SitesView()
                 .tabItem {
                     Label("Sites", systemImage: "house")
                 }
-
+            
             PrintView()
                 .tabItem {
                     Label("Print", systemImage: "printer")
                 }
+            RecommendationRuleEditorView()
+                .tabItem {
+                    Label ("Admin" , systemImage: "gear")
+                }
+            NavigationLink("Recommendation Rules") {
+                RecommendationRuleEditorView()
+                    .environmentObject(store)
+            }
+            .environmentObject(store)
+            .environmentObject(printer)
         }
-        .environmentObject(store)
-        .environmentObject(printer)
     }
 }
