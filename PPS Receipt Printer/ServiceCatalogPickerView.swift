@@ -21,12 +21,29 @@ struct ServiceCatalogPickerView: View {
     @State private var selectedCatalogItem: ServiceCatalogItem?
 
     private var filteredItems: [ServiceCatalogItem] {
-        CatalogRankingEngine.rankedItems(
+        let rankedItems = CatalogRankingEngine.rankedItems(
             query: searchText,
             catalogItems: store.activeServiceCatalogItems
         )
+
+        guard searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return rankedItems
+        }
+
+        let recommendedIDs = Set(recommendedItems.map { $0.id })
+
+        return rankedItems.filter {
+            !recommendedIDs.contains($0.id)
+        }
     }
 
+    private var recommendedItems: [ServiceCatalogItem] {
+        RecommendationEngine.recommendedCatalogItems(
+            currentLineItems: lineItems,
+            catalogItems: store.activeServiceCatalogItems,
+            recommendationRules: store.recommendationRules
+        )
+    }
     private var suggestedNewItemName: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -53,6 +70,32 @@ struct ServiceCatalogPickerView: View {
                     }
                 }
 
+                if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   !recommendedItems.isEmpty {
+                    Section("Recommended for This Work Order") {
+                        ForEach(recommendedItems.prefix(5)) { item in
+                            Button {
+                                selectedCatalogItem = item
+                            } label: {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(item.itemName)
+                                        .font(.headline)
+
+                                    if !item.itemDescription.isEmpty {
+                                        Text(item.itemDescription)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+
+                                    Text("\(item.defaultQuantity, specifier: "%.2f") × \(item.defaultPrice, format: .currency(code: "USD"))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(.vertical, 4)
+                            }
+                        }
+                    }
+                }
                 if filteredItems.isEmpty {
                     Section {
                         Text("No matching catalog items.")
