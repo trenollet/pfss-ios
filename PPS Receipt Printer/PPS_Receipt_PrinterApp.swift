@@ -9,9 +9,13 @@ import SwiftUI
 
 @main
 struct PPS_Receipt_PrinterApp: App {
+    @StateObject private var store = AppDataStore()
+    @StateObject private var printer = BluetoothPrinter()
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(store)
+                .environmentObject(printer)
         }
     }
 }

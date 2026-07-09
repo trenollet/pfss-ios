@@ -77,21 +77,7 @@ struct ServiceCatalogPickerView: View {
                             Button {
                                 selectedCatalogItem = item
                             } label: {
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(item.itemName)
-                                        .font(.headline)
-
-                                    if !item.itemDescription.isEmpty {
-                                        Text(item.itemDescription)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-
-                                    Text("\(item.defaultQuantity, specifier: "%.2f") × \(item.defaultPrice, format: .currency(code: "USD"))")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .padding(.vertical, 4)
+                                ServiceCatalogItemRowView(item: item)
                             }
                         }
                     }
@@ -107,27 +93,10 @@ struct ServiceCatalogPickerView: View {
                             Button {
                                 selectedCatalogItem = item
                             } label: {
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(item.itemName)
-                                        .font(.headline)
-
-                                    if !item.itemDescription.isEmpty {
-                                        Text(item.itemDescription)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-
-                                    Text("\(item.defaultQuantity, specifier: "%.2f") × \(item.defaultPrice, format: .currency(code: "USD"))")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-
-                                    if item.usageCount > 0 {
-                                        Text("Used \(item.usageCount) times")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .padding(.vertical, 4)
+                                ServiceCatalogItemRowView(
+                                    item: item,
+                                    showUsageCount: true
+                                )
                             }
                         }
                     }
