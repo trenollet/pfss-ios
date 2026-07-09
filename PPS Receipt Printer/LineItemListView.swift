@@ -13,7 +13,7 @@ struct LineItemListView: View {
     @Binding var lineItems: [ServiceLineItem]
     @FocusState.Binding var isInputFocused: Bool
 
-    @State private var selectedLineItem: ServiceLineItem?
+    @State private var selectedLineItemID: UUID?
 
 
     var body: some View {
@@ -24,7 +24,7 @@ struct LineItemListView: View {
             } else {
                 ForEach(lineItems) { item in
                     Button {
-                        selectedLineItem = item
+                        selectedLineItemID = item.id
                     } label: {
                         LineItemRowView(
                             item: item,
@@ -45,7 +45,7 @@ struct LineItemListView: View {
                         }
 
                         Button {
-                            selectedLineItem = item
+                            selectedLineItemID = item.id
                         } label: {
                             Label("Edit", systemImage: "pencil")
                         }
@@ -53,13 +53,25 @@ struct LineItemListView: View {
                 }
             }
         }
-        .sheet(item: $selectedLineItem) { item in
-            EditableLineItemView(
-                lineItems: $lineItems,
-                catalogItem: nil,
-                existingLineItem: item
+        .sheet(
+            isPresented: Binding(
+                get: { selectedLineItemID != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        selectedLineItemID = nil
+                    }
+                }
             )
-            .environmentObject(store)
+        ) {
+            if let selectedLineItemID,
+               let item = lineItems.first(where: { $0.id == selectedLineItemID }) {
+                EditableLineItemView(
+                    lineItems: $lineItems,
+                    catalogItem: nil,
+                    existingLineItem: item
+                )
+                .environmentObject(store)
+            }
         }
     }
 

@@ -100,7 +100,13 @@ struct EditableLineItemView: View {
         guard itemName.isEmpty else { return }
 
         if let existingLineItem {
-            itemName = existingLineItem.otherService
+            if !existingLineItem.otherService.isEmpty {
+                itemName = existingLineItem.otherService
+            } else if let catalogItemID = existingLineItem.catalogItemID,
+                      let catalogItem = store.serviceCatalogItems.first(where: { $0.id == catalogItemID }) {
+                itemName = catalogItem.itemName
+            }
+
             itemDescription = existingLineItem.description
             quantity = String(format: "%.2f", existingLineItem.quantity)
             unitPrice = String(format: "%.2f", existingLineItem.unitPrice)
