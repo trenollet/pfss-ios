@@ -16,6 +16,7 @@ struct WorkOrderEditorView: View {
     @FocusState.Binding var isInputFocused: Bool
 
     @State private var showingCatalogPicker = false
+    @State private var selectedLineItem: ServiceLineItem?
 
     var body: some View {
 
@@ -30,7 +31,10 @@ struct WorkOrderEditorView: View {
 
             LineItemListView(
                 lineItems: $lineItems,
-                isInputFocused: $isInputFocused
+                isInputFocused: $isInputFocused,
+                onEdit: { item in
+                    selectedLineItem = item
+                }
             )
             WorkOrderTotalsView(
                 lineItems: lineItems,
@@ -44,6 +48,14 @@ struct WorkOrderEditorView: View {
                 onFinished: {
                     showingCatalogPicker = false
                 }
+            )
+            .environmentObject(store)
+        }
+        .sheet(item: $selectedLineItem) { item in
+            EditableLineItemView(
+                lineItems: $lineItems,
+                catalogItem: nil,
+                existingLineItem: item
             )
             .environmentObject(store)
         }

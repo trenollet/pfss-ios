@@ -121,7 +121,7 @@ struct EstimatesView: View {
                                 Text(estimate.estimateNumber)
                                     .font(.headline)
 
-                                Text("Customer: \(estimate.customerNumber)")
+                                Text("Customer: \(customerDisplayName(for: estimate.customerNumber))")
                                     .font(.caption)
 
                                 Text("Total: \(estimate.total, format: .currency(code: "USD"))")
@@ -198,7 +198,23 @@ struct EstimatesView: View {
         if !lead.contactName.isEmpty { return lead.contactName }
         return "Unnamed Lead"
     }
+    private func customerDisplayName(for customerNumber: String) -> String {
+        guard let customer = store.customers.first(where: {
+            $0.customerNumber == customerNumber
+        }) else {
+            return customerNumber
+        }
 
+        if !customer.businessName.isEmpty {
+            return customer.businessName
+        }
+
+        if !customer.contactName.isEmpty {
+            return customer.contactName
+        }
+
+        return customerNumber
+    }
     private func serviceName(for item: ServiceLineItem) -> String {
         if item.serviceType == .other {
             return item.otherService.isEmpty ? "Other" : item.otherService

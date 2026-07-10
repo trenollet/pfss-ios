@@ -177,7 +177,7 @@ struct JobsView: View {
                                 Text(job.jobNumber)
                                     .font(.headline)
 
-                                Text("Customer: \(job.customerNumber)")
+                                Text("Customer: \(customerDisplayName(for: job.customerNumber))")
                                     .font(.caption)
 
                                 Text("Service: \(serviceName(for: job))")
@@ -267,5 +267,22 @@ struct JobsView: View {
         }
 
         return job.serviceType.rawValue
+    }
+    private func customerDisplayName(for customerNumber: String) -> String {
+        guard let customer = store.customers.first(where: {
+            $0.customerNumber == customerNumber
+        }) else {
+            return customerNumber
+        }
+
+        if !customer.businessName.isEmpty {
+            return customer.businessName
+        }
+
+        if !customer.contactName.isEmpty {
+            return customer.contactName
+        }
+
+        return customerNumber
     }
 }

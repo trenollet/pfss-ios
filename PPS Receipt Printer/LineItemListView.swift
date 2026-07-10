@@ -13,7 +13,7 @@ struct LineItemListView: View {
     @Binding var lineItems: [ServiceLineItem]
     @FocusState.Binding var isInputFocused: Bool
 
-    @State private var selectedLineItem: ServiceLineItem?
+    var onEdit: (ServiceLineItem) -> Void
 
 
     var body: some View {
@@ -22,40 +22,6 @@ struct LineItemListView: View {
                 Text("No line items yet.")
                     .foregroundStyle(.secondary)
             } else {
-// - slider style edit button
-//                ForEach(lineItems) { item in
-//                    Button {
-//                      openEditor(for: item)
-//                    } label: {
-//                        LineItemRowView(
-//                            item: item,
-//                            displayName: displayName(for: item)
-//                        )
-//                    }
-//                    .swipeActions(edge: .trailing) {
-//                        Button(role: .destructive) {
-//                            deleteItem(item)
-//                        } label: {
-//                            Label("Delete", systemImage: "trash")
-//                        }
-//
-//                        Button {
-//                            duplicateItem(item)
-//                        } label: {
-//                            Label("Duplicate", systemImage: "doc.on.doc")
-//                        }
-//
-//                        Button {
-//                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-//                                openEditor(for: item)
-//                            }
-//                        } label: {
-//                            Label("Edit", systemImage: "pencil")
-//                        }
-//                    }
-//                }
-//
-//  Button style edit button
                 ForEach(lineItems) { item in
                     HStack {
                         LineItemRowView(
@@ -64,7 +30,7 @@ struct LineItemListView: View {
                         )
 
                         Button {
-                            openEditor(for: item)
+                            onEdit(item)
                         } label: {
                             Image(systemName: "pencil.circle")
                                 .imageScale(.large)
@@ -87,22 +53,12 @@ struct LineItemListView: View {
                 }
             }
         }
-        .sheet(item: $selectedLineItem) { item in
-            EditableLineItemView(
-                lineItems: $lineItems,
-                catalogItem: nil,
-                existingLineItem: item
-            )
-            .environmentObject(store)
-        }
     }
 
     private func deleteItem(_ item: ServiceLineItem) {
         lineItems.removeAll { $0.id == item.id }
     }
-    private func openEditor(for item: ServiceLineItem) {
-        selectedLineItem = lineItems.first(where: { $0.id == item.id }) ?? item
-    }
+    
     private func duplicateItem(_ item: ServiceLineItem) {
         var duplicated = item
         duplicated.id = UUID()
