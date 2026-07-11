@@ -17,6 +17,8 @@ struct ServiceCatalogNewItemView: View {
     @State private var itemDescription = ""
     @State private var defaultQuantity = "1"
     @State private var defaultPrice = ""
+    @State private var itemType: CatalogItemType = .service
+    @State private var taxTreatment: TaxTreatment = .nonTaxable
 
     @FocusState private var isInputFocused: Bool
 
@@ -32,20 +34,33 @@ struct ServiceCatalogNewItemView: View {
         NavigationStack {
             Form {
                 Section("Catalog Item") {
+                    Picker("Item Type", selection: $itemType) {
+                        ForEach(CatalogItemType.allCases) { type in
+                            Text(type.rawValue)
+                                .tag(type)
+                        }
+                    }
                     TextField("Item Name", text: $itemName)
                         .focused($isInputFocused)
 
                     TextField("Item Description", text: $itemDescription, axis: .vertical)
                         .lineLimit(2...5)
                         .focused($isInputFocused)
+                
 
                     TextField("Default Quantity", text: $defaultQuantity)
                         .keyboardType(.decimalPad)
                         .focused($isInputFocused)
 
-                    TextField("Default Price", text: $defaultPrice)
+                    TextField("Price", text: $defaultPrice)
                         .keyboardType(.decimalPad)
                         .focused($isInputFocused)
+                    Picker("Tax Treatment", selection: $taxTreatment) {
+                        ForEach(TaxTreatment.allCases) { treatment in
+                            Text(treatment.rawValue)
+                                .tag(treatment)
+                        }
+                    }
                 }
 
                 Section {
@@ -54,7 +69,9 @@ struct ServiceCatalogNewItemView: View {
                             itemName: itemName,
                             itemDescription: itemDescription,
                             defaultQuantity: quantityValue,
-                            defaultPrice: priceValue
+                            defaultPrice: priceValue,
+                            itemType: itemType,
+                            taxTreatment: taxTreatment
                         )
 
                         store.addServiceCatalogItem(item)

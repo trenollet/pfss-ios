@@ -26,7 +26,7 @@ struct ContentView: View {
                 }
             ServiceCatalogView()
                 .tabItem {
-                    Label("Items", systemImage: "book.pages")
+                    Label("Catalog Items", systemImage: "book.pages")
                 }
             
             SitesView()

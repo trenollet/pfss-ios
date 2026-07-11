@@ -39,38 +39,72 @@ struct ServiceCatalogView: View {
                         NavigationLink {
                             ServiceCatalogDetailView(item: item)
                         } label: {
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(item.itemName)
-                                    .font(.headline)
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: symbolName(for: item.itemType))
+                                    .font(.title2)
+                                    .frame(width: 30)
+                                    .foregroundColor(.accentColor)
 
-                                if !item.itemDescription.isEmpty {
-                                    Text(item.itemDescription)
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(item.itemName)
+                                        .font(.headline)
+
+                                    if !item.itemDescription.isEmpty {
+                                        Text(item.itemDescription)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                    }
+
+                                    Text("\(item.itemType.rawValue) • \(item.taxTreatment.rawValue)")
                                         .font(.caption)
-                                }
+                                        .foregroundStyle(.secondary)
 
-                                Text("Default: \(item.defaultQuantity, specifier: "%.2f") × \(item.defaultPrice, format: .currency(code: "USD"))")
-                                    .font(.caption)
-
-                                Text("Used \(item.usageCount) times")
-                                    .font(.caption)
-
-                                if item.lifecycleStatus == .archived {
-                                    Text("Archived")
-                                        .foregroundStyle(.red)
+                                    HStack {
+                                        Text(
+                                            "\(item.defaultQuantity, specifier: "%.2f") × \(item.defaultPrice, format: .currency(code: "USD"))"
+                                        )
                                         .font(.caption)
+                                        .fontWeight(.medium)
+
+                                        Spacer()
+
+                                        Text("Used \(item.usageCount)×")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+
+                                    if item.lifecycleStatus == .archived {
+                                        Text("Archived")
+                                            .foregroundStyle(.red)
+                                            .font(.caption)
+                                            .fontWeight(.semibold)
+                                    }
                                 }
                             }
-                            .padding(.vertical, 4)
+                            .padding(.vertical, 6)
                         }
                     }
                 }
             }
-            .navigationTitle("Service Catalog")
-            .searchable(text: $searchText, prompt: "Search services")
+            .navigationTitle("Catalog")
+            .searchable(text: $searchText, prompt: "Search catalog")
             .sheet(isPresented: $showingNewItemForm) {
                 ServiceCatalogNewItemView()
                     .environmentObject(store)
             }
+        }
+    }
+    private func symbolName(for itemType: CatalogItemType) -> String {
+        switch itemType {
+        case .service:
+            return "wrench.and.screwdriver.fill"
+
+        case .material:
+            return "shippingbox.fill"
+
+        case .fee:
+            return "receipt.fill"
         }
     }
 }

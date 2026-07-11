@@ -221,6 +221,78 @@ struct ServiceCatalogItem: Identifiable, Codable {
     var usageCount: Int = 0
     var lastUsedDate: Date?
     var lifecycleStatus: RecordLifecycleStatus = .active
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case itemName
+        case itemDescription
+        case defaultQuantity
+        case defaultPrice
+        case itemType
+        case taxTreatment
+        case usageCount
+        case lastUsedDate
+        case lifecycleStatus
+    }
+
+    init(
+        id: UUID = UUID(),
+        itemName: String,
+        itemDescription: String,
+        defaultQuantity: Double,
+        defaultPrice: Double,
+        itemType: CatalogItemType = .service,
+        taxTreatment: TaxTreatment = .nonTaxable,
+        usageCount: Int = 0,
+        lastUsedDate: Date? = nil,
+        lifecycleStatus: RecordLifecycleStatus = .active
+    ) {
+        self.id = id
+        self.itemName = itemName
+        self.itemDescription = itemDescription
+        self.defaultQuantity = defaultQuantity
+        self.defaultPrice = defaultPrice
+        self.itemType = itemType
+        self.taxTreatment = taxTreatment
+        self.usageCount = usageCount
+        self.lastUsedDate = lastUsedDate
+        self.lifecycleStatus = lifecycleStatus
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        itemName = try container.decode(String.self, forKey: .itemName)
+        itemDescription = try container.decode(String.self, forKey: .itemDescription)
+        defaultQuantity = try container.decode(Double.self, forKey: .defaultQuantity)
+        defaultPrice = try container.decode(Double.self, forKey: .defaultPrice)
+
+        itemType = try container.decodeIfPresent(
+            CatalogItemType.self,
+            forKey: .itemType
+        ) ?? .service
+
+        taxTreatment = try container.decodeIfPresent(
+            TaxTreatment.self,
+            forKey: .taxTreatment
+        ) ?? .nonTaxable
+
+        usageCount = try container.decodeIfPresent(
+            Int.self,
+            forKey: .usageCount
+        ) ?? 0
+
+        lastUsedDate = try container.decodeIfPresent(
+            Date.self,
+            forKey: .lastUsedDate
+        )
+
+        lifecycleStatus = try container.decodeIfPresent(
+            RecordLifecycleStatus.self,
+            forKey: .lifecycleStatus
+        ) ?? .active
+    }
 }
 protocol WorkOrder {
     var lineItems: [ServiceLineItem] { get set }

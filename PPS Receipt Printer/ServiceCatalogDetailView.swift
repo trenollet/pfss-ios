@@ -17,22 +17,49 @@ struct ServiceCatalogDetailView: View {
     var body: some View {
         Form {
             Section("Catalog Item") {
+                Picker("Item Type", selection: $item.itemType) {
+                    ForEach(CatalogItemType.allCases) { type in
+                        Text(type.rawValue)
+                            .tag(type)
+                    }
+                }
+
                 TextField("Item Name", text: $item.itemName)
                     .focused($isInputFocused)
-
+                
+                
                 TextField("Item Description", text: $item.itemDescription, axis: .vertical)
                     .lineLimit(2...5)
                     .focused($isInputFocused)
 
-                TextField("Default Quantity", value: $item.defaultQuantity, format: .number)
+                LabeledContent("Quantity") {
+                    TextField(
+                        "Quantity",
+                        value: $item.defaultQuantity,
+                        format: .number
+                    )
+                    .multilineTextAlignment(.trailing)
                     .keyboardType(.decimalPad)
                     .focused($isInputFocused)
+                }
 
-                TextField("Default Price", value: $item.defaultPrice, format: .number)
+                LabeledContent("Price") {
+                    TextField(
+                        "Price",
+                        value: $item.defaultPrice,
+                        format: .currency(code: "USD")
+                    )
+                    .multilineTextAlignment(.trailing)
                     .keyboardType(.decimalPad)
                     .focused($isInputFocused)
+                }
             }
-
+            Picker("Tax Treatment", selection: $item.taxTreatment) {
+                ForEach(TaxTreatment.allCases) { treatment in
+                    Text(treatment.rawValue)
+                        .tag(treatment)
+                }
+            }
             Section("Usage") {
                 Text("Used \(item.usageCount) times")
 
