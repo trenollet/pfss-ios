@@ -113,6 +113,26 @@ Model recurring jobs as schedules or templates rather than only a Boolean flag.
 
 Use job-site locations and technician assignments to organize field routes.
 
+### OPS-004: Weather and Bulk Rescheduling
+
+Build a Job List Route workflow that can reschedule one job or an entire day's jobs because of weather, staffing, equipment failure, customer request, or other disruptions.
+
+Required capabilities:
+
+- Assign an estimated duration to every job so the scheduler can identify valid open time slots.
+- Move affected jobs into available openings later in the same week or into the following week.
+- Avoid displacing or changing unaffected jobs on other days.
+- Support bulk rescheduling for all jobs on a selected day while still allowing individual exceptions.
+- Preserve technician, route, customer, site, and service requirements when proposing new openings.
+- Warn when no suitable open slot exists rather than silently overbooking the schedule.
+- Preserve a rescheduling reason and history for operational review.
+
+Recurring scheduling rule:
+
+- A rescheduled occurrence must not change the underlying recurrence pattern.
+- Example: a monthly job scheduled for the 15th that is performed on the 16th because of rain must still generate future occurrences on the 15th.
+- Recurrence templates and individual job occurrences must therefore be stored separately. Rescheduling changes only the selected occurrence unless the user explicitly chooses to modify the recurring series.
+
 ## Platform Expansion
 
 ### PLATFORM-001: Multi-User Roles
