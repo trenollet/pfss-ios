@@ -8,22 +8,17 @@
 import SwiftUI
 
 struct WorkOrderEditorView: View {
-
-    @EnvironmentObject var store: AppDataStore
-
     @Binding var lineItems: [ServiceLineItem]
-
     @FocusState.Binding var isInputFocused: Bool
 
-    @State private var showingCatalogPicker = false
-    @State private var selectedLineItem: ServiceLineItem?
+    var onAddLineItem: () -> Void
+    var onEditLineItem: (ServiceLineItem) -> Void
 
     var body: some View {
-
         Section("Work Performed") {
-
             Button {
-                showingCatalogPicker = true
+                PresentationDebug.log("Add Line Item requested")
+                onAddLineItem()
             } label: {
                 Label("Add Line Item", systemImage: "plus.circle.fill")
             }
@@ -33,31 +28,17 @@ struct WorkOrderEditorView: View {
                 lineItems: $lineItems,
                 isInputFocused: $isInputFocused,
                 onEdit: { item in
-                    selectedLineItem = item
+                    PresentationDebug.log(
+                        "Edit requested for line item \(item.id)"
+                    )
+                    onEditLineItem(item)
                 }
             )
+
             WorkOrderTotalsView(
                 lineItems: lineItems,
                 discount: 0
             )
-        }
-        .sheet(isPresented: $showingCatalogPicker) {
-
-            ServiceCatalogPickerView(
-                lineItems: $lineItems,
-                onFinished: {
-                    showingCatalogPicker = false
-                }
-            )
-            .environmentObject(store)
-        }
-        .sheet(item: $selectedLineItem) { item in
-            EditableLineItemView(
-                lineItems: $lineItems,
-                catalogItem: nil,
-                existingLineItem: item
-            )
-            .environmentObject(store)
         }
     }
 }

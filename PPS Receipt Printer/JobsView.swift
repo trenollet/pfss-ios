@@ -32,6 +32,22 @@ struct JobsView: View {
     @State private var discount = ""
 
     @FocusState private var isInputFocused: Bool
+    @State private var activeSheet: ActiveSheet?
+
+    private enum ActiveSheet: Identifiable {
+        case catalogPicker
+        case editLineItem(ServiceLineItem)
+
+        var id: String {
+            switch self {
+            case .catalogPicker:
+                return "catalogPicker"
+
+            case .editLineItem(let item):
+                return "editLineItem-\(item.id)"
+            }
+        }
+    }
 
     private var availableSites: [CustomerSite] {
         store.activeSites.filter { $0.customerNumber == selectedCustomerNumber }
@@ -108,7 +124,20 @@ struct JobsView: View {
                         .lineLimit(3...6)
                         .focused($isInputFocused)
                 }
-                WorkOrderEditorView(lineItems: $lineItems, isInputFocused: $isInputFocused)
+                WorkOrderEditorView(
+                    lineItems: $lineItems,
+                    isInputFocused: $isInputFocused,
+                    onAddLineItem: {
+                        PresentationDebug.log("New job requested catalog picker")
+                        activeSheet = .catalogPicker
+                    },
+                    onEditLineItem: { item in
+                        PresentationDebug.log(
+                            "New job requested editor for \(item.id)"
+                        )
+                        activeSheet = .editLineItem(item)
+                    }
+                )
                 
                 Section("Pricing") {
                     TextField("Discount", text: $discount)
@@ -207,6 +236,26 @@ struct JobsView: View {
                     Button("Done") {
                         isInputFocused = false
                     }
+                }
+            }
+            .sheet(item: $activeSheet) { sheet in
+                switch sheet {
+                case .catalogPicker:
+                    ServiceCatalogPickerView(
+                        lineItems: $lineItems,
+                        onFinished: {
+                            activeSheet = nil
+                        }
+                    )
+                    .environmentObject(store)
+
+                case .editLineItem(let item):
+                    EditableLineItemView(
+                        lineItems: $lineItems,
+                        catalogItem: nil,
+                        existingLineItem: item
+                    )
+                    .environmentObject(store)
                 }
             }
         }
