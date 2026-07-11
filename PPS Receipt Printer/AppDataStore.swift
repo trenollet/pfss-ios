@@ -354,6 +354,59 @@ final class AppDataStore: ObservableObject {
             estimates[index].status = .converted
         }
     }
+    
+    @discardableResult
+    func createInvoiceFromJob(_ job: JobRecord) -> InvoiceRecord? {
+        guard job.status == .completed else {
+            return nil
+        }
+
+        guard !invoices.contains(where: { $0.jobNumber == job.jobNumber }) else {
+            return nil
+        }
+
+        let issueDate = Date()
+        let dueDate = Calendar.current.date(
+            byAdding: .day,
+            value: 30,
+            to: issueDate
+        ) ?? issueDate
+
+        let updatedLineItems = PricingCalculator.updatedLineItems(
+            job.lineItems
+        )
+
+        let subtotal = PricingCalculator.subtotal(
+            for: updatedLineItems
+        )
+
+        let total = PricingCalculator.total(
+            subtotal: subtotal,
+            discount: job.discount
+        )
+
+        let invoice = InvoiceRecord(
+            invoiceNumber: generateInvoiceNumber(),
+            customerNumber: job.customerNumber,
+            siteID: job.siteID,
+            jobNumber: job.jobNumber,
+            lineItems: updatedLineItems,
+            subtotal: subtotal,
+            discount: job.discount,
+            total: total,
+            amountPaid: 0,
+            balanceDue: total,
+            status: .draft,
+            issueDate: issueDate,
+            dueDate: dueDate,
+            paidDate: nil,
+            notes: job.workNotes
+        )
+
+        invoices.append(invoice)
+        return invoice
+    }
+    
     func seedRecommendationRulesIfNeeded() {
         guard recommendationRules.isEmpty else { return }
 

@@ -155,6 +155,20 @@ struct JobDetailView: View {
                 }
                 .buttonStyle(.borderedProminent)
 
+                if job.status == .completed &&
+                    !store.invoices.contains(where: { $0.jobNumber == job.jobNumber }) {
+
+                    Button {
+                        _ = store.createInvoiceFromJob(job)
+                    } label: {
+                        Label(
+                            "Create Invoice",
+                            systemImage: "doc.text.fill"
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                
                 if job.lifecycleStatus == .archived {
                     Button("Restore Job") {
                         store.restoreJob(job)

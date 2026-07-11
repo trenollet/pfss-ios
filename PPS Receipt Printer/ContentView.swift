@@ -24,6 +24,10 @@ struct ContentView: View {
                 .tabItem {
                     Label("Estimates", systemImage: "doc.text")
                 }
+            InvoicesView()
+                .tabItem {
+                    Label("Invoices", systemImage: "doc.text.fill")
+                }
             ServiceCatalogView()
                 .tabItem {
                     Label("Catalog Items", systemImage: "book.pages")
