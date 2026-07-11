@@ -92,6 +92,16 @@ enum PaymentStatus: String, CaseIterable, Identifiable, Codable {
 
     var id: String { rawValue }
 }
+enum InvoiceStatus: String, CaseIterable, Identifiable, Codable {
+    case draft = "Draft"
+    case sent = "Sent"
+    case partiallyPaid = "Partially Paid"
+    case paid = "Paid"
+    case overdue = "Overdue"
+    case void = "Void"
+
+    var id: String { rawValue }
+}
 
 enum RecordLifecycleStatus: String, CaseIterable, Identifiable, Codable {
     case active = "Active"
@@ -194,6 +204,33 @@ struct JobRecord: Identifiable, Codable, WorkOrder {
 
     var isRecurring: Bool
     var createdDate: Date
+
+    var lifecycleStatus: RecordLifecycleStatus = .active
+}
+struct InvoiceRecord: Identifiable, Codable, WorkOrder {
+    var id = UUID()
+
+    var invoiceNumber: String
+    var customerNumber: String
+    var siteID: UUID?
+    var jobNumber: String
+
+    var lineItems: [ServiceLineItem] = []
+
+    var subtotal: Double
+    var discount: Double
+    var total: Double
+
+    var amountPaid: Double
+    var balanceDue: Double
+
+    var status: InvoiceStatus
+
+    var issueDate: Date
+    var dueDate: Date
+    var paidDate: Date?
+
+    var notes: String
 
     var lifecycleStatus: RecordLifecycleStatus = .active
 }

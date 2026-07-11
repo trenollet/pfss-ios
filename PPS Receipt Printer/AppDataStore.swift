@@ -27,6 +27,9 @@ final class AppDataStore: ObservableObject {
     @Published var jobs: [JobRecord] = [] {
         didSet { saveData() }
     }
+    @Published var invoices: [InvoiceRecord] = [] {
+        didSet { saveData() }
+    }
     
     @Published var serviceCatalogItems: [ServiceCatalogItem] = [] {
         didSet { saveData() }
@@ -72,6 +75,13 @@ final class AppDataStore: ObservableObject {
 
     var archivedJobs: [JobRecord] {
         jobs.filter { $0.lifecycleStatus == .archived }
+    }
+    var activeInvoices: [InvoiceRecord] {
+        invoices.filter { $0.lifecycleStatus == .active }
+    }
+
+    var archivedInvoices: [InvoiceRecord] {
+        invoices.filter { $0.lifecycleStatus == .archived }
     }
     
     var activeServiceCatalogItems: [ServiceCatalogItem] {
@@ -272,6 +282,27 @@ final class AppDataStore: ObservableObject {
         updated.lifecycleStatus = .active
         updateServiceCatalogItem(updated)
     }
+    func addInvoice(_ invoice: InvoiceRecord) {
+        invoices.append(invoice)
+    }
+
+    func updateInvoice(_ invoice: InvoiceRecord) {
+        if let index = invoices.firstIndex(where: { $0.id == invoice.id }) {
+            invoices[index] = invoice
+        }
+    }
+
+    func archiveInvoice(_ invoice: InvoiceRecord) {
+        var updated = invoice
+        updated.lifecycleStatus = .archived
+        updateInvoice(updated)
+    }
+
+    func restoreInvoice(_ invoice: InvoiceRecord) {
+        var updated = invoice
+        updated.lifecycleStatus = .active
+        updateInvoice(updated)
+    }
     func convertLeadToCustomer(_ lead: Lead) {
         guard !customers.contains(where: { $0.phone == lead.phone && !$0.phone.isEmpty }) else {
             return
@@ -373,6 +404,7 @@ final class AppDataStore: ObservableObject {
             leads: leads,
             estimates: estimates,
             jobs: jobs,
+            invoices: invoices,
             serviceCatalogItems: serviceCatalogItems,
             nextCustomerNumber: nextCustomerNumber,
             recordSequencesByMonth: recordSequencesByMonth,
@@ -403,6 +435,7 @@ final class AppDataStore: ObservableObject {
             leads = snapshot.leads
             estimates = snapshot.estimates
             jobs = snapshot.jobs
+            invoices = snapshot.invoices
             serviceCatalogItems = snapshot.serviceCatalogItems
             nextCustomerNumber = snapshot.nextCustomerNumber
             recordSequencesByMonth = snapshot.recordSequencesByMonth
@@ -425,8 +458,100 @@ private struct AppDataSnapshot: Codable {
     var leads: [Lead]
     var estimates: [EstimateRecord]
     var jobs: [JobRecord]
+    var invoices: [InvoiceRecord]
     var serviceCatalogItems: [ServiceCatalogItem]
     var nextCustomerNumber: Int
     var recordSequencesByMonth: [String: Int]
     var recommendationRules: [RecommendationRule]
+
+    private enum CodingKeys: String, CodingKey {
+        case customers
+        case sites
+        case leads
+        case estimates
+        case jobs
+        case invoices
+        case serviceCatalogItems
+        case nextCustomerNumber
+        case recordSequencesByMonth
+        case recommendationRules
+    }
+
+    init(
+        customers: [Customer],
+        sites: [CustomerSite],
+        leads: [Lead],
+        estimates: [EstimateRecord],
+        jobs: [JobRecord],
+        invoices: [InvoiceRecord],
+        serviceCatalogItems: [ServiceCatalogItem],
+        nextCustomerNumber: Int,
+        recordSequencesByMonth: [String: Int],
+        recommendationRules: [RecommendationRule]
+    ) {
+        self.customers = customers
+        self.sites = sites
+        self.leads = leads
+        self.estimates = estimates
+        self.jobs = jobs
+        self.invoices = invoices
+        self.serviceCatalogItems = serviceCatalogItems
+        self.nextCustomerNumber = nextCustomerNumber
+        self.recordSequencesByMonth = recordSequencesByMonth
+        self.recommendationRules = recommendationRules
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        customers = try container.decode(
+            [Customer].self,
+            forKey: .customers
+        )
+
+        sites = try container.decode(
+            [CustomerSite].self,
+            forKey: .sites
+        )
+
+        leads = try container.decode(
+            [Lead].self,
+            forKey: .leads
+        )
+
+        estimates = try container.decode(
+            [EstimateRecord].self,
+            forKey: .estimates
+        )
+
+        jobs = try container.decode(
+            [JobRecord].self,
+            forKey: .jobs
+        )
+
+        invoices = try container.decodeIfPresent(
+            [InvoiceRecord].self,
+            forKey: .invoices
+        ) ?? []
+
+        serviceCatalogItems = try container.decode(
+            [ServiceCatalogItem].self,
+            forKey: .serviceCatalogItems
+        )
+
+        nextCustomerNumber = try container.decode(
+            Int.self,
+            forKey: .nextCustomerNumber
+        )
+
+        recordSequencesByMonth = try container.decode(
+            [String: Int].self,
+            forKey: .recordSequencesByMonth
+        )
+
+        recommendationRules = try container.decodeIfPresent(
+            [RecommendationRule].self,
+            forKey: .recommendationRules
+        ) ?? []
+    }
 }
