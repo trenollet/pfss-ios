@@ -16,6 +16,22 @@ enum ServiceType: String, CaseIterable, Identifiable, Codable {
 
     var id: String { rawValue }
 }
+enum CatalogItemType: String, CaseIterable, Identifiable, Codable {
+    case service = "Service"
+    case material = "Material"
+    case fee = "Fee"
+
+    var id: String { rawValue }
+}
+
+enum TaxTreatment: String, CaseIterable, Identifiable, Codable {
+    case nonTaxable = "Non-Taxable"
+    case taxable = "Taxable"
+    case taxIncluded = "Tax Included"
+    case exempt = "Exempt"
+
+    var id: String { rawValue }
+}
 
 enum LeadSource: String, CaseIterable, Identifiable, Codable {
     case website = "Website"
@@ -200,6 +216,8 @@ struct ServiceCatalogItem: Identifiable, Codable {
     var itemDescription: String
     var defaultQuantity: Double
     var defaultPrice: Double
+    var itemType: CatalogItemType = .service
+    var taxTreatment: TaxTreatment = .nonTaxable
     var usageCount: Int = 0
     var lastUsedDate: Date?
     var lifecycleStatus: RecordLifecycleStatus = .active

@@ -15,12 +15,21 @@ struct WorkOrderEditorView: View {
     var onEditLineItem: (ServiceLineItem) -> Void
 
     var body: some View {
-        Section("Work Performed") {
+        Section("Services & Materials") {
             Button {
                 PresentationDebug.log("Add Line Item requested")
                 onAddLineItem()
             } label: {
-                Label("Add Line Item", systemImage: "plus.circle.fill")
+                HStack {
+                    Spacer()
+
+                    Image(systemName: "plus.circle.fill")
+
+                    Text("Add Line Item")
+                        .fontWeight(.semibold)
+
+                    Spacer()
+                }
             }
             .buttonStyle(.borderedProminent)
 
