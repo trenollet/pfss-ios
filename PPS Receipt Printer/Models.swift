@@ -180,6 +180,27 @@ struct CustomerSite: Identifiable, Codable {
     var workNotes: String
     var lifecycleStatus: RecordLifecycleStatus = .active
 }
+
+struct BusinessProfile: Codable {
+    var businessName: String = ""
+    var contactName: String = ""
+
+    var phone: String = ""
+    var email: String = ""
+    var website: String = ""
+
+    var addressLine1: String = ""
+    var addressLine2: String = ""
+    var city: String = ""
+    var state: String = ""
+    var postalCode: String = ""
+
+    var invoiceHeaderText: String = ""
+    var invoiceFooterText: String = ""
+
+    var logoData: Data?
+}
+
 struct JobRecord: Identifiable, Codable, WorkOrder {
     var id = UUID()
     var jobNumber: String

@@ -42,9 +42,9 @@ struct ContentView: View {
                 .tabItem {
                     Label("Print", systemImage: "printer")
                 }
-            RecommendationRuleEditorView()
+            AdminView()
                 .tabItem {
-                    Label ("Admin" , systemImage: "gear")
+                    Label("Admin", systemImage: "gear")
                 }
             }
         }

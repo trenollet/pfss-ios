@@ -30,7 +30,9 @@ final class AppDataStore: ObservableObject {
     @Published var invoices: [InvoiceRecord] = [] {
         didSet { saveData() }
     }
-    
+    @Published var businessProfile = BusinessProfile() {
+        didSet { saveData() }
+    }
     @Published var serviceCatalogItems: [ServiceCatalogItem] = [] {
         didSet { saveData() }
     }
@@ -458,6 +460,7 @@ final class AppDataStore: ObservableObject {
             estimates: estimates,
             jobs: jobs,
             invoices: invoices,
+            businessProfile: businessProfile,
             serviceCatalogItems: serviceCatalogItems,
             nextCustomerNumber: nextCustomerNumber,
             recordSequencesByMonth: recordSequencesByMonth,
@@ -489,6 +492,7 @@ final class AppDataStore: ObservableObject {
             estimates = snapshot.estimates
             jobs = snapshot.jobs
             invoices = snapshot.invoices
+            businessProfile = snapshot.businessProfile
             serviceCatalogItems = snapshot.serviceCatalogItems
             nextCustomerNumber = snapshot.nextCustomerNumber
             recordSequencesByMonth = snapshot.recordSequencesByMonth
@@ -512,6 +516,7 @@ private struct AppDataSnapshot: Codable {
     var estimates: [EstimateRecord]
     var jobs: [JobRecord]
     var invoices: [InvoiceRecord]
+    var businessProfile: BusinessProfile
     var serviceCatalogItems: [ServiceCatalogItem]
     var nextCustomerNumber: Int
     var recordSequencesByMonth: [String: Int]
@@ -524,6 +529,7 @@ private struct AppDataSnapshot: Codable {
         case estimates
         case jobs
         case invoices
+        case businessProfile
         case serviceCatalogItems
         case nextCustomerNumber
         case recordSequencesByMonth
@@ -537,6 +543,7 @@ private struct AppDataSnapshot: Codable {
         estimates: [EstimateRecord],
         jobs: [JobRecord],
         invoices: [InvoiceRecord],
+        businessProfile: BusinessProfile,
         serviceCatalogItems: [ServiceCatalogItem],
         nextCustomerNumber: Int,
         recordSequencesByMonth: [String: Int],
@@ -548,6 +555,7 @@ private struct AppDataSnapshot: Codable {
         self.estimates = estimates
         self.jobs = jobs
         self.invoices = invoices
+        self.businessProfile = businessProfile
         self.serviceCatalogItems = serviceCatalogItems
         self.nextCustomerNumber = nextCustomerNumber
         self.recordSequencesByMonth = recordSequencesByMonth
@@ -587,6 +595,11 @@ private struct AppDataSnapshot: Codable {
             forKey: .invoices
         ) ?? []
 
+        businessProfile = try container.decodeIfPresent(
+            BusinessProfile.self,
+            forKey: .businessProfile
+        ) ?? BusinessProfile()
+        
         serviceCatalogItems = try container.decode(
             [ServiceCatalogItem].self,
             forKey: .serviceCatalogItems

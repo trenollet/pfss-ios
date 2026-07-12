@@ -6,12 +6,17 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct InvoiceDetailView: View {
     @EnvironmentObject var store: AppDataStore
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject var printer: BluetoothPrinter
 
     @State var invoice: InvoiceRecord
+    @State private var sharedPDFURL: URL?
+    @State private var pdfErrorMessage: String?
+    @State private var isShowingPDFError = false
     @FocusState private var isInputFocused: Bool
 
     private var customerDisplayName: String {
@@ -171,6 +176,38 @@ struct InvoiceDetailView: View {
             }
 
             Section {
+                Button {
+                    createAndSharePDF()
+                } label: {
+                    HStack {
+                        Spacer()
+
+                        Label(
+                            "Share Invoice",
+                            systemImage: "square.and.arrow.up"
+                        )
+
+                        Spacer()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                Button {
+                    printThermalReceipt()
+                } label: {
+                    HStack {
+                        Spacer()
+
+                        Label(
+                            "Print Receipt",
+                            systemImage: "printer.fill"
+                        )
+
+                        Spacer()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!printer.isReadyToPrint)
+                
                 Button("Save Changes") {
                     saveInvoice()
                 }
@@ -203,6 +240,33 @@ struct InvoiceDetailView: View {
                     isInputFocused = false
                 }
             }
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { sharedPDFURL != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        sharedPDFURL = nil
+                    }
+                }
+            )
+        ) {
+            if let sharedPDFURL {
+                ActivityView(
+                    activityItems: [sharedPDFURL]
+                )
+            }
+        }
+        .alert(
+            "Unable to Share Invoice",
+            isPresented: $isShowingPDFError
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(
+                pdfErrorMessage ??
+                "The invoice PDF could not be created."
+            )
         }
     }
 
@@ -241,7 +305,68 @@ struct InvoiceDetailView: View {
         store.updateInvoice(invoice)
         dismiss()
     }
+    private func createAndSharePDF() {
+        isInputFocused = false
 
+        let customer = store.customers.first(where: {
+            $0.customerNumber == invoice.customerNumber
+        })
+
+        let site: CustomerSite?
+
+        if let siteID = invoice.siteID {
+            site = store.sites.first(where: {
+                $0.id == siteID
+            })
+        } else {
+            site = nil
+        }
+
+        do {
+            let pdfURL = try InvoicePDFRenderer.createPDF(
+                invoice: invoice,
+                businessProfile: store.businessProfile,
+                customer: customer,
+                site: site,
+                catalogItems: store.serviceCatalogItems
+            )
+
+            sharedPDFURL = pdfURL
+        } catch {
+            pdfErrorMessage = error.localizedDescription
+            isShowingPDFError = true
+        }
+    }
+
+    private func printThermalReceipt() {
+        isInputFocused = false
+
+        let customer = store.customers.first(where: {
+            $0.customerNumber == invoice.customerNumber
+        })
+
+        let site: CustomerSite?
+
+        if let siteID = invoice.siteID {
+            site = store.sites.first(where: {
+                $0.id == siteID
+            })
+        } else {
+            site = nil
+        }
+
+        let receiptText = ThermalReceiptRenderer.render(
+            invoice: invoice,
+            businessProfile: store.businessProfile,
+            customer: customer,
+            site: site,
+            catalogItems: store.serviceCatalogItems
+        )
+
+        printer.printReceiptText(receiptText)
+    }
+    
+    
     private func serviceName(
         for item: ServiceLineItem
     ) -> String {

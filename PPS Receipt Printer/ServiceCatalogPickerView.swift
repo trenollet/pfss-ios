@@ -106,7 +106,7 @@ struct ServiceCatalogPickerView: View {
             .searchable(text: $searchText, prompt: "Search services")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button("Back") {
                         dismiss()
                     }
                 }
