@@ -170,9 +170,9 @@ struct BusinessProfileView: View {
                 .focused($isInputFocused)
             }
 
-            Section("Invoice Defaults") {
+            Section("Document Defaults") {
                 TextField(
-                    "Invoice Header Text",
+                    "Document Header Text",
                     text: $profile.invoiceHeaderText,
                     axis: .vertical
                 )
@@ -180,7 +180,7 @@ struct BusinessProfileView: View {
                 .focused($isInputFocused)
 
                 TextField(
-                    "Invoice Footer Text",
+                    "Document Footer Text",
                     text: $profile.invoiceFooterText,
                     axis: .vertical
                 )

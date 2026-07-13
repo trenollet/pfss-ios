@@ -15,6 +15,9 @@ struct EstimateDetailView: View {
     @FocusState private var isInputFocused: Bool
     
     @State private var activeSheet: ActiveSheet?
+    @State private var sharedPDFURL: URL?
+    @State private var pdfErrorMessage: String?
+    @State private var isShowingPDFError = false
 
     private enum ActiveSheet: Identifiable {
         case catalogPicker
@@ -96,6 +99,21 @@ struct EstimateDetailView: View {
             }
 
             Section {
+                Button {
+                    createAndSharePDF()
+                } label: {
+                    HStack {
+                        Spacer()
+
+                        Label(
+                            "Share Estimate",
+                            systemImage: "square.and.arrow.up"
+                        )
+
+                        Spacer()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
                 Button("Create Job from Estimate") {
                     estimate.lineItems = PricingCalculator.updatedLineItems(estimate.lineItems)
                     estimate.subtotal = subtotalValue
@@ -171,8 +189,79 @@ struct EstimateDetailView: View {
                 .environmentObject(store)
             }
         }
+        .sheet(
+            isPresented: Binding(
+                get: { sharedPDFURL != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        sharedPDFURL = nil
+                    }
+                }
+            )
+        ) {
+            if let sharedPDFURL {
+                ActivityView(
+                    activityItems: [sharedPDFURL]
+                )
+            }
+        }
+        .alert(
+            "Unable to Share Estimate",
+            isPresented: $isShowingPDFError
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(
+                pdfErrorMessage ??
+                "The estimate PDF could not be created."
+            )
+        }
     }
+    private func createAndSharePDF() {
+        isInputFocused = false
 
+        estimate.lineItems = PricingCalculator.updatedLineItems(
+            estimate.lineItems
+        )
+
+        estimate.subtotal = PricingCalculator.subtotal(
+            for: estimate
+        )
+
+        estimate.total = PricingCalculator.total(
+            for: estimate
+        )
+
+        let customer = store.customers.first(where: {
+            $0.customerNumber == estimate.customerNumber
+        })
+
+        let site: CustomerSite?
+
+        if let siteID = estimate.siteID {
+            site = store.sites.first(where: {
+                $0.id == siteID
+            })
+        } else {
+            site = nil
+        }
+
+        do {
+            let pdfURL = try EstimatePDFRenderer.createPDF(
+                estimate: estimate,
+                businessProfile: store.businessProfile,
+                customer: customer,
+                site: site,
+                catalogItems: store.serviceCatalogItems
+            )
+
+            sharedPDFURL = pdfURL
+        } catch {
+            pdfErrorMessage = error.localizedDescription
+            isShowingPDFError = true
+        }
+    }
+    
     private func serviceName(for item: ServiceLineItem) -> String {
         if item.serviceType == .other {
             return item.otherService.isEmpty ? "Other" : item.otherService

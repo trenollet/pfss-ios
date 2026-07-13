@@ -6,6 +6,14 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A2143EED2FF2B234003C0285 /* BluetoothPrinter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2143ED92FF2B234003C0285 /* BluetoothPrinter.swift */; };
+		A2143F3C3003EF8B003C0285 /* InvoicePDFRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2143F3B3003EF8B003C0285 /* InvoicePDFRenderer.swift */; };
+		A2143F3E300402C3003C0285 /* ThermalReceiptRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2143F3D300402C3003C0285 /* ThermalReceiptRenderer.swift */; };
+		A2143F42300407F9003C0285 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2143F41300407F9003C0285 /* ActivityView.swift */; };
+		A2143F44300461B7003C0285 /* EstimatePDFRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2143F43300461B7003C0285 /* EstimatePDFRenderer.swift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		A246443F2FEB424900DFECC5 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -24,6 +32,11 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		A2143ED92FF2B234003C0285 /* BluetoothPrinter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BluetoothPrinter.swift; sourceTree = "<group>"; };
+		A2143F3B3003EF8B003C0285 /* InvoicePDFRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InvoicePDFRenderer.swift; sourceTree = "<group>"; };
+		A2143F3D300402C3003C0285 /* ThermalReceiptRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThermalReceiptRenderer.swift; sourceTree = "<group>"; };
+		A2143F41300407F9003C0285 /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
+		A2143F43300461B7003C0285 /* EstimatePDFRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EstimatePDFRenderer.swift; sourceTree = "<group>"; };
 		A24644312FEB424700DFECC5 /* PPS Receipt Printer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "PPS Receipt Printer.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A246443E2FEB424900DFECC5 /* PPS Receipt PrinterTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "PPS Receipt PrinterTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A24644482FEB424900DFECC5 /* PPS Receipt PrinterUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "PPS Receipt PrinterUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -72,10 +85,47 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		A2143F45300471DA003C0285 /* Printing */ = {
+			isa = PBXGroup;
+			children = (
+				A2143ED92FF2B234003C0285 /* BluetoothPrinter.swift */,
+			);
+			path = Printing;
+			sourceTree = "<group>";
+		};
+		A2143F4730047247003C0285 /* Rendering PDF */ = {
+			isa = PBXGroup;
+			children = (
+				A2143F3B3003EF8B003C0285 /* InvoicePDFRenderer.swift */,
+				A2143F43300461B7003C0285 /* EstimatePDFRenderer.swift */,
+			);
+			path = "Rendering PDF";
+			sourceTree = "<group>";
+		};
+		A2143F4830047262003C0285 /* Sharing */ = {
+			isa = PBXGroup;
+			children = (
+				A2143F41300407F9003C0285 /* ActivityView.swift */,
+			);
+			path = Sharing;
+			sourceTree = "<group>";
+		};
+		A2143F49300472A3003C0285 /* Rendering Thermal */ = {
+			isa = PBXGroup;
+			children = (
+				A2143F3D300402C3003C0285 /* ThermalReceiptRenderer.swift */,
+			);
+			path = "Rendering Thermal";
+			sourceTree = "<group>";
+		};
 		A24644282FEB424700DFECC5 = {
 			isa = PBXGroup;
 			children = (
 				A24644332FEB424700DFECC5 /* PPS Receipt Printer */,
+				A2143F49300472A3003C0285 /* Rendering Thermal */,
+				A2143F4830047262003C0285 /* Sharing */,
+				A2143F4730047247003C0285 /* Rendering PDF */,
+				A2143F45300471DA003C0285 /* Printing */,
 				A24644412FEB424900DFECC5 /* PPS Receipt PrinterTests */,
 				A246444B2FEB424900DFECC5 /* PPS Receipt PrinterUITests */,
 				A24644322FEB424700DFECC5 /* Products */,
@@ -236,6 +286,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A2143EED2FF2B234003C0285 /* BluetoothPrinter.swift in Sources */,
+				A2143F44300461B7003C0285 /* EstimatePDFRenderer.swift in Sources */,
+				A2143F42300407F9003C0285 /* ActivityView.swift in Sources */,
+				A2143F3C3003EF8B003C0285 /* InvoicePDFRenderer.swift in Sources */,
+				A2143F3E300402C3003C0285 /* ThermalReceiptRenderer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

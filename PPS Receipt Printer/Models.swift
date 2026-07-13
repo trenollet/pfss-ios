@@ -201,6 +201,7 @@ struct BusinessProfile: Codable {
     var logoData: Data?
 }
 
+
 struct JobRecord: Identifiable, Codable, WorkOrder {
     var id = UUID()
     var jobNumber: String
