@@ -96,6 +96,21 @@ struct EstimateDetailView: View {
                     Text(totalValue, format: .currency(code: "USD"))
                         .bold()
                 }
+                Section("Scheduling") {
+                    HStack {
+                        Text("Estimated Labor")
+
+                        Spacer()
+
+                        Text(
+                            SchedulingCalculator.formattedDuration(
+                                for: estimate.lineItems
+                            )
+                        )
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.blue)
+                    }
+                }
             }
 
             Section {

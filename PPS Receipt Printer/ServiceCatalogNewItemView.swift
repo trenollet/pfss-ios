@@ -17,6 +17,7 @@ struct ServiceCatalogNewItemView: View {
     @State private var itemDescription = ""
     @State private var defaultQuantity = "1"
     @State private var defaultPrice = ""
+    @State private var estimatedMinutesPerUnit = ""
     @State private var itemType: CatalogItemType = .service
     @State private var taxTreatment: TaxTreatment = .nonTaxable
 
@@ -28,6 +29,9 @@ struct ServiceCatalogNewItemView: View {
 
     private var priceValue: Double {
         Double(defaultPrice) ?? 0
+    }
+    private var estimatedMinutesValue: Int {
+        max(Int(estimatedMinutesPerUnit) ?? 0, 0)
     }
 
     var body: some View {
@@ -48,13 +52,36 @@ struct ServiceCatalogNewItemView: View {
                         .focused($isInputFocused)
                 
 
-                    TextField("Default Quantity", text: $defaultQuantity)
+                    LabeledContent("Default Quantity") {
+                        TextField(
+                            "Quantity",
+                            text: $defaultQuantity
+                        )
+                        .multilineTextAlignment(.trailing)
                         .keyboardType(.decimalPad)
                         .focused($isInputFocused)
+                    }
 
-                    TextField("Price", text: $defaultPrice)
+                    LabeledContent("Price") {
+                        TextField(
+                            "Price",
+                            text: $defaultPrice
+                        )
+                        .multilineTextAlignment(.trailing)
                         .keyboardType(.decimalPad)
                         .focused($isInputFocused)
+                    }
+                    
+                    LabeledContent("Estimated Minutes Per Unit") {
+                        TextField(
+                            "Minutes",
+                            text: $estimatedMinutesPerUnit
+                        )
+                        .multilineTextAlignment(.trailing)
+                        .keyboardType(.numberPad)
+                        .focused($isInputFocused)
+                    }
+                    
                     Picker("Tax Treatment", selection: $taxTreatment) {
                         ForEach(TaxTreatment.allCases) { treatment in
                             Text(treatment.rawValue)
@@ -70,6 +97,7 @@ struct ServiceCatalogNewItemView: View {
                             itemDescription: itemDescription,
                             defaultQuantity: quantityValue,
                             defaultPrice: priceValue,
+                            estimatedMinutesPerUnit: estimatedMinutesValue,
                             itemType: itemType,
                             taxTreatment: taxTreatment
                         )

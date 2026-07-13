@@ -219,6 +219,7 @@ struct JobRecord: Identifiable, Codable, WorkOrder {
     var primaryTechnician: String
     var secondaryTechnician: String
     var scheduledDate: Date
+    var scheduledDurationOverrideMinutes: Int? = nil
     var completedDate: Date?
 
     var status: JobStatus
@@ -268,6 +269,93 @@ struct ServiceLineItem: Identifiable, Codable {
     var quantity: Double
     var unitPrice: Double
     var lineTotal: Double
+
+    var estimatedMinutesPerUnit: Int = 0
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case catalogItemID
+        case serviceType
+        case otherService
+        case description
+        case quantity
+        case unitPrice
+        case lineTotal
+        case estimatedMinutesPerUnit
+    }
+
+    init(
+        id: UUID = UUID(),
+        catalogItemID: UUID? = nil,
+        serviceType: ServiceType,
+        otherService: String,
+        description: String,
+        quantity: Double,
+        unitPrice: Double,
+        lineTotal: Double,
+        estimatedMinutesPerUnit: Int = 0
+    ) {
+        self.id = id
+        self.catalogItemID = catalogItemID
+        self.serviceType = serviceType
+        self.otherService = otherService
+        self.description = description
+        self.quantity = quantity
+        self.unitPrice = unitPrice
+        self.lineTotal = lineTotal
+        self.estimatedMinutesPerUnit = estimatedMinutesPerUnit
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(
+            keyedBy: CodingKeys.self
+        )
+
+        id = try container.decodeIfPresent(
+            UUID.self,
+            forKey: .id
+        ) ?? UUID()
+
+        catalogItemID = try container.decodeIfPresent(
+            UUID.self,
+            forKey: .catalogItemID
+        )
+
+        serviceType = try container.decode(
+            ServiceType.self,
+            forKey: .serviceType
+        )
+
+        otherService = try container.decode(
+            String.self,
+            forKey: .otherService
+        )
+
+        description = try container.decode(
+            String.self,
+            forKey: .description
+        )
+
+        quantity = try container.decode(
+            Double.self,
+            forKey: .quantity
+        )
+
+        unitPrice = try container.decode(
+            Double.self,
+            forKey: .unitPrice
+        )
+
+        lineTotal = try container.decode(
+            Double.self,
+            forKey: .lineTotal
+        )
+
+        estimatedMinutesPerUnit = try container.decodeIfPresent(
+            Int.self,
+            forKey: .estimatedMinutesPerUnit
+        ) ?? 0
+    }
 }
 struct ServiceCatalogItem: Identifiable, Codable {
     var id = UUID()
@@ -275,6 +363,7 @@ struct ServiceCatalogItem: Identifiable, Codable {
     var itemDescription: String
     var defaultQuantity: Double
     var defaultPrice: Double
+    var estimatedMinutesPerUnit: Int = 0
     var itemType: CatalogItemType = .service
     var taxTreatment: TaxTreatment = .nonTaxable
     var usageCount: Int = 0
@@ -287,6 +376,7 @@ struct ServiceCatalogItem: Identifiable, Codable {
         case itemDescription
         case defaultQuantity
         case defaultPrice
+        case estimatedMinutesPerUnit
         case itemType
         case taxTreatment
         case usageCount
@@ -300,6 +390,7 @@ struct ServiceCatalogItem: Identifiable, Codable {
         itemDescription: String,
         defaultQuantity: Double,
         defaultPrice: Double,
+        estimatedMinutesPerUnit: Int = 0,
         itemType: CatalogItemType = .service,
         taxTreatment: TaxTreatment = .nonTaxable,
         usageCount: Int = 0,
@@ -311,6 +402,7 @@ struct ServiceCatalogItem: Identifiable, Codable {
         self.itemDescription = itemDescription
         self.defaultQuantity = defaultQuantity
         self.defaultPrice = defaultPrice
+        self.estimatedMinutesPerUnit = estimatedMinutesPerUnit
         self.itemType = itemType
         self.taxTreatment = taxTreatment
         self.usageCount = usageCount
@@ -326,6 +418,10 @@ struct ServiceCatalogItem: Identifiable, Codable {
         itemDescription = try container.decode(String.self, forKey: .itemDescription)
         defaultQuantity = try container.decode(Double.self, forKey: .defaultQuantity)
         defaultPrice = try container.decode(Double.self, forKey: .defaultPrice)
+        estimatedMinutesPerUnit = try container.decodeIfPresent(
+            Int.self,
+            forKey: .estimatedMinutesPerUnit
+        ) ?? 0
 
         itemType = try container.decodeIfPresent(
             CatalogItemType.self,

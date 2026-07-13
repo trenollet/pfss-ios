@@ -21,6 +21,7 @@ struct EditableLineItemView: View {
     @State private var itemDescription = ""
     @State private var quantity = "1"
     @State private var unitPrice = ""
+    @State private var estimatedMinutesPerUnit = ""
 
     @FocusState private var isInputFocused: Bool
 
@@ -34,6 +35,9 @@ struct EditableLineItemView: View {
 
     private var unitPriceValue: Double {
         Double(unitPrice) ?? 0
+    }
+    private var estimatedMinutesValue: Int {
+        max(Int(estimatedMinutesPerUnit) ?? 0, 0)
     }
 
     private var lineTotal: Double {
@@ -58,6 +62,16 @@ struct EditableLineItemView: View {
                     TextField("Unit Price", text: $unitPrice)
                         .keyboardType(.decimalPad)
                         .focused($isInputFocused)
+                    
+                    LabeledContent("Estimated Minutes Per Unit") {
+                        TextField(
+                            "Minutes",
+                            text: $estimatedMinutesPerUnit
+                        )
+                        .multilineTextAlignment(.trailing)
+                        .keyboardType(.numberPad)
+                        .focused($isInputFocused)
+                    }
 
                     HStack {
                         Text("Line Total")
@@ -110,6 +124,9 @@ struct EditableLineItemView: View {
             itemDescription = existingLineItem.description
             quantity = String(format: "%.2f", existingLineItem.quantity)
             unitPrice = String(format: "%.2f", existingLineItem.unitPrice)
+            estimatedMinutesPerUnit = String(
+                existingLineItem.estimatedMinutesPerUnit
+            )
             return
         }
 
@@ -118,6 +135,9 @@ struct EditableLineItemView: View {
             itemDescription = catalogItem.itemDescription
             quantity = String(format: "%.2f", catalogItem.defaultQuantity)
             unitPrice = String(format: "%.2f", catalogItem.defaultPrice)
+            estimatedMinutesPerUnit = String(
+                catalogItem.estimatedMinutesPerUnit
+            )
         }
     }
 
@@ -130,7 +150,8 @@ struct EditableLineItemView: View {
             description: itemDescription,
             quantity: quantityValue,
             unitPrice: unitPriceValue,
-            lineTotal: lineTotal
+            lineTotal: lineTotal,
+            estimatedMinutesPerUnit: estimatedMinutesValue
         )
 
         if let existingLineItem,

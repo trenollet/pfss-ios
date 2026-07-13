@@ -53,13 +53,29 @@ struct ServiceCatalogDetailView: View {
                     .keyboardType(.decimalPad)
                     .focused($isInputFocused)
                 }
-            }
-            Picker("Tax Treatment", selection: $item.taxTreatment) {
-                ForEach(TaxTreatment.allCases) { treatment in
-                    Text(treatment.rawValue)
-                        .tag(treatment)
+
+                LabeledContent("Estimated Minutes Per Unit") {
+                    TextField(
+                        "Minutes",
+                        value: $item.estimatedMinutesPerUnit,
+                        format: .number
+                    )
+                    .multilineTextAlignment(.trailing)
+                    .keyboardType(.numberPad)
+                    .focused($isInputFocused)
+                }
+
+                Picker(
+                    "Tax Treatment",
+                    selection: $item.taxTreatment
+                ) {
+                    ForEach(TaxTreatment.allCases) { treatment in
+                        Text(treatment.rawValue)
+                            .tag(treatment)
+                    }
                 }
             }
+
             Section("Usage") {
                 Text("Used \(item.usageCount) times")
 
