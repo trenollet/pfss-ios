@@ -119,6 +119,149 @@ enum JobStatus: String, CaseIterable, Identifiable, Codable {
 
     var id: String { rawValue }
 }
+enum EmployeeRole: String, CaseIterable, Identifiable, Codable {
+    case owner = "Owner"
+    case manager = "Manager"
+    case office = "Office"
+    case salesperson = "Salesperson"
+    case technician = "Technician"
+
+    var id: String { rawValue }
+
+    var canOverrideScheduling: Bool {
+        switch self {
+        case .owner, .manager:
+            return true
+
+        case .office, .salesperson, .technician:
+            return false
+        }
+    }
+}
+
+enum Workday: Int, CaseIterable, Identifiable, Codable {
+    case sunday = 1
+    case monday = 2
+    case tuesday = 3
+    case wednesday = 4
+    case thursday = 5
+    case friday = 6
+    case saturday = 7
+
+    var id: Int { rawValue }
+
+    var name: String {
+        switch self {
+        case .sunday:
+            return "Sunday"
+        case .monday:
+            return "Monday"
+        case .tuesday:
+            return "Tuesday"
+        case .wednesday:
+            return "Wednesday"
+        case .thursday:
+            return "Thursday"
+        case .friday:
+            return "Friday"
+        case .saturday:
+            return "Saturday"
+        }
+    }
+
+    var shortName: String {
+        String(name.prefix(3))
+    }
+
+    static let standardWorkweek: Set<Workday> = [
+        .monday,
+        .tuesday,
+        .wednesday,
+        .thursday,
+        .friday
+    ]
+}
+
+struct EmployeeRecord: Identifiable, Codable {
+    var id = UUID()
+
+    var firstName: String
+    var lastName: String
+
+    var phone: String
+    var email: String
+
+    var role: EmployeeRole
+
+    // Stored as minutes after midnight.
+    var defaultStartMinutes: Int
+    var defaultEndMinutes: Int
+    var lunchDurationMinutes: Int
+
+    var workingDays: Set<Workday>
+
+    // A stable name such as "blue", "green", or "orange".
+    // We will translate this into a SwiftUI Color in the view layer.
+    var colorName: String
+
+    var isActive: Bool
+
+    var createdDate: Date
+    var lifecycleStatus: RecordLifecycleStatus
+
+    init(
+        id: UUID = UUID(),
+        firstName: String,
+        lastName: String,
+        phone: String = "",
+        email: String = "",
+        role: EmployeeRole = .technician,
+        defaultStartMinutes: Int = 480,
+        defaultEndMinutes: Int = 1020,
+        lunchDurationMinutes: Int = 30,
+        workingDays: Set<Workday> = Workday.standardWorkweek,
+        colorName: String = "blue",
+        isActive: Bool = true,
+        createdDate: Date = Date(),
+        lifecycleStatus: RecordLifecycleStatus = .active
+    ) {
+        self.id = id
+        self.firstName = firstName
+        self.lastName = lastName
+        self.phone = phone
+        self.email = email
+        self.role = role
+        self.defaultStartMinutes = defaultStartMinutes
+        self.defaultEndMinutes = defaultEndMinutes
+        self.lunchDurationMinutes = lunchDurationMinutes
+        self.workingDays = workingDays
+        self.colorName = colorName
+        self.isActive = isActive
+        self.createdDate = createdDate
+        self.lifecycleStatus = lifecycleStatus
+    }
+
+    var displayName: String {
+        let fullName = "\(firstName) \(lastName)"
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return fullName.isEmpty
+            ? "Unnamed Employee"
+            : fullName
+    }
+
+    var dailyCapacityMinutes: Int {
+        let workdayMinutes = max(
+            defaultEndMinutes - defaultStartMinutes,
+            0
+        )
+
+        return max(
+            workdayMinutes - lunchDurationMinutes,
+            0
+        )
+    }
+}
 
 struct Customer: Identifiable, Codable {
     var id = UUID()
@@ -216,8 +359,8 @@ struct JobRecord: Identifiable, Codable, WorkOrder {
     var subtotal: Double
     var discount: Double
     var total: Double
-    var primaryTechnician: String
-    var secondaryTechnician: String
+    var primaryTechnicianID: UUID?
+    var secondaryTechnicianID: UUID?
     var scheduledDate: Date
     var scheduledDurationOverrideMinutes: Int? = nil
     var completedDate: Date?

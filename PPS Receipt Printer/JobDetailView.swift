@@ -54,6 +54,19 @@ struct JobDetailView: View {
     private var hasScheduledDurationOverride: Bool {
         enteredScheduledDurationMinutes > 0
     }
+    private var assignableEmployees: [EmployeeRecord] {
+        store.activeEmployees.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare(
+                $1.displayName
+            ) == .orderedAscending
+        }
+    }
+
+    private var availableSecondaryEmployees: [EmployeeRecord] {
+        assignableEmployees.filter {
+            $0.id != job.primaryTechnicianID
+        }
+    }
     
     var body: some View {
         Form {
@@ -92,11 +105,37 @@ struct JobDetailView: View {
             }
             
             Section("Technicians") {
-                TextField("Primary Technician", text: $job.primaryTechnician)
-                    .focused($isInputFocused)
-                
-                TextField("Secondary Technician", text: $job.secondaryTechnician)
-                    .focused($isInputFocused)
+                Picker(
+                    "Primary Technician",
+                    selection: $job.primaryTechnicianID
+                ) {
+                    Text("Unassigned")
+                        .tag(UUID?.none)
+
+                    ForEach(assignableEmployees) { employee in
+                        Text(employee.displayName)
+                            .tag(UUID?.some(employee.id))
+                    }
+                }
+                .onChange(of: job.primaryTechnicianID) { _, newPrimaryID in
+                    if job.secondaryTechnicianID == newPrimaryID {
+                        job.secondaryTechnicianID = nil
+                    }
+                }
+
+                Picker(
+                    "Secondary Technician",
+                    selection: $job.secondaryTechnicianID
+                ) {
+                    Text("None")
+                        .tag(UUID?.none)
+
+                    ForEach(availableSecondaryEmployees) { employee in
+                        Text(employee.displayName)
+                            .tag(UUID?.some(employee.id))
+                    }
+                }
+                .disabled(job.primaryTechnicianID == nil)
             }
             
             WorkOrderEditorView(

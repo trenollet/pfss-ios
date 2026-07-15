@@ -17,8 +17,8 @@ struct JobsView: View {
     @State private var serviceType: ServiceType = .windowCleaning
     @State private var otherService = ""
 
-    @State private var primaryTechnician = ""
-    @State private var secondaryTechnician = ""
+    @State private var primaryTechnicianID: UUID?
+    @State private var secondaryTechnicianID: UUID?
 
     @State private var scheduledDate = Date()
     @State private var status: JobStatus = .toBeScheduled
@@ -77,6 +77,19 @@ struct JobsView: View {
 
     private var totalValue: Double {
         PricingCalculator.total(for: lineItems, discount: discountValue)
+    }
+    private var assignableEmployees: [EmployeeRecord] {
+        store.activeEmployees.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare(
+                $1.displayName
+            ) == .orderedAscending
+        }
+    }
+
+    private var availableSecondaryEmployees: [EmployeeRecord] {
+        assignableEmployees.filter {
+            $0.id != primaryTechnicianID
+        }
     }
 
     var body: some View {
@@ -168,11 +181,37 @@ struct JobsView: View {
                 }
 
                 Section("Technicians") {
-                    TextField("Primary Technician", text: $primaryTechnician)
-                        .focused($isInputFocused)
+                    Picker(
+                        "Primary Technician",
+                        selection: $primaryTechnicianID
+                    ) {
+                        Text("Unassigned")
+                            .tag(UUID?.none)
 
-                    TextField("Secondary Technician", text: $secondaryTechnician)
-                        .focused($isInputFocused)
+                        ForEach(assignableEmployees) { employee in
+                            Text(employee.displayName)
+                                .tag(UUID?.some(employee.id))
+                        }
+                    }
+                    .onChange(of: primaryTechnicianID) { _, newPrimaryID in
+                        if secondaryTechnicianID == newPrimaryID {
+                            secondaryTechnicianID = nil
+                        }
+                    }
+
+                    Picker(
+                        "Secondary Technician",
+                        selection: $secondaryTechnicianID
+                    ) {
+                        Text("None")
+                            .tag(UUID?.none)
+
+                        ForEach(availableSecondaryEmployees) { employee in
+                            Text(employee.displayName)
+                                .tag(UUID?.some(employee.id))
+                        }
+                    }
+                    .disabled(primaryTechnicianID == nil)
                 }
 
                 Section("Schedule") {
@@ -212,8 +251,8 @@ struct JobsView: View {
                                 Text("Service: \(serviceName(for: job))")
                                     .font(.caption)
 
-                                Text("Primary Tech: \(job.primaryTechnician)")
-                                    .font(.caption)
+                                Text("Primary Tech: \(employeeName(for: job.primaryTechnicianID))")
+                                .font(.caption)
 
                                 Text("Status: \(job.status.rawValue)")
                                     .font(.caption)
@@ -274,8 +313,8 @@ struct JobsView: View {
             subtotal: subtotalValue,
             discount: discountValue,
             total: totalValue,
-            primaryTechnician: primaryTechnician,
-            secondaryTechnician: secondaryTechnician,
+            primaryTechnicianID: primaryTechnicianID,
+            secondaryTechnicianID: secondaryTechnicianID,
             scheduledDate: scheduledDate,
             completedDate: status == .completed ? Date() : nil,
             status: status,
@@ -297,8 +336,8 @@ struct JobsView: View {
         itemUnitPrice = ""
         lineItems = []
         discount = ""
-        primaryTechnician = ""
-        secondaryTechnician = ""
+        primaryTechnicianID = nil
+        secondaryTechnicianID = nil
         scheduledDate = Date()
         status = .toBeScheduled
         workNotes = ""
@@ -333,5 +372,19 @@ struct JobsView: View {
         }
 
         return customerNumber
+    }
+    private func employeeName(
+        for employeeID: UUID?
+    ) -> String {
+        guard
+            let employeeID,
+            let employee = store.employees.first(where: {
+                $0.id == employeeID
+            })
+        else {
+            return "Unassigned"
+        }
+
+        return employee.displayName
     }
 }

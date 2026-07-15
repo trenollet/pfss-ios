@@ -34,11 +34,14 @@ struct AdminView: View {
                 }
 
                 Section("Coming Soon") {
-                    Label(
-                        "Employees & Roles",
-                        systemImage: "person.3"
-                    )
-                    .foregroundStyle(.secondary)
+                    NavigationLink {
+                        EmployeesView()
+                    } label: {
+                        Label(
+                            "Employees & Capacity",
+                            systemImage: "person.3"
+                        )
+                    }
 
                     Label(
                         "Printer Settings",

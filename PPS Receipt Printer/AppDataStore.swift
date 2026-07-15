@@ -12,15 +12,12 @@ final class AppDataStore: ObservableObject {
     @Published var customers: [Customer] = [] {
         didSet { saveData() }
     }
-
     @Published var sites: [CustomerSite] = [] {
         didSet { saveData() }
     }
-
     @Published var leads: [Lead] = [] {
         didSet { saveData() }
     }
-
     @Published var estimates: [EstimateRecord] = [] {
         didSet { saveData() }
     }
@@ -39,6 +36,10 @@ final class AppDataStore: ObservableObject {
     @Published var recommendationRules: [RecommendationRule] = [] {
         didSet { saveData() }
     }
+    @Published var employees: [EmployeeRecord] = [] {
+        didSet { saveData() }
+    }
+    
     var activeCustomers: [Customer] {
         customers.filter { $0.lifecycleStatus == .active }
     }
@@ -55,6 +56,17 @@ final class AppDataStore: ObservableObject {
         estimates.filter { $0.lifecycleStatus == .active }
     }
     
+    var activeEmployees: [EmployeeRecord] {
+        employees.filter {
+            $0.isActive &&
+            $0.lifecycleStatus == .active
+        }
+    }
+    var archivedEmployees: [EmployeeRecord] {
+        employees.filter {
+            $0.lifecycleStatus == .archived
+        }
+    }
     var archivedCustomers: [Customer] {
         customers.filter { $0.lifecycleStatus == .archived }
     }
@@ -171,6 +183,51 @@ final class AppDataStore: ObservableObject {
     func addEstimate(_ estimate: EstimateRecord) {
         estimates.append(estimate)
     }
+    
+    func addEmployee(
+        _ employee: EmployeeRecord
+    ) {
+        employees.append(employee)
+    }
+
+    func updateEmployee(
+        _ employee: EmployeeRecord
+    ) {
+        guard let index = employees.firstIndex(where: {
+            $0.id == employee.id
+        }) else {
+            return
+        }
+
+        employees[index] = employee
+    }
+
+    func archiveEmployee(
+        _ employee: EmployeeRecord
+    ) {
+        guard let index = employees.firstIndex(where: {
+            $0.id == employee.id
+        }) else {
+            return
+        }
+
+        employees[index].lifecycleStatus = .archived
+        employees[index].isActive = false
+    }
+
+    func restoreEmployee(
+        _ employee: EmployeeRecord
+    ) {
+        guard let index = employees.firstIndex(where: {
+            $0.id == employee.id
+        }) else {
+            return
+        }
+
+        employees[index].lifecycleStatus = .active
+        employees[index].isActive = true
+    }
+    
     func addRecommendationRule(_ rule: RecommendationRule) {
         recommendationRules.append(rule)
     }
@@ -340,8 +397,8 @@ final class AppDataStore: ObservableObject {
             subtotal: estimate.subtotal,
             discount: estimate.discount,
             total: estimate.total,
-            primaryTechnician: "",
-            secondaryTechnician: "",
+            primaryTechnicianID: nil,
+            secondaryTechnicianID: nil,
             scheduledDate: Date(),
             completedDate: nil,
             status: .toBeScheduled,
@@ -465,6 +522,7 @@ final class AppDataStore: ObservableObject {
             nextCustomerNumber: nextCustomerNumber,
             recordSequencesByMonth: recordSequencesByMonth,
             recommendationRules: recommendationRules,
+            employees: employees
         )
 
         do {
@@ -497,6 +555,7 @@ final class AppDataStore: ObservableObject {
             nextCustomerNumber = snapshot.nextCustomerNumber
             recordSequencesByMonth = snapshot.recordSequencesByMonth
             recommendationRules = snapshot.recommendationRules
+            employees = snapshot.employees
             seedRecommendationRulesIfNeeded()
         } catch {
             print("Failed to load app data: \(error.localizedDescription)")
@@ -521,6 +580,7 @@ private struct AppDataSnapshot: Codable {
     var nextCustomerNumber: Int
     var recordSequencesByMonth: [String: Int]
     var recommendationRules: [RecommendationRule]
+    var employees: [EmployeeRecord] = []
 
     private enum CodingKeys: String, CodingKey {
         case customers
@@ -534,6 +594,7 @@ private struct AppDataSnapshot: Codable {
         case nextCustomerNumber
         case recordSequencesByMonth
         case recommendationRules
+        case employees
     }
 
     init(
@@ -547,7 +608,8 @@ private struct AppDataSnapshot: Codable {
         serviceCatalogItems: [ServiceCatalogItem],
         nextCustomerNumber: Int,
         recordSequencesByMonth: [String: Int],
-        recommendationRules: [RecommendationRule]
+        recommendationRules: [RecommendationRule],
+        employees: [EmployeeRecord] = []
     ) {
         self.customers = customers
         self.sites = sites
@@ -560,6 +622,7 @@ private struct AppDataSnapshot: Codable {
         self.nextCustomerNumber = nextCustomerNumber
         self.recordSequencesByMonth = recordSequencesByMonth
         self.recommendationRules = recommendationRules
+        self.employees = employees
     }
 
     init(from decoder: Decoder) throws {
@@ -604,7 +667,10 @@ private struct AppDataSnapshot: Codable {
             [ServiceCatalogItem].self,
             forKey: .serviceCatalogItems
         )
-
+        employees = try container.decodeIfPresent(
+            [EmployeeRecord].self,
+            forKey: .employees
+        ) ?? []
         nextCustomerNumber = try container.decode(
             Int.self,
             forKey: .nextCustomerNumber
