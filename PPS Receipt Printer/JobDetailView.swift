@@ -67,6 +67,35 @@ struct JobDetailView: View {
             $0.id != job.primaryTechnicianID
         }
     }
+    private var primaryEmployee: EmployeeRecord? {
+        guard let employeeID = job.primaryTechnicianID else {
+            return nil
+        }
+
+        return store.employees.first {
+            $0.id == employeeID
+        }
+    }
+
+    private var secondaryEmployee: EmployeeRecord? {
+        guard let employeeID = job.secondaryTechnicianID else {
+            return nil
+        }
+
+        return store.employees.first {
+            $0.id == employeeID
+        }
+    }
+    private var capacityPreviewJob: JobRecord {
+        var previewJob = job
+
+        previewJob.scheduledDurationOverrideMinutes =
+            hasScheduledDurationOverride
+                ? enteredScheduledDurationMinutes
+                : nil
+
+        return previewJob
+    }
     
     var body: some View {
         Form {
@@ -136,6 +165,29 @@ struct JobDetailView: View {
                     }
                 }
                 .disabled(job.primaryTechnicianID == nil)
+            }
+            Section("Capacity Preview") {
+                if primaryEmployee == nil &&
+                    secondaryEmployee == nil {
+
+                    Text("Assign a technician to view capacity.")
+                        .foregroundStyle(.secondary)
+
+                } else {
+                    if let employee = primaryEmployee {
+                        employeeCapacitySummary(
+                            employee,
+                            assignmentLabel: "Primary Technician"
+                        )
+                    }
+
+                    if let employee = secondaryEmployee {
+                        employeeCapacitySummary(
+                            employee,
+                            assignmentLabel: "Secondary Technician"
+                        )
+                    }
+                }
             }
             
             WorkOrderEditorView(
@@ -379,6 +431,132 @@ struct JobDetailView: View {
                 .environmentObject(store)
             }
         }
+    }
+    @ViewBuilder
+    private func employeeCapacitySummary(
+        _ employee: EmployeeRecord,
+        assignmentLabel: String
+    ) -> some View {
+        let capacityMinutes =
+            SchedulingCalculator.capacityMinutes(
+                for: employee,
+                on: job.scheduledDate
+            )
+
+        let previouslyScheduledMinutes =
+            SchedulingCalculator.scheduledMinutes(
+                for: employee,
+                on: job.scheduledDate,
+                from: store.jobs,
+                excludingJobID: job.id
+            )
+
+        let thisJobMinutes =
+            SchedulingCalculator.scheduledMinutes(
+                for: capacityPreviewJob
+            )
+
+        let projectedRemainingMinutes =
+            capacityMinutes
+            - previouslyScheduledMinutes
+            - thisJobMinutes
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(employee.displayName)
+                        .font(.headline)
+
+                    Text(assignmentLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(employee.role.rawValue)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !SchedulingCalculator.isWorkingDay(
+                job.scheduledDate,
+                for: employee
+            ) {
+                Label(
+                    "Not normally scheduled to work this day",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.red)
+            }
+
+            capacityRow(
+                label: "Daily Capacity",
+                minutes: capacityMinutes
+            )
+
+            capacityRow(
+                label: "Already Scheduled",
+                minutes: previouslyScheduledMinutes
+            )
+
+            capacityRow(
+                label: "This Job",
+                minutes: thisJobMinutes
+            )
+
+            HStack {
+                Text(
+                    projectedRemainingMinutes >= 0
+                        ? "Remaining After Job"
+                        : "Over Capacity By"
+                )
+
+                Spacer()
+
+                Text(
+                    capacityDurationText(
+                        abs(projectedRemainingMinutes)
+                    )
+                )
+                .fontWeight(.semibold)
+                .foregroundStyle(
+                    projectedRemainingMinutes < 0
+                        ? .red
+                        : .green
+                )
+            }
+        }
+        .padding(.vertical, 4)
+    }
+    private func capacityRow(
+        label: String,
+        minutes: Int
+    ) -> some View {
+        HStack {
+            Text(label)
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            Text(
+                capacityDurationText(minutes)
+            )
+            .fontWeight(.medium)
+        }
+    }
+
+    private func capacityDurationText(
+        _ minutes: Int
+    ) -> String {
+        guard minutes > 0 else {
+            return "0 min"
+        }
+
+        return SchedulingCalculator.formattedDuration(
+            minutes: minutes
+        )
     }
     private func closestQuarterHour(
         to minutes: Int

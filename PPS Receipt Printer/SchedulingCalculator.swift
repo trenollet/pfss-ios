@@ -89,4 +89,140 @@ struct SchedulingCalculator {
             minutes: scheduledMinutes(for: job)
         )
     }
+    static func isEmployee(
+        _ employeeID: UUID,
+        assignedTo job: JobRecord
+    ) -> Bool {
+        job.primaryTechnicianID == employeeID
+            || job.secondaryTechnicianID == employeeID
+    }
+
+    static func scheduledJobs(
+        for employee: EmployeeRecord,
+        on date: Date,
+        from jobs: [JobRecord],
+        calendar: Calendar = .current
+    ) -> [JobRecord] {
+        jobs.filter { job in
+            guard job.lifecycleStatus == .active else {
+                return false
+            }
+
+            guard job.status != .cancelled else {
+                return false
+            }
+
+            guard isEmployee(
+                employee.id,
+                assignedTo: job
+            ) else {
+                return false
+            }
+
+            return calendar.isDate(
+                job.scheduledDate,
+                inSameDayAs: date
+            )
+        }
+    }
+
+    static func scheduledMinutes(
+        for employee: EmployeeRecord,
+        on date: Date,
+        from jobs: [JobRecord],
+        excludingJobID: UUID? = nil,
+        calendar: Calendar = .current
+    ) -> Int {
+        scheduledJobs(
+            for: employee,
+            on: date,
+            from: jobs,
+            calendar: calendar
+        )
+        .filter { job in
+            job.id != excludingJobID
+        }
+        .reduce(0) { total, job in
+            total + scheduledMinutes(for: job)
+        }
+    }
+
+    static func isWorkingDay(
+        _ date: Date,
+        for employee: EmployeeRecord,
+        calendar: Calendar = .current
+    ) -> Bool {
+        let weekdayNumber = calendar.component(
+            .weekday,
+            from: date
+        )
+
+        guard let workday = Workday(
+            rawValue: weekdayNumber
+        ) else {
+            return false
+        }
+
+        return employee.workingDays.contains(workday)
+    }
+
+    static func capacityMinutes(
+        for employee: EmployeeRecord,
+        on date: Date,
+        calendar: Calendar = .current
+    ) -> Int {
+        guard employee.isActive,
+              employee.lifecycleStatus == .active,
+              isWorkingDay(
+                  date,
+                  for: employee,
+                  calendar: calendar
+              ) else {
+            return 0
+        }
+
+        return employee.dailyCapacityMinutes
+    }
+
+    static func remainingMinutes(
+        for employee: EmployeeRecord,
+        on date: Date,
+        from jobs: [JobRecord],
+        excludingJobID: UUID? = nil,
+        calendar: Calendar = .current
+    ) -> Int {
+        let capacity = capacityMinutes(
+            for: employee,
+            on: date,
+            calendar: calendar
+        )
+
+        let scheduled = scheduledMinutes(
+            for: employee,
+            on: date,
+            from: jobs,
+            excludingJobID: excludingJobID,
+            calendar: calendar
+        )
+
+        return capacity - scheduled
+    }
+
+    static func projectedRemainingMinutes(
+        afterAssigning job: JobRecord,
+        to employee: EmployeeRecord,
+        from jobs: [JobRecord],
+        calendar: Calendar = .current
+    ) -> Int {
+        let remainingBeforeJob = remainingMinutes(
+            for: employee,
+            on: job.scheduledDate,
+            from: jobs,
+            excludingJobID: job.id,
+            calendar: calendar
+        )
+
+        return remainingBeforeJob
+            - scheduledMinutes(for: job)
+    }
 }
