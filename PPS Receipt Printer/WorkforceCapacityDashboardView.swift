@@ -100,7 +100,15 @@ struct WorkforceCapacityDashboardView: View {
                         summaries,
                         id: \.employee.id
                     ) { summary in
-                        employeeCapacityCard(summary)
+                        NavigationLink {
+                            EmployeeDailyJobsView(
+                                employee: summary.employee,
+                                date: selectedDate
+                            )
+                            .environmentObject(store)
+                        } label: {
+                            employeeCapacityCard(summary)
+                        }
                     }
                 }
             }
