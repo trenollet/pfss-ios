@@ -20,6 +20,14 @@ struct AdminView: View {
                             systemImage: "building.2"
                         )
                     }
+                    NavigationLink {
+                        EmployeesView()
+                    } label: {
+                        Label(
+                            "Employees & Capacity",
+                            systemImage: "person.3"
+                        )
+                    }
                 }
 
                 Section("Configuration") {
@@ -32,16 +40,8 @@ struct AdminView: View {
                         )
                     }
                 }
-
                 Section("Coming Soon") {
-                    NavigationLink {
-                        EmployeesView()
-                    } label: {
-                        Label(
-                            "Employees & Capacity",
-                            systemImage: "person.3"
-                        )
-                    }
+                    
 
                     Label(
                         "Printer Settings",

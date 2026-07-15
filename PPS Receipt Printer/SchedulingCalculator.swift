@@ -7,6 +7,61 @@
 
 import Foundation
 
+struct EmployeeCapacitySummary {
+    let employee: EmployeeRecord
+    let date: Date
+    let assignedJobs: [JobRecord]
+    let capacityMinutes: Int
+    let scheduledMinutes: Int
+    let remainingMinutes: Int
+    let isWorkingDay: Bool
+
+    var assignedJobCount: Int {
+        assignedJobs.count
+    }
+
+    var utilizationPercentage: Int {
+        guard capacityMinutes > 0 else {
+            return scheduledMinutes > 0
+                ? 100
+                : 0
+        }
+
+        let percentage =
+            Double(scheduledMinutes)
+            / Double(capacityMinutes)
+            * 100
+
+        return max(
+            Int(percentage.rounded()),
+            0
+        )
+    }
+
+    var utilizationFraction: Double {
+        guard capacityMinutes > 0 else {
+            return scheduledMinutes > 0
+                ? 1
+                : 0
+        }
+
+        return max(
+            Double(scheduledMinutes)
+            / Double(capacityMinutes),
+            0
+        )
+    }
+
+    var isOverCapacity: Bool {
+        remainingMinutes < 0
+    }
+
+    var isNearCapacity: Bool {
+        utilizationPercentage >= 80
+            && !isOverCapacity
+    }
+}
+
 struct SchedulingCalculator {
     static func estimatedMinutes(
         for lineItem: ServiceLineItem
@@ -224,5 +279,46 @@ struct SchedulingCalculator {
 
         return remainingBeforeJob
             - scheduledMinutes(for: job)
+    }
+    static func capacitySummary(
+        for employee: EmployeeRecord,
+        on date: Date,
+        from jobs: [JobRecord],
+        calendar: Calendar = .current
+    ) -> EmployeeCapacitySummary {
+        let assignedJobs = scheduledJobs(
+            for: employee,
+            on: date,
+            from: jobs,
+            calendar: calendar
+        )
+
+        let capacityMinutes = capacityMinutes(
+            for: employee,
+            on: date,
+            calendar: calendar
+        )
+
+        let totalScheduledMinutes = assignedJobs.reduce(0) {
+            total,
+            job in
+
+            total + scheduledMinutes(for: job)
+        }
+
+        return EmployeeCapacitySummary(
+            employee: employee,
+            date: date,
+            assignedJobs: assignedJobs,
+            capacityMinutes: capacityMinutes,
+            scheduledMinutes: totalScheduledMinutes,
+            remainingMinutes:
+                capacityMinutes - totalScheduledMinutes,
+            isWorkingDay: isWorkingDay(
+                date,
+                for: employee,
+                calendar: calendar
+            )
+        )
     }
 }

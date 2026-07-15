@@ -140,7 +140,7 @@ struct JobDetailView: View {
                 ) {
                     Text("Unassigned")
                         .tag(UUID?.none)
-
+                    
                     ForEach(assignableEmployees) { employee in
                         Text(employee.displayName)
                             .tag(UUID?.some(employee.id))
@@ -151,14 +151,14 @@ struct JobDetailView: View {
                         job.secondaryTechnicianID = nil
                     }
                 }
-
+                
                 Picker(
                     "Secondary Technician",
                     selection: $job.secondaryTechnicianID
                 ) {
                     Text("None")
                         .tag(UUID?.none)
-
+                    
                     ForEach(availableSecondaryEmployees) { employee in
                         Text(employee.displayName)
                             .tag(UUID?.some(employee.id))
@@ -169,10 +169,10 @@ struct JobDetailView: View {
             Section("Capacity Preview") {
                 if primaryEmployee == nil &&
                     secondaryEmployee == nil {
-
+                    
                     Text("Assign a technician to view capacity.")
                         .foregroundStyle(.secondary)
-
+                    
                 } else {
                     if let employee = primaryEmployee {
                         employeeCapacitySummary(
@@ -180,7 +180,7 @@ struct JobDetailView: View {
                             assignmentLabel: "Primary Technician"
                         )
                     }
-
+                    
                     if let employee = secondaryEmployee {
                         employeeCapacitySummary(
                             employee,
@@ -288,11 +288,6 @@ struct JobDetailView: View {
                     HStack {
                         Text("Effective Duration")
                             .foregroundStyle(.secondary)
-                        
-                        Spacer()
-                        
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.blue)
                     }
                     
                     if hasScheduledDurationOverride {
@@ -335,55 +330,54 @@ struct JobDetailView: View {
                 job.completedDate = Date()
             }
             .disabled(job.status == .completed)
-        }
-        
-        Section {
-            Button("Save Changes") {
-                isInputFocused = false
-                
-                if job.status == .completed && job.completedDate == nil {
-                    job.completedDate = Date()
-                }
-                job.scheduledDurationOverrideMinutes =
-                hasScheduledDurationOverride
-                ? enteredScheduledDurationMinutes
-                : nil
-                job.lineItems = PricingCalculator.updatedLineItems(job.lineItems)
-                job.subtotal = PricingCalculator.subtotal(for: job)
-                job.total = PricingCalculator.total(for: job)
-                store.updateJob(job)
-                dismiss()
-            }
-            .buttonStyle(.borderedProminent)
             
-            if job.status == .completed &&
-                !store.invoices.contains(where: { $0.jobNumber == job.jobNumber }) {
-                
-                Button {
-                    _ = store.createInvoiceFromJob(job)
-                } label: {
-                    Label(
-                        "Create Invoice",
-                        systemImage: "doc.text.fill"
-                    )
-                }
-                .buttonStyle(.borderedProminent)
-            }
-            
-            if job.lifecycleStatus == .archived {
-                Button("Restore Job") {
-                    store.restoreJob(job)
+            Section {
+                Button("Save Changes") {
+                    isInputFocused = false
+                    
+                    if job.status == .completed && job.completedDate == nil {
+                        job.completedDate = Date()
+                    }
+                    job.scheduledDurationOverrideMinutes =
+                    hasScheduledDurationOverride
+                    ? enteredScheduledDurationMinutes
+                    : nil
+                    job.lineItems = PricingCalculator.updatedLineItems(job.lineItems)
+                    job.subtotal = PricingCalculator.subtotal(for: job)
+                    job.total = PricingCalculator.total(for: job)
+                    store.updateJob(job)
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
-            } else {
-                Button("Archive Job", role: .destructive) {
-                    store.archiveJob(job)
-                    dismiss()
+                
+                if job.status == .completed &&
+                    !store.invoices.contains(where: { $0.jobNumber == job.jobNumber }) {
+                    
+                    Button {
+                        _ = store.createInvoiceFromJob(job)
+                    } label: {
+                        Label(
+                            "Create Invoice",
+                            systemImage: "doc.text.fill"
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                
+                if job.lifecycleStatus == .archived {
+                    Button("Restore Job") {
+                        store.restoreJob(job)
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button("Archive Job", role: .destructive) {
+                        store.archiveJob(job)
+                        dismiss()
+                    }
                 }
             }
         }
-        
         .onAppear {
             guard let overrideMinutes =
                     job.scheduledDurationOverrideMinutes,

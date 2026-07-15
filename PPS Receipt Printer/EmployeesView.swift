@@ -38,6 +38,16 @@ struct EmployeesView: View {
         NavigationStack {
             List {
                 Section {
+                    NavigationLink {
+                        WorkforceCapacityDashboardView()
+                            .environmentObject(store)
+                    } label: {
+                        Label(
+                            "Daily Capacity Dashboard",
+                            systemImage: "chart.bar.fill"
+                        )
+                    }
+
                     Button("Add New Employee") {
                         showingNewEmployee = true
                     }
