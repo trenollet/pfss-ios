@@ -11,14 +11,22 @@ struct EmployeeDailyJobsView: View {
     @EnvironmentObject var store: AppDataStore
 
     let employee: EmployeeRecord
-    let date: Date
+
+    @State private var selectedDate: Date
 
     private var summary: EmployeeCapacitySummary {
         SchedulingCalculator.capacitySummary(
             for: employee,
-            on: date,
+            on: selectedDate,
             from: store.jobs
         )
+    }
+    init(
+        employee: EmployeeRecord,
+        date: Date
+    ) {
+        self.employee = employee
+        _selectedDate = State(initialValue: date)
     }
 
     private var sortedJobs: [JobRecord] {
@@ -29,6 +37,53 @@ struct EmployeeDailyJobsView: View {
 
     var body: some View {
         List {
+            Section {
+                HStack {
+                    Button {
+                        changeDate(by: -1)
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .buttonStyle(.borderless)
+
+                    Spacer()
+
+                    VStack(spacing: 2) {
+                        Text(
+                            selectedDate.formatted(
+                                date: .complete,
+                                time: .omitted
+                            )
+                        )
+                        .font(.headline)
+
+                        if Calendar.current.isDateInToday(
+                            selectedDate
+                        ) {
+                            Text("Today")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Spacer()
+
+                    Button {
+                        changeDate(by: 1)
+                    } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .buttonStyle(.borderless)
+                }
+
+                if !Calendar.current.isDateInToday(
+                    selectedDate
+                ) {
+                    Button("Return to Today") {
+                        selectedDate = Date()
+                    }
+                }
+            }
             Section {
                 employeeHeader
             }
@@ -131,14 +186,6 @@ struct EmployeeDailyJobsView: View {
                 }
             }
 
-            Text(
-                date.formatted(
-                    date: .complete,
-                    time: .omitted
-                )
-            )
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
 
             if !summary.isWorkingDay {
                 Label(
@@ -368,7 +415,16 @@ struct EmployeeDailyJobsView: View {
             minutes: minutes
         )
     }
-
+    private func changeDate(
+        by dayOffset: Int
+    ) {
+        selectedDate =
+            Calendar.current.date(
+                byAdding: .day,
+                value: dayOffset,
+                to: selectedDate
+            ) ?? selectedDate
+    }
     private func employeeColor(
         named colorName: String
     ) -> Color {
