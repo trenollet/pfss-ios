@@ -83,6 +83,32 @@ struct SchedulingCalculator {
             total + estimatedMinutes(for: item)
         }
     }
+    static func assignedCrewCount(
+        for job: JobRecord
+    ) -> Int {
+        var assignedEmployeeIDs = Set<UUID>()
+
+        if let primaryTechnicianID =
+            job.primaryTechnicianID {
+
+            assignedEmployeeIDs.insert(
+                primaryTechnicianID
+            )
+        }
+
+        if let secondaryTechnicianID =
+            job.secondaryTechnicianID {
+
+            assignedEmployeeIDs.insert(
+                secondaryTechnicianID
+            )
+        }
+
+        return max(
+            assignedEmployeeIDs.count,
+            1
+        )
+    }
     static func scheduledMinutes(
         for job: JobRecord
     ) -> Int {
@@ -93,8 +119,24 @@ struct SchedulingCalculator {
             return overrideMinutes
         }
 
-        return estimatedMinutes(
+        let totalLaborMinutes = estimatedMinutes(
             for: job.lineItems
+        )
+
+        guard totalLaborMinutes > 0 else {
+            return 0
+        }
+
+        let crewCount = assignedCrewCount(
+            for: job
+        )
+
+        let elapsedMinutes =
+            Double(totalLaborMinutes)
+            / Double(crewCount)
+
+        return Int(
+            elapsedMinutes.rounded(.up)
         )
     }
 
