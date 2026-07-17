@@ -187,6 +187,75 @@ struct BusinessProfileView: View {
                 .lineLimit(2...5)
                 .focused($isInputFocused)
             }
+
+
+            Section {
+                VStack(alignment: .leading, spacing: 16) {
+                    Label(
+                        "Route Planning",
+                        systemImage: "point.topleft.down.to.point.bottomright.curvepath"
+                    )
+                    .font(.headline)
+
+                    routePlanningStepper(
+                        title: "Average Driving Speed",
+                        value: Binding(
+                            get: {
+                                Int(
+                                    profile.operations
+                                        .averageDrivingSpeedMPH
+                                        .rounded()
+                                )
+                            },
+                            set: {
+                                profile.operations
+                                    .averageDrivingSpeedMPH =
+                                    Double($0)
+                            }
+                        ),
+                        range: 5...80,
+                        step: 5,
+                        unit: "mph"
+                    )
+
+                    Divider()
+
+                    routePlanningStepper(
+                        title: "Daily Route Buffer",
+                        value: $profile.operations
+                            .dailyRouteBufferMinutes,
+                        range: 0...240,
+                        step: 5,
+                        unit: "minutes"
+                    )
+
+                    Divider()
+
+                    routePlanningStepper(
+                        title: "Per Stop Buffer",
+                        value: $profile.operations
+                            .perStopBufferMinutes,
+                        range: 0...60,
+                        step: 1,
+                        unit: "minutes"
+                    )
+
+                    Toggle(
+                        "Include Buffers in Planned Route Time",
+                        isOn: $profile.operations
+                            .includeBuffersInRouteTime
+                    )
+
+                    Text(
+                        "These settings control technician route estimates throughout PFSS. Drive time remains visible separately from planning buffers."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+            } header: {
+                Text("Business Operations")
+            }
             
             Section("Document Previews") {
                 Button {
@@ -359,9 +428,34 @@ struct BusinessProfileView: View {
         profile.postalCode = profile.postalCode
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
+        profile.operations.normalize()
+
         store.businessProfile = profile
         dismiss()
     }
+    private func routePlanningStepper(
+        title: String,
+        value: Binding<Int>,
+        range: ClosedRange<Int>,
+        step: Int,
+        unit: String
+    ) -> some View {
+        Stepper(
+            value: value,
+            in: range,
+            step: step
+        ) {
+            HStack {
+                Text(title)
+
+                Spacer()
+
+                Text("\(value.wrappedValue) \(unit)")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
     private func formattedPhoneNumber(
         _ value: String
     ) -> String {

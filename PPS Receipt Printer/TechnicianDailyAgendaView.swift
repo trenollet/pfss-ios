@@ -31,6 +31,8 @@ struct TechnicianDailyAgendaView: View {
     @State private var isOptimizingRoute = false
     @State private var routeOptimizationErrorMessage = ""
     @State private var showingRouteOptimizationError = false
+    @State private var routeSummary: DailyRouteOptimizer.RouteSummary?
+    @State private var isRouteOptimized = false
 
     private var summary: EmployeeCapacitySummary {
         SchedulingCalculator.capacitySummary(
@@ -84,11 +86,21 @@ struct TechnicianDailyAgendaView: View {
 
                 scheduleHeader
 
+                if let routeSummary {
+                    RouteSummaryCard(
+                        summary: routeSummary,
+                        isOptimized: isRouteOptimized
+                    )
+                }
+
                 if displayedJobs.isEmpty {
                     emptyScheduleCard
                 } else {
                     ForEach(displayedJobs) { job in
-                        technicianJobCard(job)
+                        technicianJobCard(
+                            job,
+                            stopNumber: routeStopNumber(for: job)
+                        )
                     }
                 }
             }
@@ -151,6 +163,8 @@ struct TechnicianDailyAgendaView: View {
         }
         .task(id: selectedDate) {
             displayedJobs = sortedJobs
+            routeSummary = nil
+            isRouteOptimized = false
 
             if locationManager.authorizationStatus == .authorizedAlways ||
                locationManager.authorizationStatus == .authorizedWhenInUse {
@@ -159,6 +173,8 @@ struct TechnicianDailyAgendaView: View {
         }
         .onChange(of: summary.assignedJobs.map(\.id)) {
             displayedJobs = sortedJobs
+            routeSummary = nil
+            isRouteOptimized = false
         }
         .alert(
             "Route Optimization",
@@ -435,6 +451,11 @@ struct TechnicianDailyAgendaView: View {
                     if isOptimizingRoute {
                         ProgressView()
                             .controlSize(.small)
+                    } else if isRouteOptimized {
+                        Label(
+                            "Optimized",
+                            systemImage: "checkmark.circle.fill"
+                        )
                     } else {
                         Label(
                             "Optimize",
@@ -526,7 +547,8 @@ struct TechnicianDailyAgendaView: View {
     }
 
     private func technicianJobCard(
-        _ job: JobRecord
+        _ job: JobRecord,
+        stopNumber: Int?
     ) -> some View {
         VStack(
             alignment: .leading,
@@ -535,7 +557,10 @@ struct TechnicianDailyAgendaView: View {
             Button {
                 selectedJobID = job.id
             } label: {
-                technicianJobInformation(job)
+                technicianJobInformation(
+                    job,
+                    stopNumber: stopNumber
+                )
             }
             .buttonStyle(.plain)
 
@@ -558,16 +583,21 @@ struct TechnicianDailyAgendaView: View {
     }
 
     private func technicianJobInformation(
-        _ job: JobRecord
+        _ job: JobRecord,
+        stopNumber: Int?
     ) -> some View {
         VStack(
             alignment: .leading,
             spacing: 14
         ) {
             HStack(
-                alignment: .firstTextBaseline,
+                alignment: .center,
                 spacing: 12
             ) {
+                if let stopNumber {
+                    RouteStopBadge(number: stopNumber)
+                }
+
                 Text(
                     customerDisplayName(
                         for: job.customerNumber
@@ -1193,21 +1223,46 @@ struct TechnicianDailyAgendaView: View {
     ) {
         Task {
             let optimizer = DailyRouteOptimizer()
-            let optimized = await optimizer.optimizedRoute(
+            let result = await optimizer.optimize(
                 jobs: sortedJobs,
                 sites: store.sites,
-                startingLocation: currentLocation
+                startingLocation: currentLocation,
+                settings:
+                    store.businessProfile.operations
             )
-            let optimizedIDs = Set(optimized.map(\.id))
+            let optimizedIDs = Set(result.jobs.map(\.id))
             let remaining = sortedJobs.filter {
                 !optimizedIDs.contains($0.id)
             }
 
             await MainActor.run {
-                displayedJobs = optimized + remaining
+                displayedJobs = result.jobs + remaining
+                routeSummary = result.summary
+                isRouteOptimized = !result.jobs.isEmpty
                 isOptimizingRoute = false
             }
         }
+    }
+
+    private func routeStopNumber(
+        for job: JobRecord
+    ) -> Int? {
+        guard isRouteOptimized,
+              job.status != .completed,
+              job.status != .cancelled,
+              let index = displayedJobs.firstIndex(where: {
+                  $0.id == job.id
+              })
+        else {
+            return nil
+        }
+
+        let activeJobsThroughIndex = displayedJobs[...index].filter {
+            $0.status != .completed &&
+            $0.status != .cancelled
+        }
+
+        return activeJobsThroughIndex.count
     }
 
     private func employeeColor(

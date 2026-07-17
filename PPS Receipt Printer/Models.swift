@@ -324,6 +324,30 @@ struct CustomerSite: Identifiable, Codable {
     var lifecycleStatus: RecordLifecycleStatus = .active
 }
 
+struct BusinessOperationsSettings: Codable, Equatable {
+    var averageDrivingSpeedMPH: Double = 30
+    var dailyRouteBufferMinutes: Int = 20
+    var perStopBufferMinutes: Int = 3
+    var includeBuffersInRouteTime: Bool = true
+
+    mutating func normalize() {
+        averageDrivingSpeedMPH = min(
+            max(averageDrivingSpeedMPH, 5),
+            80
+        )
+
+        dailyRouteBufferMinutes = min(
+            max(dailyRouteBufferMinutes, 0),
+            240
+        )
+
+        perStopBufferMinutes = min(
+            max(perStopBufferMinutes, 0),
+            60
+        )
+    }
+}
+
 struct BusinessProfile: Codable {
     var businessName: String = ""
     var contactName: String = ""
@@ -342,6 +366,105 @@ struct BusinessProfile: Codable {
     var invoiceFooterText: String = ""
 
     var logoData: Data?
+
+    var operations = BusinessOperationsSettings()
+
+    private enum CodingKeys: String, CodingKey {
+        case businessName
+        case contactName
+        case phone
+        case email
+        case website
+        case addressLine1
+        case addressLine2
+        case city
+        case state
+        case postalCode
+        case invoiceHeaderText
+        case invoiceFooterText
+        case logoData
+        case operations
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(
+            keyedBy: CodingKeys.self
+        )
+
+        businessName = try container.decodeIfPresent(
+            String.self,
+            forKey: .businessName
+        ) ?? ""
+
+        contactName = try container.decodeIfPresent(
+            String.self,
+            forKey: .contactName
+        ) ?? ""
+
+        phone = try container.decodeIfPresent(
+            String.self,
+            forKey: .phone
+        ) ?? ""
+
+        email = try container.decodeIfPresent(
+            String.self,
+            forKey: .email
+        ) ?? ""
+
+        website = try container.decodeIfPresent(
+            String.self,
+            forKey: .website
+        ) ?? ""
+
+        addressLine1 = try container.decodeIfPresent(
+            String.self,
+            forKey: .addressLine1
+        ) ?? ""
+
+        addressLine2 = try container.decodeIfPresent(
+            String.self,
+            forKey: .addressLine2
+        ) ?? ""
+
+        city = try container.decodeIfPresent(
+            String.self,
+            forKey: .city
+        ) ?? ""
+
+        state = try container.decodeIfPresent(
+            String.self,
+            forKey: .state
+        ) ?? ""
+
+        postalCode = try container.decodeIfPresent(
+            String.self,
+            forKey: .postalCode
+        ) ?? ""
+
+        invoiceHeaderText = try container.decodeIfPresent(
+            String.self,
+            forKey: .invoiceHeaderText
+        ) ?? ""
+
+        invoiceFooterText = try container.decodeIfPresent(
+            String.self,
+            forKey: .invoiceFooterText
+        ) ?? ""
+
+        logoData = try container.decodeIfPresent(
+            Data.self,
+            forKey: .logoData
+        )
+
+        operations = try container.decodeIfPresent(
+            BusinessOperationsSettings.self,
+            forKey: .operations
+        ) ?? BusinessOperationsSettings()
+
+        operations.normalize()
+    }
 }
 
 
