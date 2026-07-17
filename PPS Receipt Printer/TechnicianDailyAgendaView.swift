@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import CoreLocation
 
 struct TechnicianDailyAgendaView: View {
     @EnvironmentObject var store: AppDataStore
@@ -24,6 +25,12 @@ struct TechnicianDailyAgendaView: View {
     @State private var selectedJobID: UUID?
     @State private var jobPendingCompletionID: UUID?
     @State private var showingCompletionConfirmation = false
+
+    @StateObject private var locationManager = TechnicianLocationManager()
+    @State private var displayedJobs: [JobRecord] = []
+    @State private var isOptimizingRoute = false
+    @State private var routeOptimizationErrorMessage = ""
+    @State private var showingRouteOptimizationError = false
 
     private var summary: EmployeeCapacitySummary {
         SchedulingCalculator.capacitySummary(
@@ -47,7 +54,7 @@ struct TechnicianDailyAgendaView: View {
     }
 
     private var firstJob: JobRecord? {
-        sortedJobs.first
+        displayedJobs.first
     }
 
     private var estimatedFinishDate: Date? {
@@ -77,10 +84,10 @@ struct TechnicianDailyAgendaView: View {
 
                 scheduleHeader
 
-                if sortedJobs.isEmpty {
+                if displayedJobs.isEmpty {
                     emptyScheduleCard
                 } else {
-                    ForEach(sortedJobs) { job in
+                    ForEach(displayedJobs) { job in
                         technicianJobCard(job)
                     }
                 }
@@ -141,6 +148,25 @@ struct TechnicianDailyAgendaView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(navigationErrorMessage)
+        }
+        .task(id: selectedDate) {
+            displayedJobs = sortedJobs
+
+            if locationManager.authorizationStatus == .authorizedAlways ||
+               locationManager.authorizationStatus == .authorizedWhenInUse {
+                locationManager.refreshLocation()
+            }
+        }
+        .onChange(of: summary.assignedJobs.map(\.id)) {
+            displayedJobs = sortedJobs
+        }
+        .alert(
+            "Route Optimization",
+            isPresented: $showingRouteOptimizationError
+        ) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(routeOptimizationErrorMessage)
         }
         .confirmationDialog(
             "Complete This Job?",
@@ -381,24 +407,89 @@ struct TechnicianDailyAgendaView: View {
     }
 
     private var scheduleHeader: some View {
-        HStack {
-            Text("Today's Schedule")
-                .font(.title3)
-                .fontWeight(.bold)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Today's Schedule")
+                        .font(.title3)
+                        .fontWeight(.bold)
 
-            Spacer()
+                    if let firstJob {
+                        Text(
+                            "Starts "
+                            + firstJob.scheduledDate.formatted(
+                                date: .omitted,
+                                time: .shortened
+                            )
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                }
 
-            if let firstJob {
-                Text(
-                    "Starts "
-                    + firstJob.scheduledDate.formatted(
-                        date: .omitted,
-                        time: .shortened
-                    )
+                Spacer()
+
+                Button {
+                    optimizeRoute()
+                } label: {
+                    if isOptimizingRoute {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label(
+                            "Optimize",
+                            systemImage: "arrow.triangle.swap"
+                        )
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(
+                    isOptimizingRoute
+                    || displayedJobs.count < 2
                 )
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .accessibilityLabel("Optimize daily route")
             }
+
+            locationStatusBadge
+        }
+    }
+
+    private var locationStatusBadge: some View {
+        Label(
+            locationManager.status.title,
+            systemImage: locationManager.status.systemImage
+        )
+        .font(.caption)
+        .fontWeight(.semibold)
+        .foregroundStyle(locationStatusColor)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            locationStatusColor.opacity(0.12)
+        )
+        .clipShape(Capsule())
+        .accessibilityLabel(
+            "Location status: \(locationManager.status.title)"
+        )
+    }
+
+    private var locationStatusColor: Color {
+        switch locationManager.status {
+        case .ready:
+            return .green
+
+        case .requestingPermission,
+             .acquiringLocation:
+            return .orange
+
+        case .denied,
+             .restricted,
+             .servicesDisabled,
+             .unavailable:
+            return .red
+
+        case .notRequested:
+            return .secondary
         }
     }
 
@@ -1071,6 +1162,54 @@ struct TechnicianDailyAgendaView: View {
         jobPendingCompletionID = nil
     }
     
+
+    private func optimizeRoute() {
+        guard !isOptimizingRoute else {
+            return
+        }
+
+        isOptimizingRoute = true
+
+        locationManager.requestCurrentLocation { result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let currentLocation):
+                    performRouteOptimization(
+                        from: currentLocation
+                    )
+
+                case .failure(let error):
+                    isOptimizingRoute = false
+                    routeOptimizationErrorMessage =
+                        error.localizedDescription
+                    showingRouteOptimizationError = true
+                }
+            }
+        }
+    }
+
+    private func performRouteOptimization(
+        from currentLocation: CLLocation
+    ) {
+        Task {
+            let optimizer = DailyRouteOptimizer()
+            let optimized = await optimizer.optimizedRoute(
+                jobs: sortedJobs,
+                sites: store.sites,
+                startingLocation: currentLocation
+            )
+            let optimizedIDs = Set(optimized.map(\.id))
+            let remaining = sortedJobs.filter {
+                !optimizedIDs.contains($0.id)
+            }
+
+            await MainActor.run {
+                displayedJobs = optimized + remaining
+                isOptimizingRoute = false
+            }
+        }
+    }
+
     private func employeeColor(
         named colorName: String
     ) -> Color {
