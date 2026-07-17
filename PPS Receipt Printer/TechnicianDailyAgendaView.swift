@@ -430,138 +430,16 @@ struct TechnicianDailyAgendaView: View {
             alignment: .leading,
             spacing: 14
         ) {
-            HStack(
-                alignment: .firstTextBaseline,
-                spacing: 12
-            ) {
-                Text(
-                    customerDisplayName(
-                        for: job.customerNumber
-                    )
-                )
-                .font(.title3)
-                .fontWeight(.bold)
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-
-                Spacer()
-
-                Text(
-                    SchedulingCalculator
-                        .formattedScheduledDuration(
-                            for: job
-                        )
-                )
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.trailing)
+            Button {
+                selectedJobID = job.id
+            } label: {
+                technicianJobInformation(job)
             }
-
-            HStack(
-                alignment: .firstTextBaseline,
-                spacing: 12
-            ) {
-                Text(serviceName(for: job))
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-
-                Spacer()
-
-                Text(
-                    twentyFourHourTime(
-                        job.scheduledDate
-                    )
-                )
-                .font(.caption)
-                .fontWeight(.bold)
-                .monospacedDigit()
-                .lineLimit(1)
-            }
-
-            HStack {
-                Spacer()
-
-                Label(
-                    job.status.rawValue,
-                    systemImage:
-                        statusIcon(
-                            for: job.status
-                        )
-                )
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundStyle(
-                    statusColor(
-                        for: job.status
-                    )
-                )
-
-                Spacer()
-            }
-
-            if let site = site(for: job) {
-                Label {
-                    VStack(
-                        alignment: .leading,
-                        spacing: 3
-                    ) {
-                        if !site.siteName.isEmpty {
-                            Text(site.siteName)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(.primary)
-                        }
-
-                        Text(site.serviceAddress)
-                            .foregroundStyle(.secondary)
-                    }
-                } icon: {
-                    Image(
-                        systemName:
-                            "mappin.and.ellipse"
-                    )
-                    .foregroundStyle(.secondary)
-                }
-                .font(.subheadline)
-            }
+            .buttonStyle(.plain)
 
             Divider()
 
-            ActionTileRow(
-                actions: [
-                    ActionTileItem(
-                        title: "Navigate",
-                        systemImage: "location.fill",
-                        isEnabled: hasUsableAddress(
-                            for: job
-                        )
-                    ) {
-                        prepareNavigation(
-                            for: job
-                        )
-                    },
-
-                    ActionTileItem(
-                        title: "Call",
-                        systemImage: "phone.fill",
-                        isEnabled: hasUsablePhoneNumber(
-                            for: job
-                        )
-                    ) {
-                        callCustomer(
-                            for: job
-                        )
-                    },
-
-                    ActionTileItem(
-                        title: "Details",
-                        systemImage: "doc.text.fill"
-                    ) {
-                        selectedJobID = job.id
-                    }
-                ]
-            )
+            technicianActionRow(for: job)
         }
         .padding()
         .background(
