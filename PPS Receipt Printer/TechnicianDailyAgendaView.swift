@@ -17,6 +17,9 @@ struct TechnicianDailyAgendaView: View {
     
     @State private var navigationAddress = ""
     @State private var showingNavigationOptions = false
+    @State private var navigationErrorMessage = ""
+    @State private var showingNavigationError = false
+    
     @State private var selectedDate = Date()
     @State private var selectedJobID: UUID?
     @State private var jobPendingCompletionID: UUID?
@@ -130,6 +133,14 @@ struct TechnicianDailyAgendaView: View {
             ) {}
         } message: {
             Text(navigationAddress)
+        }
+        .alert(
+            "Unable to Open Navigation",
+            isPresented: $showingNavigationError
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(navigationErrorMessage)
         }
         .confirmationDialog(
             "Complete This Job?",
@@ -958,69 +969,39 @@ struct TechnicianDailyAgendaView: View {
     private func openAppleMaps(
         to address: String
     ) {
-        guard let encodedAddress =
-            address.addingPercentEncoding(
-                withAllowedCharacters:
-                    .urlQueryAllowed
-            ),
-              let url = URL(
-                  string:
-                    "http://maps.apple.com/"
-                    + "?daddr=\(encodedAddress)"
-                    + "&dirflg=d"
-              )
-        else {
-            return
-        }
+        Task {
+            do {
+                try await NavigationService.shared
+                    .navigateWithAppleMaps(
+                        to: address
+                    )
+            } catch {
+                navigationErrorMessage =
+                    error.localizedDescription
 
-        openURL(url)
+                showingNavigationError = true
+            }
+        }
     }
 
     private func openGoogleMaps(
         to address: String
     ) {
-        guard let encodedAddress =
-            address.addingPercentEncoding(
-                withAllowedCharacters:
-                    .urlQueryAllowed
-            )
-        else {
-            return
-        }
+        Task {
+            do {
+                try await NavigationService.shared
+                    .navigateWithGoogleMaps(
+                        to: address
+                    )
+            } catch {
+                navigationErrorMessage =
+                    error.localizedDescription
 
-        let appURL = URL(
-            string:
-                "comgooglemaps://"
-                + "?daddr=\(encodedAddress)"
-                + "&directionsmode=driving"
-        )
-
-        let webURL = URL(
-            string:
-                "https://www.google.com/maps/dir/"
-                + "?api=1"
-                + "&destination=\(encodedAddress)"
-                + "&travelmode=driving"
-        )
-
-        guard let appURL else {
-            if let webURL {
-                openURL(webURL)
+                showingNavigationError = true
             }
-
-            return
-        }
-
-        openURL(appURL) { accepted in
-            guard !accepted,
-                  let webURL
-            else {
-                return
-            }
-
-            openURL(webURL)
         }
     }
+    
     private func callCustomer(
         for job: JobRecord
     ) {
