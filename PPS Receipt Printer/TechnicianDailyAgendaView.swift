@@ -9,10 +9,18 @@ import SwiftUI
 
 struct TechnicianDailyAgendaView: View {
     @EnvironmentObject var store: AppDataStore
+    
+    @Environment(\.openURL)
+    private var openURL
 
     let employee: EmployeeRecord
-
+    
+    @State private var navigationAddress = ""
+    @State private var showingNavigationOptions = false
     @State private var selectedDate = Date()
+    @State private var selectedJobID: UUID?
+    @State private var jobPendingCompletionID: UUID?
+    @State private var showingCompletionConfirmation = false
 
     private var summary: EmployeeCapacitySummary {
         SchedulingCalculator.capacitySummary(
@@ -69,20 +77,8 @@ struct TechnicianDailyAgendaView: View {
                 if sortedJobs.isEmpty {
                     emptyScheduleCard
                 } else {
-                    ForEach(
-                        Array(sortedJobs.enumerated()),
-                        id: \.element.id
-                    ) { index, job in
-                        NavigationLink {
-                            JobDetailView(job: job)
-                                .environmentObject(store)
-                        } label: {
-                            technicianJobCard(
-                                job,
-                                sequenceNumber: index + 1
-                            )
-                        }
-                        .buttonStyle(.plain)
+                    ForEach(sortedJobs) { job in
+                        technicianJobCard(job)
                     }
                 }
             }
@@ -93,6 +89,70 @@ struct TechnicianDailyAgendaView: View {
         )
         .navigationTitle("My Day")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(
+            item: $selectedJobID
+        ) { jobID in
+            if let job = store.jobs.first(where: {
+                $0.id == jobID
+            }) {
+                JobDetailView(job: job)
+                    .environmentObject(store)
+            } else {
+                ContentUnavailableView(
+                    "Job Not Found",
+                    systemImage: "briefcase",
+                    description: Text(
+                        "This job may have been removed or archived."
+                    )
+                )
+            }
+        }
+        .confirmationDialog(
+            "Choose Navigation App",
+            isPresented: $showingNavigationOptions,
+            titleVisibility: .visible
+        ) {
+            Button("Apple Maps") {
+                openAppleMaps(
+                    to: navigationAddress
+                )
+            }
+
+            Button("Google Maps") {
+                openGoogleMaps(
+                    to: navigationAddress
+                )
+            }
+
+            Button(
+                "Cancel",
+                role: .cancel
+            ) {}
+        } message: {
+            Text(navigationAddress)
+        }
+        .confirmationDialog(
+            "Complete This Job?",
+            isPresented:
+                $showingCompletionConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Mark Completed") {
+                completePendingJob()
+            }
+
+            Button(
+                "Cancel",
+                role: .cancel
+            ) {
+                jobPendingCompletionID = nil
+            }
+        } message: {
+            Text(
+                "The job will be marked completed "
+                + "and the completion time will be recorded."
+            )
+        }
     }
 
     private var greetingHeader: some View {
@@ -364,161 +424,344 @@ struct TechnicianDailyAgendaView: View {
     }
 
     private func technicianJobCard(
-        _ job: JobRecord,
-        sequenceNumber: Int
+        _ job: JobRecord
     ) -> some View {
-        HStack(
-            alignment: .top,
+        VStack(
+            alignment: .leading,
             spacing: 14
         ) {
-            timelineColumn(
-                for: job,
-                sequenceNumber: sequenceNumber
-            )
-
-            VStack(
-                alignment: .leading,
+            HStack(
+                alignment: .firstTextBaseline,
                 spacing: 12
             ) {
-                HStack(
-                    alignment: .firstTextBaseline
-                ) {
-                    Text(serviceName(for: job))
-                        .font(.headline)
-                        .foregroundStyle(.primary)
-
-                    Spacer()
-
-                    Text(
-                        SchedulingCalculator
-                            .formattedScheduledDuration(
-                                for: job
-                            )
-                    )
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.secondary)
-                }
-
                 Text(
                     customerDisplayName(
                         for: job.customerNumber
                     )
                 )
                 .font(.title3)
-                .fontWeight(.semibold)
+                .fontWeight(.bold)
                 .foregroundStyle(.primary)
+                .lineLimit(2)
 
-                if let site = site(for: job) {
-                    Label {
-                        VStack(
-                            alignment: .leading,
-                            spacing: 2
-                        ) {
-                            if !site.siteName.isEmpty {
-                                Text(site.siteName)
-                                    .fontWeight(.medium)
-                            }
+                Spacer()
 
-                            Text(site.serviceAddress)
-                        }
-                    } icon: {
-                        Image(
-                            systemName:
-                                "mappin.and.ellipse"
+                Text(
+                    SchedulingCalculator
+                        .formattedScheduledDuration(
+                            for: job
                         )
-                    }
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                }
+                )
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+            }
 
-                HStack {
-                    Label(
-                        job.status.rawValue,
-                        systemImage:
-                            statusIcon(
-                                for: job.status
-                            )
+            HStack(
+                alignment: .firstTextBaseline,
+                spacing: 12
+            ) {
+                Text(serviceName(for: job))
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+
+                Spacer()
+
+                Text(
+                    twentyFourHourTime(
+                        job.scheduledDate
                     )
-                    .font(.caption)
-                    .foregroundStyle(
-                        statusColor(
+                )
+                .font(.caption)
+                .fontWeight(.bold)
+                .monospacedDigit()
+                .lineLimit(1)
+            }
+
+            HStack {
+                Spacer()
+
+                Label(
+                    job.status.rawValue,
+                    systemImage:
+                        statusIcon(
                             for: job.status
                         )
+                )
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(
+                    statusColor(
+                        for: job.status
                     )
+                )
 
-                    Spacer()
+                Spacer()
+            }
 
-                    Text(job.jobNumber)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            if let site = site(for: job) {
+                Label {
+                    VStack(
+                        alignment: .leading,
+                        spacing: 3
+                    ) {
+                        if !site.siteName.isEmpty {
+                            Text(site.siteName)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.primary)
+                        }
 
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        Text(site.serviceAddress)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(
+                        systemName:
+                            "mappin.and.ellipse"
+                    )
+                    .foregroundStyle(.secondary)
                 }
+                .font(.subheadline)
             }
-            .padding()
-            .background(
-                Color(
-                    uiColor:
-                        .secondarySystemGroupedBackground
-                )
-            )
-            .clipShape(
-                RoundedRectangle(cornerRadius: 16)
-            )
-        }
-    }
 
-    private func timelineColumn(
-        for job: JobRecord,
-        sequenceNumber: Int
-    ) -> some View {
-        VStack(spacing: 8) {
-            Text(
-                job.scheduledDate.formatted(
-                    date: .omitted,
-                    time: .shortened
-                )
-            )
-            .font(.caption)
-            .fontWeight(.bold)
-            .multilineTextAlignment(.center)
+            Divider()
 
-            ZStack {
-                Circle()
-                    .fill(
-                        employeeColor(
-                            named: employee.colorName
+            ActionTileRow(
+                actions: [
+                    ActionTileItem(
+                        title: "Navigate",
+                        systemImage: "location.fill",
+                        isEnabled: hasUsableAddress(
+                            for: job
                         )
-                    )
-                    .frame(
-                        width: 30,
-                        height: 30
-                    )
+                    ) {
+                        prepareNavigation(
+                            for: job
+                        )
+                    },
 
-                Text("\(sequenceNumber)")
-                    .font(.caption)
-                    .fontWeight(.bold)
-                    .foregroundStyle(.white)
-            }
+                    ActionTileItem(
+                        title: "Call",
+                        systemImage: "phone.fill",
+                        isEnabled: hasUsablePhoneNumber(
+                            for: job
+                        )
+                    ) {
+                        callCustomer(
+                            for: job
+                        )
+                    },
 
-            Rectangle()
-                .fill(
-                    employeeColor(
-                        named: employee.colorName
-                    )
-                    .opacity(0.35)
-                )
-                .frame(
-                    width: 3,
-                    height: 72
-                )
+                    ActionTileItem(
+                        title: "Details",
+                        systemImage: "doc.text.fill"
+                    ) {
+                        selectedJobID = job.id
+                    }
+                ]
+            )
         }
-        .frame(width: 62)
+        .padding()
+        .background(
+            Color(
+                uiColor:
+                    .secondarySystemGroupedBackground
+            )
+        )
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 16
+            )
+        )
     }
 
+    private func technicianJobInformation(
+        _ job: JobRecord
+    ) -> some View {
+        VStack(
+            alignment: .leading,
+            spacing: 14
+        ) {
+            HStack(
+                alignment: .firstTextBaseline,
+                spacing: 12
+            ) {
+                Text(
+                    customerDisplayName(
+                        for: job.customerNumber
+                    )
+                )
+                .font(.title3)
+                .fontWeight(.bold)
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+
+                Spacer()
+
+                Text(
+                    SchedulingCalculator
+                        .formattedScheduledDuration(
+                            for: job
+                        )
+                )
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+            }
+
+            HStack(
+                alignment: .firstTextBaseline,
+                spacing: 12
+            ) {
+                Text(serviceName(for: job))
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+
+                Spacer()
+
+                Text(
+                    twentyFourHourTime(
+                        job.scheduledDate
+                    )
+                )
+                .font(.system(size: 16))
+                .fontWeight(.bold)
+                .monospacedDigit()
+                .lineLimit(1)
+            }
+
+            HStack {
+                Spacer()
+
+                Label(
+                    job.status.rawValue,
+                    systemImage:
+                        statusIcon(
+                            for: job.status
+                        )
+                )
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(
+                    statusColor(
+                        for: job.status
+                    )
+                )
+
+                Spacer()
+            }
+
+            if let site = site(for: job) {
+                Label {
+                    VStack(
+                        alignment: .leading,
+                        spacing: 3
+                    ) {
+                        if !site.siteName.isEmpty {
+                            Text(site.siteName)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.primary)
+                        }
+
+                        Text(site.serviceAddress)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(
+                        systemName:
+                            "mappin.and.ellipse"
+                    )
+                    .foregroundStyle(.secondary)
+                }
+                .font(.subheadline)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+    
+    private func technicianActionRow(
+        for job: JobRecord
+    ) -> some View {
+        ActionTileRow(
+            actions: [
+                ActionTileItem(
+                    title: "Navigate",
+                    systemImage: "location.fill",
+                    isEnabled: hasUsableAddress(
+                        for: job
+                    )
+                ) {
+                    prepareNavigation(
+                        for: job
+                    )
+                },
+
+                ActionTileItem(
+                    title: "Call",
+                    systemImage: "phone.fill",
+                    isEnabled: hasUsablePhoneNumber(
+                        for: job
+                    )
+                ) {
+                    callCustomer(
+                        for: job
+                    )
+                },
+
+                workflowAction(
+                    for: job
+                )
+            ]
+        )
+    }
+
+    private func workflowAction(
+        for job: JobRecord
+    ) -> ActionTileItem {
+        switch job.status {
+        case .scheduled, .assigned:
+            return ActionTileItem(
+                title: "Start Job",
+                systemImage: "play.fill",
+                tint: .orange
+            ) {
+                startJob(job)
+            }
+
+        case .inProgress:
+            return ActionTileItem(
+                title: "Complete",
+                systemImage:
+                    "checkmark.circle.fill",
+                tint: .green
+            ) {
+                requestCompletion(
+                    for: job
+                )
+            }
+
+        case .completed:
+            return ActionTileItem(
+                title: "Details",
+                systemImage: "doc.text.fill"
+            ) {
+                selectedJobID = job.id
+            }
+
+        case .toBeScheduled, .cancelled:
+            return ActionTileItem(
+                title: "Details",
+                systemImage: "doc.text.fill"
+            ) {
+                selectedJobID = job.id
+            }
+        }
+    }
+    
     private func summaryMetric(
         title: String,
         value: String,
@@ -756,6 +999,14 @@ struct TechnicianDailyAgendaView: View {
         )
     }
 
+    private func twentyFourHourTime(
+        _ date: Date
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+    
     private func changeDate(
         by dayOffset: Int
     ) {
@@ -768,6 +1019,199 @@ struct TechnicianDailyAgendaView: View {
             ?? selectedDate
     }
 
+    private func customer(
+        for job: JobRecord
+    ) -> Customer? {
+        store.customers.first {
+            $0.customerNumber ==
+                job.customerNumber
+        }
+    }
+
+    private func hasUsablePhoneNumber(
+        for job: JobRecord
+    ) -> Bool {
+        guard let customer = customer(for: job) else {
+            return false
+        }
+
+        return !customer.phone
+            .trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            .isEmpty
+    }
+
+    private func hasUsableAddress(
+        for job: JobRecord
+    ) -> Bool {
+        guard let site = site(for: job) else {
+            return false
+        }
+
+        return !site.serviceAddress
+            .trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            .isEmpty
+    }
+    
+    private func prepareNavigation(
+        for job: JobRecord
+    ) {
+        guard let site = site(for: job) else {
+            return
+        }
+
+        let address =
+            site.serviceAddress
+                .trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+
+        guard !address.isEmpty else {
+            return
+        }
+
+        navigationAddress = address
+        showingNavigationOptions = true
+    }
+
+    private func openAppleMaps(
+        to address: String
+    ) {
+        guard let encodedAddress =
+            address.addingPercentEncoding(
+                withAllowedCharacters:
+                    .urlQueryAllowed
+            ),
+              let url = URL(
+                  string:
+                    "http://maps.apple.com/"
+                    + "?daddr=\(encodedAddress)"
+                    + "&dirflg=d"
+              )
+        else {
+            return
+        }
+
+        openURL(url)
+    }
+
+    private func openGoogleMaps(
+        to address: String
+    ) {
+        guard let encodedAddress =
+            address.addingPercentEncoding(
+                withAllowedCharacters:
+                    .urlQueryAllowed
+            )
+        else {
+            return
+        }
+
+        let appURL = URL(
+            string:
+                "comgooglemaps://"
+                + "?daddr=\(encodedAddress)"
+                + "&directionsmode=driving"
+        )
+
+        let webURL = URL(
+            string:
+                "https://www.google.com/maps/dir/"
+                + "?api=1"
+                + "&destination=\(encodedAddress)"
+                + "&travelmode=driving"
+        )
+
+        guard let appURL else {
+            if let webURL {
+                openURL(webURL)
+            }
+
+            return
+        }
+
+        openURL(appURL) { accepted in
+            guard !accepted,
+                  let webURL
+            else {
+                return
+            }
+
+            openURL(webURL)
+        }
+    }
+    private func callCustomer(
+        for job: JobRecord
+    ) {
+        guard let customer = customer(
+            for: job
+        ) else {
+            return
+        }
+
+        let phoneNumber =
+            customer.phone
+                .trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+
+        let allowedCharacters =
+            CharacterSet(
+                charactersIn: "+0123456789"
+            )
+
+        let sanitizedPhoneNumber =
+            phoneNumber.unicodeScalars
+                .filter {
+                    allowedCharacters.contains($0)
+                }
+                .map(String.init)
+                .joined()
+
+        guard !sanitizedPhoneNumber.isEmpty,
+              let phoneURL = URL(
+                  string:
+                    "tel:\(sanitizedPhoneNumber)"
+              )
+        else {
+            return
+        }
+
+        openURL(phoneURL)
+    }
+    
+    private func startJob(
+        _ job: JobRecord
+    ) {
+        _ = store.startJob(
+            jobID: job.id
+        )
+    }
+
+    private func requestCompletion(
+        for job: JobRecord
+    ) {
+        jobPendingCompletionID = job.id
+        showingCompletionConfirmation = true
+    }
+
+    private func completePendingJob() {
+        guard let jobID =
+                jobPendingCompletionID
+        else {
+            return
+        }
+
+        _ = store.completeJob(
+            jobID: jobID
+        )
+
+        jobPendingCompletionID = nil
+    }
+    
     private func employeeColor(
         named colorName: String
     ) -> Color {

@@ -302,6 +302,55 @@ final class AppDataStore: ObservableObject {
             jobs[index] = job
         }
     }
+    @discardableResult
+    func startJob(
+        jobID: UUID
+    ) -> Bool {
+        guard let index = jobs.firstIndex(where: {
+            $0.id == jobID
+        }) else {
+            return false
+        }
+
+        switch jobs[index].status {
+        case .scheduled, .assigned:
+            jobs[index].status = .inProgress
+            return true
+
+        case .toBeScheduled,
+             .inProgress,
+             .completed,
+             .cancelled:
+            return false
+        }
+    }
+
+    @discardableResult
+    func completeJob(
+        jobID: UUID,
+        completedAt: Date = Date()
+    ) -> Bool {
+        guard let index = jobs.firstIndex(where: {
+            $0.id == jobID
+        }) else {
+            return false
+        }
+
+        switch jobs[index].status {
+        case .assigned,
+             .scheduled,
+             .inProgress:
+
+            jobs[index].status = .completed
+            jobs[index].completedDate = completedAt
+            return true
+
+        case .toBeScheduled,
+             .completed,
+             .cancelled:
+            return false
+        }
+    }
 
     func archiveJob(_ job: JobRecord) {
         var updated = job
