@@ -45,7 +45,27 @@ Planned goals:
 - Payment status
 - Balance due
 
-## v0.9 - Persona Engine
+
+## v0.9.5 B1-8 - Workflow Improvements
+
+* ✅ Route Optimization
+* ✅ Job Log
+* ✅ Guided Job Workflow
+* ✅ Invoice creation flow
+* ✅ Invoice navigation fixes
+* ✅ UX polish
+* ✅ Parking Lot updated
+* ✅ Brick 8 completed
+
+
+
+
+## v0.9.6 B9 - Automatic Time Tracking
+
+
+
+
+## v0.9.8 - Persona Engine
 
 Planned goals:
 
