@@ -33,13 +33,21 @@ struct TechnicianDailyAgendaView: View {
     @State private var isRouteOptimized = false
 
     private var summary: EmployeeCapacitySummary {
-        SchedulingCalculator.capacitySummary(
+        SchedulingEngine.capacitySummary(
             for: employee,
             on: selectedDate,
             from: store.jobs
         )
     }
 
+    private var agenda: TechnicianAgenda {
+        SchedulingEngine.dailyAgenda(
+            for: employee,
+            on: selectedDate,
+            from: store.jobs
+        )
+    }
+    
     private var sortedJobs: [JobRecord] {
         summary.assignedJobs.sorted {
             $0.scheduledDate < $1.scheduledDate

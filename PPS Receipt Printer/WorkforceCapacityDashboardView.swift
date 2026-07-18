@@ -22,7 +22,7 @@ struct WorkforceCapacityDashboardView: View {
 
     private var summaries: [EmployeeCapacitySummary] {
         activeEmployees.map { employee in
-            SchedulingCalculator.capacitySummary(
+            SchedulingEngine.capacitySummary(
                 for: employee,
                 on: selectedDate,
                 from: store.jobs
