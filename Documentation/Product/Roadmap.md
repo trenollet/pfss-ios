@@ -7,7 +7,7 @@
 
 ## Current Foundation
 
-PFSS currently includes customers, sites, leads, estimates, jobs, invoices, a service and material catalog, local persistence, archiving, reusable WorkOrder components, pricing calculations, catalog ranking, recommendation rules, guided job workflow, scheduling foundations, route planning foundations, and automatic job time tracking.
+PFSS currently includes customers, sites, leads, estimates, jobs, invoices, a service and material catalog, local persistence, archiving, reusable WorkOrder components, pricing calculations, catalog ranking, recommendation rules, guided job workflow, workforce and scheduling foundations, route planning foundations, and automatic job time tracking.
 
 ## v0.9.6 — Brick 9: Automatic Time Tracking
 
@@ -21,9 +21,11 @@ Delivered:
 - Invoice workflow regression fixes
 - Resilient elapsed-time calculation for older records
 
-## v0.9.7 — Brick 10: Editing and UI Consistency
+## Brick 10 — Editing and UI Consistency
 
-**Status:** Planned
+**Status:** Planned / Deferred
+
+This brick remains approved but is not the active implementation focus.
 
 Goals:
 
@@ -40,7 +42,41 @@ References:
 - `../Standards/UIStandards.md`
 - `../Decisions/ADR-003-Editing-Experience.md` when adopted
 
-## v0.9.8 — Persona Engine
+## Brick 11 — Scheduling Engine
+
+**Status:** Active
+
+Goal:
+
+Establish one reusable and explainable source of truth for scheduling validation, technician availability, capacity, and candidate openings.
+
+Deliverables:
+
+- Scheduling interval and normalized assignment value types
+- Deterministic overlap and availability validation
+- Structured scheduling conflicts and explanations
+- Daily technician capacity calculation
+- Non-mutating candidate-opening generation
+- Multi-technician availability evaluation
+- Unit tests for time boundaries, overlap, capacity, and candidate generation
+- Integration with existing job, employee, and schedule data
+
+Out of scope for the first Scheduling Engine brick:
+
+- Automatic dispatch
+- Route optimization
+- Recurring occurrence generation
+- Weather-driven bulk rescheduling
+- Travel-time prediction
+- Cloud synchronization conflicts
+
+References:
+
+- `../Features/Scheduling.md`
+- `../Architecture/SchedulingEngine.md`
+- `../Decisions/ADR-002-Scheduling-Source-of-Truth.md`
+
+## Persona Engine
 
 **Status:** Planned
 
@@ -51,7 +87,7 @@ Goals:
 - Persona-specific dashboards and action emphasis
 - Shared business data beneath adaptive presentation
 
-## v0.9.x — Product Readiness
+## Product Readiness
 
 Goals:
 
