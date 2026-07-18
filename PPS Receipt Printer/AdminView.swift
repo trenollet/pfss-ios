@@ -30,6 +30,17 @@ struct AdminView: View {
                     }
                 }
 
+                Section("Reports") {
+                    NavigationLink {
+                        JobHistoryReportView()
+                    } label: {
+                        Label(
+                            "Job History Report",
+                            systemImage: "clock.arrow.circlepath"
+                        )
+                    }
+                }
+
                 Section("Configuration") {
                     NavigationLink {
                         RecommendationRuleEditorView()

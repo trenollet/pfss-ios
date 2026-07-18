@@ -26,9 +26,9 @@ enum JobWorkflowAction: String, Identifiable {
         case .startTravel: return "Start Travel"
         case .markArrived: return "Arrived"
         case .startSetup: return "Start Setup"
-        case .startWork: return "Start Work"
+        case .startWork: return "Start Job"
         case .startPackUp: return "Start Pack-up"
-        case .finishWork: return "Finish Work"
+        case .finishWork: return "Complete Job"
         case .createInvoice: return "Create Invoice"
         case .recordPayment: return "Record Payment"
         case .completeJob: return "Close Job"
@@ -120,6 +120,12 @@ struct FieldOperationsEngine {
         )
 
         updated.workflowState = transition.state
+
+        if action == .startSetup,
+           updated.setupStartDate == nil {
+            updated.setupStartDate = timestamp
+        }
+
         updated.timelineEvents.append(
             JobTimelineEvent(
                 type: transition.eventType,
@@ -137,7 +143,9 @@ struct FieldOperationsEngine {
 
         case .completed:
             updated.status = .completed
-            updated.completedDate = timestamp
+            if updated.completedDate == nil {
+                updated.completedDate = timestamp
+            }
 
         case .cancelled:
             updated.status = .cancelled
@@ -208,11 +216,11 @@ struct FieldOperationsEngine {
         for job: JobRecord,
         invoice: InvoiceRecord?
     ) -> JobWorkflowState {
-        if job.status == .completed {
-            return .completed
-        }
-
-        if job.status == .cancelled {
+        // JobStatus.completed means the field work is finished. It must not
+        // force the workflow to its terminal `.completed` state because the
+        // invoice step still follows `.workComplete`.
+        if job.status == .cancelled ||
+           job.workflowState == .cancelled {
             return .cancelled
         }
 
@@ -220,12 +228,24 @@ struct FieldOperationsEngine {
             return .paymentReceived
         }
 
-        if invoice != nil &&
-           job.workflowState == .workComplete {
+        if invoice != nil {
             return .invoiceCreated
         }
 
-        return job.workflowState
+        // The workflow state is the source of truth for the guided action.
+        // This preserves `.workComplete` after Complete Job so the next action
+        // remains Create Invoice.
+        if job.workflowState != .notStarted {
+            return job.workflowState
+        }
+
+        // Compatibility for historical records created before workflow state
+        // tracking was introduced.
+        if job.status == .completed {
+            return .completed
+        }
+
+        return .notStarted
     }
 
     private func nextAction(
@@ -304,11 +324,11 @@ struct FieldOperationsEngine {
         case .startSetup:
             return (.settingUp, .setupStarted, "Setup Started")
         case .startWork:
-            return (.working, .workStarted, "Work Started")
+            return (.working, .workStarted, "Job Started")
         case .startPackUp:
             return (.packingUp, .packUpStarted, "Pack-up Started")
         case .finishWork:
-            return (.workComplete, .workCompleted, "Work Completed")
+            return (.workComplete, .workCompleted, "Job Completed")
         case .createInvoice:
             return (.invoiceCreated, .invoiceCreated, "Invoice Created")
         case .recordPayment:

@@ -543,6 +543,7 @@ struct JobRecord: Identifiable, Codable, WorkOrder {
     var secondaryTechnicianID: UUID?
     var scheduledDate: Date
     var scheduledDurationOverrideMinutes: Int? = nil
+    var setupStartDate: Date? = nil
     var completedDate: Date?
 
     var status: JobStatus
@@ -573,6 +574,7 @@ extension JobRecord {
         case secondaryTechnicianID
         case scheduledDate
         case scheduledDurationOverrideMinutes
+        case setupStartDate
         case completedDate
         case status
         case workflowState
@@ -664,6 +666,11 @@ extension JobRecord {
                 forKey: .scheduledDurationOverrideMinutes
             )
 
+        setupStartDate = try container.decodeIfPresent(
+            Date.self,
+            forKey: .setupStartDate
+        )
+
         completedDate = try container.decodeIfPresent(
             Date.self,
             forKey: .completedDate
@@ -718,6 +725,53 @@ extension JobRecord {
         case .toBeScheduled, .scheduled, .assigned:
             return .notStarted
         }
+    }
+}
+
+
+extension JobRecord {
+    /// The beginning of tracked field time.
+    ///
+    /// New jobs store this directly in `setupStartDate`. The timeline fallback
+    /// also supports jobs completed while Brick 9 was being tested, where the
+    /// workflow event was saved but the dedicated timestamp was not.
+    var trackedStartDate: Date? {
+        if let setupStartDate {
+            return setupStartDate
+        }
+
+        return timelineEvents
+            .filter { $0.type == .setupStarted }
+            .map(\.timestamp)
+            .min()
+    }
+
+    /// The end of tracked field time.
+    ///
+    /// Prefer the dedicated completion timestamp, then recover it from either
+    /// completion event used by the workflow engine.
+    var trackedCompletionDate: Date? {
+        if let completedDate {
+            return completedDate
+        }
+
+        return timelineEvents
+            .filter {
+                $0.type == .jobCompleted ||
+                $0.type == .workCompleted
+            }
+            .map(\.timestamp)
+            .max()
+    }
+
+    var timeOnJob: TimeInterval? {
+        guard let start = trackedStartDate,
+              let completion = trackedCompletionDate,
+              completion >= start else {
+            return nil
+        }
+
+        return completion.timeIntervalSince(start)
     }
 }
 
@@ -957,3 +1011,4 @@ extension WorkOrder {
         )
     }
 }
+

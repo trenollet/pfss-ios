@@ -365,18 +365,7 @@ final class AppDataStore: ObservableObject {
         }
 
         if action == .createInvoice {
-            guard createInvoiceFromJob(jobs[index]) != nil else {
-                return false
-            }
-
-            jobs[index] =
-                fieldOperationsEngine.recordInvoiceCreated(
-                    for: jobs[index],
-                    employeeID: employeeID,
-                    at: timestamp
-                )
-
-            return true
+            return createInvoiceFromJob(jobID: jobID) != nil
         }
 
         if action == .recordPayment {
@@ -406,8 +395,10 @@ final class AppDataStore: ObservableObject {
     }
 
     @discardableResult
-    func startJob(
-        jobID: UUID
+    func startSetup(
+        jobID: UUID,
+        employeeID: UUID? = nil,
+        startedAt: Date = Date()
     ) -> Bool {
         guard let index = jobs.firstIndex(where: {
             $0.id == jobID
@@ -422,20 +413,64 @@ final class AppDataStore: ObservableObject {
             return false
         }
 
-        jobs[index].status = .inProgress
-        jobs[index].workflowState = .working
-        jobs[index].timelineEvents.append(
+        var updated = jobs[index]
+        updated.status = .inProgress
+        updated.workflowState = .settingUp
+
+        if updated.setupStartDate == nil {
+            updated.setupStartDate = startedAt
+        }
+
+        updated.timelineEvents.append(
             JobTimelineEvent(
-                type: .workStarted,
-                title: "Work Started"
+                type: .setupStarted,
+                title: "Setup Started",
+                timestamp: startedAt,
+                employeeID: employeeID
             )
         )
+
+        jobs[index] = updated
+        return true
+    }
+
+    @discardableResult
+    func startJob(
+        jobID: UUID,
+        employeeID: UUID? = nil,
+        startedAt: Date = Date()
+    ) -> Bool {
+        guard let index = jobs.firstIndex(where: {
+            $0.id == jobID
+        }) else {
+            return false
+        }
+
+        guard jobs[index].status == .inProgress,
+              jobs[index].workflowState == .settingUp
+        else {
+            return false
+        }
+
+        var updated = jobs[index]
+        updated.workflowState = .working
+        updated.timelineEvents.append(
+            JobTimelineEvent(
+                type: .workStarted,
+                title: "Job Started",
+                timestamp: startedAt,
+                employeeID: employeeID
+            )
+        )
+
+        jobs[index] = updated
         return true
     }
 
     @discardableResult
     func completeJob(
         jobID: UUID,
+        employeeID: UUID? = nil,
         completedAt: Date = Date()
     ) -> Bool {
         guard let index = jobs.firstIndex(where: {
@@ -444,15 +479,29 @@ final class AppDataStore: ObservableObject {
             return false
         }
 
+        guard jobs[index].status == .inProgress,
+              jobs[index].workflowState == .working
+        else {
+            return false
+        }
+
         var updated = jobs[index]
-        updated.workflowState = .completed
+        // Field work is complete, but the overall workflow is not closed yet.
+        // Keep the job reportable as completed while leaving the workflow at
+        // workComplete so Create Invoice remains the next valid action.
+        updated.workflowState = .workComplete
         updated.status = .completed
-        updated.completedDate = completedAt
+
+        if updated.completedDate == nil {
+            updated.completedDate = completedAt
+        }
+
         updated.timelineEvents.append(
             JobTimelineEvent(
                 type: .jobCompleted,
                 title: "Job Completed",
-                timestamp: completedAt
+                timestamp: completedAt,
+                employeeID: employeeID
             )
         )
         jobs[index] = updated
@@ -586,11 +635,41 @@ final class AppDataStore: ObservableObject {
     
     @discardableResult
     func createInvoiceFromJob(_ job: JobRecord) -> InvoiceRecord? {
-        guard job.status == .completed else {
+        createInvoiceFromJob(jobID: job.id)
+    }
+
+    /// Creates or returns the invoice using the persisted job as the source of
+    /// truth. Using the job ID prevents an older view copy from blocking or
+    /// reversing the workflow transition.
+    @discardableResult
+    func createInvoiceFromJob(jobID: UUID) -> InvoiceRecord? {
+        guard let jobIndex = jobs.firstIndex(where: {
+            $0.id == jobID
+        }) else {
             return nil
         }
 
-        guard !invoices.contains(where: { $0.jobNumber == job.jobNumber }) else {
+        let persistedJob = jobs[jobIndex]
+
+        if let existingInvoice = invoices.first(where: {
+            $0.jobNumber == persistedJob.jobNumber
+        }) {
+            if jobs[jobIndex].workflowState != .invoiceCreated &&
+               jobs[jobIndex].workflowState != .paymentReceived {
+                jobs[jobIndex].workflowState = .invoiceCreated
+            }
+            return existingInvoice
+        }
+
+        // Field completion may be represented by the status, the workflow
+        // state, or both. Accept either representation for compatibility with
+        // jobs saved during earlier Brick 9 test builds.
+        let fieldWorkIsComplete =
+            persistedJob.status == .completed ||
+            persistedJob.workflowState == .workComplete ||
+            persistedJob.workflowState == .completed
+
+        guard fieldWorkIsComplete else {
             return nil
         }
 
@@ -602,26 +681,24 @@ final class AppDataStore: ObservableObject {
         ) ?? issueDate
 
         let updatedLineItems = PricingCalculator.updatedLineItems(
-            job.lineItems
+            persistedJob.lineItems
         )
-
         let subtotal = PricingCalculator.subtotal(
             for: updatedLineItems
         )
-
         let total = PricingCalculator.total(
             subtotal: subtotal,
-            discount: job.discount
+            discount: persistedJob.discount
         )
 
         let invoice = InvoiceRecord(
             invoiceNumber: generateInvoiceNumber(),
-            customerNumber: job.customerNumber,
-            siteID: job.siteID,
-            jobNumber: job.jobNumber,
+            customerNumber: persistedJob.customerNumber,
+            siteID: persistedJob.siteID,
+            jobNumber: persistedJob.jobNumber,
             lineItems: updatedLineItems,
             subtotal: subtotal,
-            discount: job.discount,
+            discount: persistedJob.discount,
             total: total,
             amountPaid: 0,
             balanceDue: total,
@@ -629,10 +706,27 @@ final class AppDataStore: ObservableObject {
             issueDate: issueDate,
             dueDate: dueDate,
             paidDate: nil,
-            notes: job.workNotes
+            notes: persistedJob.workNotes
         )
 
         invoices.append(invoice)
+
+        jobs[jobIndex].status = .completed
+        jobs[jobIndex].workflowState = .invoiceCreated
+
+        if !jobs[jobIndex].timelineEvents.contains(where: {
+            $0.type == .invoiceCreated
+        }) {
+            jobs[jobIndex].timelineEvents.append(
+                JobTimelineEvent(
+                    type: .invoiceCreated,
+                    title: "Invoice Created",
+                    timestamp: issueDate,
+                    employeeID: persistedJob.primaryTechnicianID
+                )
+            )
+        }
+
         return invoice
     }
     
