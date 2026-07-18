@@ -90,3 +90,32 @@ Medium — after v1.0.
 **Reason**
 
 Technicians and office staff frequently scan job lists rather than opening individual jobs. Providing an immediate visual indicator reduces unnecessary navigation, improves workflow awareness, and gives the application a more polished, professional feel.
+
+**Post MVP Features **
+
+BRICK 9 
+Looking back, Brick 9 turned into more than just “automatic time tracking.” We ended up strengthening several parts of PFSS:
+
+* ✅ Added a dedicated Setup phase to the workflow.
+* ✅ Implemented automatic time tracking with no extra steps for the technician.
+* ✅ Preserved the guided “next action” workflow.
+* ✅ Fixed the invoice workflow regression.
+* ✅ Added the first operational report.
+* ✅ Improved the resilience of time calculations by falling back to timeline events when needed.
+
+One thing I do want to revisit in a future cleanup is the fallback logic. It’s a good safety net, but my preference is for the dedicated timestamp fields to be the authoritative source. Once we’re confident those fields are always populated correctly for every new job, we can simplify the model and reserve the timeline lookup purely as a migration path for older data.
+
+I also have one enhancement I’d like to propose for a future brick. Since we’re already capturing setup and completion timestamps, we can eventually show them in the Job Detail screen:
+Time Tracking
+
+Setup Started
+7/18/2026  9:14 AM
+
+Completed
+7/18/2026 10:37 AM
+
+Time on Job
+1 hr 23 min
+
+END BRICK 9
+
