@@ -90,14 +90,16 @@ final class TechnicianLocationManager: NSObject,
     @Published var locationError: Error?
     @Published private(set) var status: TechnicianLocationStatus
 
-    private let manager = CLLocationManager()
-    private var pendingLocationCompletion: ((Result<CLLocation, Error>) -> Void)?
+    private let manager: CLLocationManager
+    private var pendingLocationCompletion:
+        ((Result<CLLocation, Error>) -> Void)?
 
     override init() {
-        authorizationStatus = manager.authorizationStatus
-        status = Self.initialStatus(
-            authorizationStatus: manager.authorizationStatus
-        )
+        manager = CLLocationManager()
+        authorizationStatus = .notDetermined
+        currentLocation = nil
+        locationError = nil
+        status = .notRequested
 
         super.init()
 
@@ -108,47 +110,50 @@ final class TechnicianLocationManager: NSObject,
     // MARK: - Public
 
     func requestLocationAccess() {
-        guard CLLocationManager.locationServicesEnabled() else {
-            status = .servicesDisabled
-            return
-        }
+        checkLocationServices { [weak self] servicesEnabled in
+            guard let self else {
+                return
+            }
 
-        switch manager.authorizationStatus {
-        case .notDetermined:
-            status = .requestingPermission
-            manager.requestWhenInUseAuthorization()
+            guard servicesEnabled else {
+                self.handleServicesDisabled()
+                return
+            }
 
-        case .authorizedAlways,
-             .authorizedWhenInUse:
-            status = .acquiringLocation
-            manager.requestLocation()
-
-        case .denied:
-            status = .denied
-
-        case .restricted:
-            status = .restricted
-
-        @unknown default:
-            status = .unavailable
+            self.performLocationAccessRequest()
         }
     }
 
     func refreshLocation() {
-        guard CLLocationManager.locationServicesEnabled() else {
-            status = .servicesDisabled
-            return
-        }
+        checkLocationServices { [weak self] servicesEnabled in
+            guard let self else {
+                return
+            }
 
-        guard manager.authorizationStatus == .authorizedAlways ||
-              manager.authorizationStatus == .authorizedWhenInUse
-        else {
-            updateStatusForCurrentAuthorization()
-            return
-        }
+            guard servicesEnabled else {
+                self.handleServicesDisabled()
+                return
+            }
 
-        status = .acquiringLocation
-        manager.requestLocation()
+            switch self.authorizationStatus {
+            case .authorizedAlways,
+                 .authorizedWhenInUse:
+                self.status = .acquiringLocation
+                self.manager.requestLocation()
+
+            case .notDetermined:
+                self.status = .notRequested
+
+            case .denied:
+                self.status = .denied
+
+            case .restricted:
+                self.status = .restricted
+
+            @unknown default:
+                self.status = .unavailable
+            }
+        }
     }
 
     /// Requests permission when necessary and returns one current location.
@@ -156,47 +161,29 @@ final class TechnicianLocationManager: NSObject,
     func requestCurrentLocation(
         completion: @escaping (Result<CLLocation, Error>) -> Void
     ) {
-        guard CLLocationManager.locationServicesEnabled() else {
-            status = .servicesDisabled
-            completion(.failure(TechnicianLocationError.servicesDisabled))
-            return
-        }
-
         guard pendingLocationCompletion == nil else {
-            completion(.failure(TechnicianLocationError.requestAlreadyInProgress))
+            completion(
+                .failure(
+                    TechnicianLocationError.requestAlreadyInProgress
+                )
+            )
             return
         }
 
         pendingLocationCompletion = completion
         locationError = nil
 
-        switch manager.authorizationStatus {
-        case .notDetermined:
-            status = .requestingPermission
-            manager.requestWhenInUseAuthorization()
+        checkLocationServices { [weak self] servicesEnabled in
+            guard let self else {
+                return
+            }
 
-        case .authorizedAlways,
-             .authorizedWhenInUse:
-            status = .acquiringLocation
-            manager.requestLocation()
+            guard servicesEnabled else {
+                self.handleServicesDisabled()
+                return
+            }
 
-        case .denied:
-            status = .denied
-            finishRequest(
-                with: .failure(TechnicianLocationError.permissionDenied)
-            )
-
-        case .restricted:
-            status = .restricted
-            finishRequest(
-                with: .failure(TechnicianLocationError.permissionRestricted)
-            )
-
-        @unknown default:
-            status = .unavailable
-            finishRequest(
-                with: .failure(TechnicianLocationError.locationUnavailable)
-            )
+            self.performCurrentLocationRequest()
         }
     }
 
@@ -205,35 +192,38 @@ final class TechnicianLocationManager: NSObject,
     func locationManagerDidChangeAuthorization(
         _ manager: CLLocationManager
     ) {
-        authorizationStatus = manager.authorizationStatus
+        let newAuthorizationStatus = manager.authorizationStatus
+        authorizationStatus = newAuthorizationStatus
 
-        guard CLLocationManager.locationServicesEnabled() else {
-            currentLocation = nil
-            status = .servicesDisabled
-            finishRequest(
-                with: .failure(TechnicianLocationError.servicesDisabled)
-            )
-            return
-        }
-
-        switch manager.authorizationStatus {
+        switch newAuthorizationStatus {
         case .authorizedAlways,
              .authorizedWhenInUse:
-            status = .acquiringLocation
-            manager.requestLocation()
+            if pendingLocationCompletion != nil ||
+                status == .requestingPermission {
+                status = .acquiringLocation
+                manager.requestLocation()
+            } else if currentLocation != nil {
+                status = .ready
+            } else {
+                status = .notRequested
+            }
 
         case .denied:
             currentLocation = nil
             status = .denied
             finishRequest(
-                with: .failure(TechnicianLocationError.permissionDenied)
+                with: .failure(
+                    TechnicianLocationError.permissionDenied
+                )
             )
 
         case .restricted:
             currentLocation = nil
             status = .restricted
             finishRequest(
-                with: .failure(TechnicianLocationError.permissionRestricted)
+                with: .failure(
+                    TechnicianLocationError.permissionRestricted
+                )
             )
 
         case .notDetermined:
@@ -245,7 +235,9 @@ final class TechnicianLocationManager: NSObject,
             currentLocation = nil
             status = .unavailable
             finishRequest(
-                with: .failure(TechnicianLocationError.locationUnavailable)
+                with: .failure(
+                    TechnicianLocationError.locationUnavailable
+                )
             )
         }
     }
@@ -257,7 +249,9 @@ final class TechnicianLocationManager: NSObject,
         guard let location = locations.last else {
             status = .unavailable
             finishRequest(
-                with: .failure(TechnicianLocationError.locationUnavailable)
+                with: .failure(
+                    TechnicianLocationError.locationUnavailable
+                )
             )
             return
         }
@@ -273,45 +267,132 @@ final class TechnicianLocationManager: NSObject,
         didFailWithError error: Error
     ) {
         locationError = error
-        status = .unavailable
 
-        if let coreLocationError = error as? CLError,
-           coreLocationError.code == .locationUnknown {
-            finishRequest(
-                with: .failure(TechnicianLocationError.locationUnavailable)
-            )
+        if let coreLocationError = error as? CLError {
+            switch coreLocationError.code {
+            case .denied:
+                handleServicesOrPermissionDenied()
+
+            case .locationUnknown:
+                status = .unavailable
+                finishRequest(
+                    with: .failure(
+                        TechnicianLocationError.locationUnavailable
+                    )
+                )
+
+            default:
+                status = .unavailable
+                finishRequest(with: .failure(error))
+            }
         } else {
+            status = .unavailable
             finishRequest(with: .failure(error))
         }
     }
 
     // MARK: - Private
 
-    private static func initialStatus(
-        authorizationStatus: CLAuthorizationStatus
-    ) -> TechnicianLocationStatus {
-        guard CLLocationManager.locationServicesEnabled() else {
-            return .servicesDisabled
-        }
-
+    private func performLocationAccessRequest() {
         switch authorizationStatus {
         case .notDetermined:
-            return .notRequested
-        case .authorizedAlways, .authorizedWhenInUse:
-            return .acquiringLocation
+            status = .requestingPermission
+            manager.requestWhenInUseAuthorization()
+
+        case .authorizedAlways,
+             .authorizedWhenInUse:
+            status = .acquiringLocation
+            manager.requestLocation()
+
         case .denied:
-            return .denied
+            status = .denied
+
         case .restricted:
-            return .restricted
+            status = .restricted
+
         @unknown default:
-            return .unavailable
+            status = .unavailable
         }
     }
 
-    private func updateStatusForCurrentAuthorization() {
-        status = Self.initialStatus(
-            authorizationStatus: manager.authorizationStatus
+    private func performCurrentLocationRequest() {
+        switch authorizationStatus {
+        case .notDetermined:
+            status = .requestingPermission
+            manager.requestWhenInUseAuthorization()
+
+        case .authorizedAlways,
+             .authorizedWhenInUse:
+            status = .acquiringLocation
+            manager.requestLocation()
+
+        case .denied:
+            status = .denied
+            finishRequest(
+                with: .failure(
+                    TechnicianLocationError.permissionDenied
+                )
+            )
+
+        case .restricted:
+            status = .restricted
+            finishRequest(
+                with: .failure(
+                    TechnicianLocationError.permissionRestricted
+                )
+            )
+
+        @unknown default:
+            status = .unavailable
+            finishRequest(
+                with: .failure(
+                    TechnicianLocationError.locationUnavailable
+                )
+            )
+        }
+    }
+
+    private func checkLocationServices(
+        completion: @escaping (Bool) -> Void
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let servicesEnabled =
+                CLLocationManager.locationServicesEnabled()
+
+            DispatchQueue.main.async {
+                completion(servicesEnabled)
+            }
+        }
+    }
+
+    private func handleServicesDisabled() {
+        currentLocation = nil
+        status = .servicesDisabled
+        finishRequest(
+            with: .failure(
+                TechnicianLocationError.servicesDisabled
+            )
         )
+    }
+
+    private func handleServicesOrPermissionDenied() {
+        currentLocation = nil
+
+        if authorizationStatus == .denied {
+            status = .denied
+            finishRequest(
+                with: .failure(
+                    TechnicianLocationError.permissionDenied
+                )
+            )
+        } else {
+            status = .servicesDisabled
+            finishRequest(
+                with: .failure(
+                    TechnicianLocationError.servicesDisabled
+                )
+            )
+        }
     }
 
     private func finishRequest(

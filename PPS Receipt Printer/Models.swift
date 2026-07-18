@@ -119,6 +119,63 @@ enum JobStatus: String, CaseIterable, Identifiable, Codable {
 
     var id: String { rawValue }
 }
+
+enum JobWorkflowState: String, CaseIterable, Identifiable, Codable {
+    case notStarted = "Not Started"
+    case traveling = "Traveling"
+    case arrived = "Arrived"
+    case settingUp = "Setting Up"
+    case working = "Working"
+    case packingUp = "Packing Up"
+    case workComplete = "Work Complete"
+    case invoiceCreated = "Invoice Created"
+    case paymentReceived = "Payment Received"
+    case completed = "Completed"
+    case cancelled = "Cancelled"
+
+    var id: String { rawValue }
+}
+
+enum JobTimelineEventType: String, Codable {
+    case assigned
+    case travelStarted
+    case arrived
+    case setupStarted
+    case workStarted
+    case packUpStarted
+    case workCompleted
+    case invoiceCreated
+    case paymentReceived
+    case jobCompleted
+    case cancelled
+    case note
+}
+
+struct JobTimelineEvent: Identifiable, Codable, Equatable {
+    var id: UUID
+    var type: JobTimelineEventType
+    var title: String
+    var timestamp: Date
+    var employeeID: UUID?
+    var note: String?
+
+    init(
+        id: UUID = UUID(),
+        type: JobTimelineEventType,
+        title: String,
+        timestamp: Date = Date(),
+        employeeID: UUID? = nil,
+        note: String? = nil
+    ) {
+        self.id = id
+        self.type = type
+        self.title = title
+        self.timestamp = timestamp
+        self.employeeID = employeeID
+        self.note = note
+    }
+}
+
 enum EmployeeRole: String, CaseIterable, Identifiable, Codable {
     case owner = "Owner"
     case manager = "Manager"
@@ -489,6 +546,8 @@ struct JobRecord: Identifiable, Codable, WorkOrder {
     var completedDate: Date?
 
     var status: JobStatus
+    var workflowState: JobWorkflowState = .notStarted
+    var timelineEvents: [JobTimelineEvent] = []
     var workNotes: String
 
     var isRecurring: Bool
@@ -496,6 +555,172 @@ struct JobRecord: Identifiable, Codable, WorkOrder {
 
     var lifecycleStatus: RecordLifecycleStatus = .active
 }
+
+extension JobRecord {
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case jobNumber
+        case customerNumber
+        case siteID
+        case estimateNumber
+        case serviceType
+        case otherService
+        case lineItems
+        case subtotal
+        case discount
+        case total
+        case primaryTechnicianID
+        case secondaryTechnicianID
+        case scheduledDate
+        case scheduledDurationOverrideMinutes
+        case completedDate
+        case status
+        case workflowState
+        case timelineEvents
+        case workNotes
+        case isRecurring
+        case createdDate
+        case lifecycleStatus
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(
+            keyedBy: CodingKeys.self
+        )
+
+        id = try container.decodeIfPresent(
+            UUID.self,
+            forKey: .id
+        ) ?? UUID()
+
+        jobNumber = try container.decode(
+            String.self,
+            forKey: .jobNumber
+        )
+
+        customerNumber = try container.decode(
+            String.self,
+            forKey: .customerNumber
+        )
+
+        siteID = try container.decodeIfPresent(
+            UUID.self,
+            forKey: .siteID
+        )
+
+        estimateNumber = try container.decodeIfPresent(
+            String.self,
+            forKey: .estimateNumber
+        ) ?? ""
+
+        serviceType = try container.decode(
+            ServiceType.self,
+            forKey: .serviceType
+        )
+
+        otherService = try container.decodeIfPresent(
+            String.self,
+            forKey: .otherService
+        ) ?? ""
+
+        lineItems = try container.decodeIfPresent(
+            [ServiceLineItem].self,
+            forKey: .lineItems
+        ) ?? []
+
+        subtotal = try container.decodeIfPresent(
+            Double.self,
+            forKey: .subtotal
+        ) ?? 0
+
+        discount = try container.decodeIfPresent(
+            Double.self,
+            forKey: .discount
+        ) ?? 0
+
+        total = try container.decodeIfPresent(
+            Double.self,
+            forKey: .total
+        ) ?? 0
+
+        primaryTechnicianID = try container.decodeIfPresent(
+            UUID.self,
+            forKey: .primaryTechnicianID
+        )
+
+        secondaryTechnicianID = try container.decodeIfPresent(
+            UUID.self,
+            forKey: .secondaryTechnicianID
+        )
+
+        scheduledDate = try container.decode(
+            Date.self,
+            forKey: .scheduledDate
+        )
+
+        scheduledDurationOverrideMinutes =
+            try container.decodeIfPresent(
+                Int.self,
+                forKey: .scheduledDurationOverrideMinutes
+            )
+
+        completedDate = try container.decodeIfPresent(
+            Date.self,
+            forKey: .completedDate
+        )
+
+        status = try container.decodeIfPresent(
+            JobStatus.self,
+            forKey: .status
+        ) ?? .scheduled
+
+        workflowState = try container.decodeIfPresent(
+            JobWorkflowState.self,
+            forKey: .workflowState
+        ) ?? Self.legacyWorkflowState(for: status)
+
+        timelineEvents = try container.decodeIfPresent(
+            [JobTimelineEvent].self,
+            forKey: .timelineEvents
+        ) ?? []
+
+        workNotes = try container.decodeIfPresent(
+            String.self,
+            forKey: .workNotes
+        ) ?? ""
+
+        isRecurring = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .isRecurring
+        ) ?? false
+
+        createdDate = try container.decodeIfPresent(
+            Date.self,
+            forKey: .createdDate
+        ) ?? Date()
+
+        lifecycleStatus = try container.decodeIfPresent(
+            RecordLifecycleStatus.self,
+            forKey: .lifecycleStatus
+        ) ?? .active
+    }
+
+    private static func legacyWorkflowState(
+        for status: JobStatus
+    ) -> JobWorkflowState {
+        switch status {
+        case .inProgress:
+            return .working
+        case .completed:
+            return .completed
+        case .cancelled:
+            return .cancelled
+        case .toBeScheduled, .scheduled, .assigned:
+            return .notStarted
+        }
+    }
+}
+
 struct InvoiceRecord: Identifiable, Codable, WorkOrder {
     var id = UUID()
 

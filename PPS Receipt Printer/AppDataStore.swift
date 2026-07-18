@@ -9,6 +9,7 @@ import Foundation
 import Combine
 
 final class AppDataStore: ObservableObject {
+    private let fieldOperationsEngine = FieldOperationsEngine()
     @Published var customers: [Customer] = [] {
         didSet { saveData() }
     }
@@ -302,6 +303,79 @@ final class AppDataStore: ObservableObject {
             jobs[index] = job
         }
     }
+    func workflowContext(
+        for jobID: UUID
+    ) -> JobWorkflowContext? {
+        guard let job = jobs.first(where: {
+            $0.id == jobID
+        }) else {
+            return nil
+        }
+
+        let invoice = invoices.first {
+            $0.jobNumber == job.jobNumber
+        }
+
+        return fieldOperationsEngine.context(
+            for: job,
+            invoice: invoice
+        )
+    }
+
+    @discardableResult
+    func performWorkflowAction(
+        jobID: UUID,
+        action: JobWorkflowAction,
+        employeeID: UUID? = nil,
+        at timestamp: Date = Date()
+    ) -> Bool {
+        guard let index = jobs.firstIndex(where: {
+            $0.id == jobID
+        }) else {
+            return false
+        }
+
+        if action == .createInvoice {
+            guard createInvoiceFromJob(jobs[index]) != nil else {
+                return false
+            }
+
+            jobs[index] =
+                fieldOperationsEngine.recordInvoiceCreated(
+                    for: jobs[index],
+                    employeeID: employeeID,
+                    at: timestamp
+                )
+
+            return true
+        }
+
+        if action == .recordPayment {
+            jobs[index] =
+                fieldOperationsEngine.recordPaymentReceived(
+                    for: jobs[index],
+                    employeeID: employeeID,
+                    at: timestamp
+                )
+
+            return true
+        }
+
+        guard let updated =
+                fieldOperationsEngine.transition(
+                    job: jobs[index],
+                    action: action,
+                    employeeID: employeeID,
+                    at: timestamp
+                )
+        else {
+            return false
+        }
+
+        jobs[index] = updated
+        return true
+    }
+
     @discardableResult
     func startJob(
         jobID: UUID
@@ -312,17 +386,21 @@ final class AppDataStore: ObservableObject {
             return false
         }
 
-        switch jobs[index].status {
-        case .scheduled, .assigned:
-            jobs[index].status = .inProgress
-            return true
-
-        case .toBeScheduled,
-             .inProgress,
-             .completed,
-             .cancelled:
+        guard jobs[index].status == .scheduled ||
+              jobs[index].status == .assigned
+        else {
             return false
         }
+
+        jobs[index].status = .inProgress
+        jobs[index].workflowState = .working
+        jobs[index].timelineEvents.append(
+            JobTimelineEvent(
+                type: .workStarted,
+                title: "Work Started"
+            )
+        )
+        return true
     }
 
     @discardableResult
@@ -336,20 +414,19 @@ final class AppDataStore: ObservableObject {
             return false
         }
 
-        switch jobs[index].status {
-        case .assigned,
-             .scheduled,
-             .inProgress:
-
-            jobs[index].status = .completed
-            jobs[index].completedDate = completedAt
-            return true
-
-        case .toBeScheduled,
-             .completed,
-             .cancelled:
-            return false
-        }
+        var updated = jobs[index]
+        updated.workflowState = .completed
+        updated.status = .completed
+        updated.completedDate = completedAt
+        updated.timelineEvents.append(
+            JobTimelineEvent(
+                type: .jobCompleted,
+                title: "Job Completed",
+                timestamp: completedAt
+            )
+        )
+        jobs[index] = updated
+        return true
     }
 
     func archiveJob(_ job: JobRecord) {

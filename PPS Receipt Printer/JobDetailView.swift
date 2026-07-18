@@ -8,6 +8,11 @@
 import SwiftUI
 
 struct JobDetailView: View {
+    private let showWorkflow = false
+    private let showTimeline = false
+    private let showCapacity = false
+    private let showWorkOrder = false
+
     @EnvironmentObject var store: AppDataStore
     @Environment(\.dismiss) private var dismiss
     
@@ -96,6 +101,18 @@ struct JobDetailView: View {
 
         return previewJob
     }
+
+
+    private var storedJob: JobRecord {
+        store.jobs.first(where: {
+            $0.id == job.id
+        }) ?? job
+    }
+
+    private var workflowContext: JobWorkflowContext {
+        store.workflowContext(for: job.id)
+        ?? FieldOperationsEngine().context(for: storedJob)
+    }
     
     var body: some View {
         Form {
@@ -109,10 +126,28 @@ struct JobDetailView: View {
                     Text("Estimate: \(job.estimateNumber)")
                 }
                 
-                Picker("Status", selection: $job.status) {
-                    ForEach(JobStatus.allCases) { status in
-                        Text(status.rawValue).tag(status)
-                    }
+                LabeledContent(
+                    "Status",
+                    value: workflowContext.currentState.rawValue
+                )
+            }
+
+            if showWorkflow {
+            Section("Field Workflow") {
+                JobWorkflowStatusCard(
+                    context: workflowContext
+                ) {
+                    performPrimaryWorkflowAction()
+                }
+            }
+
+            }
+            if showTimeline {
+            Section("Job Timeline") {
+                JobTimelineView(
+                    events: workflowContext.timeline
+                ) { employeeID in
+                    employeeName(for: employeeID)
                 }
             }
             
@@ -166,6 +201,8 @@ struct JobDetailView: View {
                 }
                 .disabled(job.primaryTechnicianID == nil)
             }
+            }
+            if showCapacity {
             Section("Capacity Preview") {
                 if primaryEmployee == nil &&
                     secondaryEmployee == nil {
@@ -190,7 +227,9 @@ struct JobDetailView: View {
                 }
             }
             
-            WorkOrderEditorView(
+            }
+            if showWorkOrder {
+                WorkOrderEditorView(
                 lineItems: $job.lineItems,
                 isInputFocused: $isInputFocused,
                 onAddLineItem: {
@@ -205,6 +244,7 @@ struct JobDetailView: View {
                 }
             )
             
+            }
             Section("Pricing") {
                 TextField("Discount", value: $job.discount, format: .number)
                     .keyboardType(.decimalPad)
@@ -242,49 +282,44 @@ struct JobDetailView: View {
                     Text("Scheduled Duration")
                         .font(.headline)
                     
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Hours")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            
-                            Picker(
-                                "Hours",
-                                selection: $scheduledDurationHours
-                            ) {
-                                ForEach(0...12, id: \.self) { hour in
-                                    Text("\(hour)")
-                                        .tag(hour)
-                                }
+                    HStack(spacing: 16) {
+                        Picker(
+                            "Hours",
+                            selection: $scheduledDurationHours
+                        ) {
+                            ForEach(0...12, id: \.self) { hour in
+                                Text(
+                                    hour == 1
+                                        ? "1 hour"
+                                        : "\(hour) hours"
+                                )
+                                .tag(hour)
                             }
-                            .pickerStyle(.wheel)
-                            .frame(height: 100)
-                            .clipped()
                         }
-                        
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Minutes")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            
-                            Picker(
-                                "Minutes",
-                                selection: $scheduledDurationMinutes
-                            ) {
-                                ForEach(
-                                    [0, 15, 30, 45],
-                                    id: \.self
-                                ) { minute in
-                                    Text("\(minute)")
-                                        .tag(minute)
-                                }
+                        .pickerStyle(.menu)
+                        .frame(
+                            maxWidth: .infinity,
+                            alignment: .leading
+                        )
+
+                        Picker(
+                            "Minutes",
+                            selection: $scheduledDurationMinutes
+                        ) {
+                            ForEach(
+                                [0, 15, 30, 45],
+                                id: \.self
+                            ) { minute in
+                                Text("\(minute) minutes")
+                                    .tag(minute)
                             }
-                            .pickerStyle(.wheel)
-                            .frame(height: 100)
-                            .clipped()
                         }
+                        .pickerStyle(.menu)
+                        .frame(
+                            maxWidth: .infinity,
+                            alignment: .leading
+                        )
                     }
-                    
                     HStack {
                         Text("Effective Duration")
                             .foregroundStyle(.secondary)
@@ -325,11 +360,6 @@ struct JobDetailView: View {
                 )
             }
             
-            Button("Mark Completed") {
-                job.status = .completed
-                job.completedDate = Date()
-            }
-            .disabled(job.status == .completed)
             
             Section {
                 Button("Save Changes") {
@@ -396,15 +426,8 @@ struct JobDetailView: View {
                 to: remainingMinutes
             )
         }
+        .scrollDismissesKeyboard(.interactively)
         .navigationTitle("Edit Job")
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") {
-                    isInputFocused = false
-                }
-            }
-        }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .catalogPicker:
@@ -552,6 +575,38 @@ struct JobDetailView: View {
             minutes: minutes
         )
     }
+    private func performPrimaryWorkflowAction() {
+        let action = workflowContext.nextAction
+
+        if action == .viewDetails {
+            return
+        }
+
+        _ = store.performWorkflowAction(
+            jobID: job.id,
+            action: action,
+            employeeID: job.primaryTechnicianID
+        )
+
+        if let refreshed = store.jobs.first(where: {
+            $0.id == job.id
+        }) {
+            job = refreshed
+        }
+    }
+
+    private func employeeName(
+        for employeeID: UUID?
+    ) -> String? {
+        guard let employeeID else {
+            return nil
+        }
+
+        return store.employees.first(where: {
+            $0.id == employeeID
+        })?.displayName
+    }
+
     private func closestQuarterHour(
         to minutes: Int
     ) -> Int {

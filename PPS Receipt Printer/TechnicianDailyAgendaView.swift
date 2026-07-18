@@ -23,8 +23,6 @@ struct TechnicianDailyAgendaView: View {
     
     @State private var selectedDate = Date()
     @State private var selectedJobID: UUID?
-    @State private var jobPendingCompletionID: UUID?
-    @State private var showingCompletionConfirmation = false
 
     @StateObject private var locationManager = TechnicianLocationManager()
     @State private var displayedJobs: [JobRecord] = []
@@ -184,28 +182,6 @@ struct TechnicianDailyAgendaView: View {
         } message: {
             Text(routeOptimizationErrorMessage)
         }
-        .confirmationDialog(
-            "Complete This Job?",
-            isPresented:
-                $showingCompletionConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Mark Completed") {
-                completePendingJob()
-            }
-
-            Button(
-                "Cancel",
-                role: .cancel
-            ) {
-                jobPendingCompletionID = nil
-            }
-        } message: {
-            Text(
-                "The job will be marked completed "
-                + "and the completion time will be recorded."
-            )
-        }
     }
 
     private var greetingHeader: some View {
@@ -327,10 +303,8 @@ struct TechnicianDailyAgendaView: View {
             }
 
             ProgressView(
-                value: min(
-                    summary.utilizationFraction,
-                    1
-                )
+                value: safeUtilizationFraction,
+                total: 1
             )
             .tint(utilizationColor)
             .scaleEffect(
@@ -648,11 +622,13 @@ struct TechnicianDailyAgendaView: View {
                 Spacer()
 
                 Label(
-                    job.status.rawValue,
+                    workflowContext(
+                        for: job
+                    ).currentState.rawValue,
                     systemImage:
-                        statusIcon(
-                            for: job.status
-                        )
+                        workflowContext(
+                            for: job
+                        ).nextAction.systemImage
                 )
                 .font(.caption)
                 .fontWeight(.semibold)
@@ -732,46 +708,63 @@ struct TechnicianDailyAgendaView: View {
     private func workflowAction(
         for job: JobRecord
     ) -> ActionTileItem {
-        switch job.status {
-        case .scheduled, .assigned:
-            return ActionTileItem(
-                title: "Start Job",
-                systemImage: "play.fill",
-                tint: .orange
-            ) {
-                startJob(job)
-            }
+        let context = workflowContext(for: job)
 
-        case .inProgress:
-            return ActionTileItem(
-                title: "Complete",
-                systemImage:
-                    "checkmark.circle.fill",
-                tint: .green
-            ) {
-                requestCompletion(
-                    for: job
-                )
-            }
-
-        case .completed:
-            return ActionTileItem(
-                title: "Details",
-                systemImage: "doc.text.fill"
-            ) {
-                selectedJobID = job.id
-            }
-
-        case .toBeScheduled, .cancelled:
-            return ActionTileItem(
-                title: "Details",
-                systemImage: "doc.text.fill"
-            ) {
-                selectedJobID = job.id
-            }
+        return ActionTileItem(
+            title: context.nextAction.title,
+            systemImage: context.nextAction.systemImage,
+            tint: workflowTint(
+                for: context.nextAction
+            )
+        ) {
+            performWorkflowAction(
+                context.nextAction,
+                for: job
+            )
         }
     }
-    
+
+    private func workflowContext(
+        for job: JobRecord
+    ) -> JobWorkflowContext {
+        store.workflowContext(for: job.id)
+        ?? FieldOperationsEngine().context(for: job)
+    }
+
+    private func performWorkflowAction(
+        _ action: JobWorkflowAction,
+        for job: JobRecord
+    ) {
+        if action == .viewDetails ||
+           action == .recordPayment {
+            selectedJobID = job.id
+            return
+        }
+
+        _ = store.performWorkflowAction(
+            jobID: job.id,
+            action: action,
+            employeeID: employee.id
+        )
+    }
+
+    private func workflowTint(
+        for action: JobWorkflowAction
+    ) -> Color {
+        switch action {
+        case .completeJob:
+            return .green
+        case .createInvoice:
+            return .blue
+        case .recordPayment:
+            return .purple
+        case .viewDetails:
+            return .secondary
+        default:
+            return .orange
+        }
+    }
+
     private func summaryMetric(
         title: String,
         value: String,
@@ -852,6 +845,19 @@ struct TechnicianDailyAgendaView: View {
         }
 
         return "play.circle.fill"
+    }
+
+    private var safeUtilizationFraction: Double {
+        let fraction = summary.utilizationFraction
+
+        guard fraction.isFinite else {
+            return 0
+        }
+
+        return min(
+            max(fraction, 0),
+            1
+        )
     }
 
     private var utilizationColor: Color {
@@ -1163,36 +1169,6 @@ struct TechnicianDailyAgendaView: View {
         openURL(phoneURL)
     }
     
-    private func startJob(
-        _ job: JobRecord
-    ) {
-        _ = store.startJob(
-            jobID: job.id
-        )
-    }
-
-    private func requestCompletion(
-        for job: JobRecord
-    ) {
-        jobPendingCompletionID = job.id
-        showingCompletionConfirmation = true
-    }
-
-    private func completePendingJob() {
-        guard let jobID =
-                jobPendingCompletionID
-        else {
-            return
-        }
-
-        _ = store.completeJob(
-            jobID: jobID
-        )
-
-        jobPendingCompletionID = nil
-    }
-    
-
     private func optimizeRoute() {
         guard !isOptimizingRoute else {
             return
