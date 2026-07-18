@@ -303,6 +303,35 @@ final class AppDataStore: ObservableObject {
             jobs[index] = job
         }
     }
+
+    @discardableResult
+    func addTechnicianNote(
+        jobID: UUID,
+        text: String,
+        employeeID: UUID? = nil,
+        at timestamp: Date = Date()
+    ) -> JobTimelineEvent? {
+        let trimmedText = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedText.isEmpty,
+              let index = jobs.firstIndex(where: {
+                  $0.id == jobID
+              }) else {
+            return nil
+        }
+
+        let event = JobTimelineEvent(
+            type: .note,
+            title: "Technician Note",
+            timestamp: timestamp,
+            employeeID: employeeID,
+            note: trimmedText
+        )
+
+        jobs[index].timelineEvents.append(event)
+        return event
+    }
     func workflowContext(
         for jobID: UUID
     ) -> JobWorkflowContext? {

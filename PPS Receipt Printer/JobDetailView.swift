@@ -15,12 +15,16 @@ struct JobDetailView: View {
 
     @EnvironmentObject var store: AppDataStore
     @Environment(\.dismiss) private var dismiss
+
+    @AppStorage("selectedTechnicianID")
+    private var selectedTechnicianIDString = ""
     
     @State var job: JobRecord
     @FocusState private var isInputFocused: Bool
     @State private var activeSheet: ActiveSheet?
     @State private var scheduledDurationHours = 0
     @State private var scheduledDurationMinutes = 0
+    @State private var technicianNoteDraft = ""
     
     private enum ActiveSheet: Identifiable {
         case catalogPicker
@@ -113,6 +117,16 @@ struct JobDetailView: View {
         store.workflowContext(for: job.id)
         ?? FieldOperationsEngine().context(for: storedJob)
     }
+
+    private var jobLogEvents: [JobTimelineEvent] {
+        job.timelineEvents.sorted {
+            $0.timestamp > $1.timestamp
+        }
+    }
+
+    private var selectedTechnicianID: UUID? {
+        UUID(uuidString: selectedTechnicianIDString)
+    }
     
     var body: some View {
         Form {
@@ -130,6 +144,70 @@ struct JobDetailView: View {
                     "Status",
                     value: workflowContext.currentState.rawValue
                 )
+            }
+
+            Section("Job Log") {
+                if jobLogEvents.isEmpty {
+                    Text("No job activity has been recorded yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(jobLogEvents) { event in
+                        jobLogRow(event)
+                    }
+                }
+
+                TextField(
+                    "Add a technician note",
+                    text: $technicianNoteDraft,
+                    axis: .vertical
+                )
+                .lineLimit(2...5)
+                .focused($isInputFocused)
+
+                Button {
+                    addTechnicianNote()
+                } label: {
+                    Label("Add Note", systemImage: "plus.bubble.fill")
+                }
+                .disabled(
+                    technicianNoteDraft
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty
+                )
+            }
+
+            Section("Technicians") {
+                Picker(
+                    "Primary Technician",
+                    selection: $job.primaryTechnicianID
+                ) {
+                    Text("Unassigned")
+                        .tag(UUID?.none)
+
+                    ForEach(assignableEmployees) { employee in
+                        Text(employee.displayName)
+                            .tag(UUID?.some(employee.id))
+                    }
+                }
+                .onChange(of: job.primaryTechnicianID) { _, newPrimaryID in
+                    if job.secondaryTechnicianID == newPrimaryID {
+                        job.secondaryTechnicianID = nil
+                    }
+                }
+
+                Picker(
+                    "Secondary Technician",
+                    selection: $job.secondaryTechnicianID
+                ) {
+                    Text("None")
+                        .tag(UUID?.none)
+
+                    ForEach(availableSecondaryEmployees) { employee in
+                        Text(employee.displayName)
+                            .tag(UUID?.some(employee.id))
+                    }
+                }
+                .disabled(job.primaryTechnicianID == nil)
             }
 
             if showWorkflow {
@@ -168,39 +246,6 @@ struct JobDetailView: View {
                     .focused($isInputFocused)
             }
             
-            Section("Technicians") {
-                Picker(
-                    "Primary Technician",
-                    selection: $job.primaryTechnicianID
-                ) {
-                    Text("Unassigned")
-                        .tag(UUID?.none)
-                    
-                    ForEach(assignableEmployees) { employee in
-                        Text(employee.displayName)
-                            .tag(UUID?.some(employee.id))
-                    }
-                }
-                .onChange(of: job.primaryTechnicianID) { _, newPrimaryID in
-                    if job.secondaryTechnicianID == newPrimaryID {
-                        job.secondaryTechnicianID = nil
-                    }
-                }
-                
-                Picker(
-                    "Secondary Technician",
-                    selection: $job.secondaryTechnicianID
-                ) {
-                    Text("None")
-                        .tag(UUID?.none)
-                    
-                    ForEach(availableSecondaryEmployees) { employee in
-                        Text(employee.displayName)
-                            .tag(UUID?.some(employee.id))
-                    }
-                }
-                .disabled(job.primaryTechnicianID == nil)
-            }
             }
             if showCapacity {
             Section("Capacity Preview") {
@@ -605,6 +650,108 @@ struct JobDetailView: View {
         return store.employees.first(where: {
             $0.id == employeeID
         })?.displayName
+    }
+
+    private func addTechnicianNote() {
+        let trimmedNote = technicianNoteDraft
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedNote.isEmpty else {
+            return
+        }
+
+        let authorID = selectedTechnicianID
+            ?? job.primaryTechnicianID
+
+        guard let event = store.addTechnicianNote(
+            jobID: job.id,
+            text: trimmedNote,
+            employeeID: authorID
+        ) else {
+            return
+        }
+
+        job.timelineEvents.append(event)
+        technicianNoteDraft = ""
+        isInputFocused = false
+    }
+
+    @ViewBuilder
+    private func jobLogRow(
+        _ event: JobTimelineEvent
+    ) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: jobLogIcon(for: event.type))
+                .foregroundStyle(
+                    event.type == .note
+                        ? .blue
+                        : .secondary
+                )
+                .frame(width: 22)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(event.title)
+                        .fontWeight(.semibold)
+
+                    Spacer()
+
+                    Text(
+                        event.timestamp.formatted(
+                            date: .abbreviated,
+                            time: .shortened
+                        )
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                if let note = event.note,
+                   !note.isEmpty {
+                    Text(note)
+                }
+
+                if let author = employeeName(
+                    for: event.employeeID
+                ) {
+                    Text(author)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func jobLogIcon(
+        for type: JobTimelineEventType
+    ) -> String {
+        switch type {
+        case .note:
+            return "text.bubble.fill"
+        case .assigned:
+            return "person.crop.circle.badge.checkmark"
+        case .travelStarted:
+            return "car.fill"
+        case .arrived:
+            return "mappin.circle.fill"
+        case .setupStarted:
+            return "wrench.and.screwdriver.fill"
+        case .workStarted:
+            return "play.circle.fill"
+        case .packUpStarted:
+            return "shippingbox.fill"
+        case .workCompleted:
+            return "checkmark.circle.fill"
+        case .invoiceCreated:
+            return "doc.text.fill"
+        case .paymentReceived:
+            return "dollarsign.circle.fill"
+        case .jobCompleted:
+            return "checkmark.seal.fill"
+        case .cancelled:
+            return "xmark.circle.fill"
+        }
     }
 
     private func closestQuarterHour(
