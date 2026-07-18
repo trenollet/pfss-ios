@@ -415,7 +415,8 @@ final class AppDataStore: ObservableObject {
             return false
         }
 
-        guard jobs[index].status == .scheduled ||
+        guard jobs[index].status == .toBeScheduled ||
+              jobs[index].status == .scheduled ||
               jobs[index].status == .assigned
         else {
             return false
@@ -504,6 +505,20 @@ final class AppDataStore: ObservableObject {
         if let index = invoices.firstIndex(where: { $0.id == invoice.id }) {
             invoices[index] = invoice
         }
+    }
+
+    func invoice(for job: JobRecord) -> InvoiceRecord? {
+        invoices.first { invoice in
+            invoice.jobNumber == job.jobNumber
+        }
+    }
+
+    func invoice(forJobID jobID: UUID) -> InvoiceRecord? {
+        guard let job = jobs.first(where: { $0.id == jobID }) else {
+            return nil
+        }
+
+        return invoice(for: job)
     }
 
     func archiveInvoice(_ invoice: InvoiceRecord) {

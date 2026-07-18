@@ -233,6 +233,15 @@ struct InvoiceDetailView: View {
         .navigationTitle("Invoice")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    isInputFocused = false
+                    dismiss()
+                } label: {
+                    Label("Back", systemImage: "chevron.left")
+                }
+            }
+
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
 

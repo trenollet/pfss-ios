@@ -25,6 +25,7 @@ struct JobDetailView: View {
     @State private var scheduledDurationHours = 0
     @State private var scheduledDurationMinutes = 0
     @State private var technicianNoteDraft = ""
+    @State private var presentedInvoice: InvoiceRecord?
     
     private enum ActiveSheet: Identifiable {
         case catalogPicker
@@ -126,6 +127,49 @@ struct JobDetailView: View {
 
     private var selectedTechnicianID: UUID? {
         UUID(uuidString: selectedTechnicianIDString)
+    }
+
+    private var linkedInvoice: InvoiceRecord? {
+        store.invoice(for: storedJob)
+    }
+
+    private var primaryActionTitle: String {
+        if linkedInvoice != nil {
+            return "Invoice Complete"
+        }
+
+        switch storedJob.status {
+        case .toBeScheduled, .scheduled, .assigned:
+            return "Start Job"
+        case .inProgress:
+            return "Complete Job"
+        case .completed:
+            return "Create Invoice"
+        case .cancelled:
+            return "Job Cancelled"
+        }
+    }
+
+    private var primaryActionSystemImage: String {
+        if linkedInvoice != nil {
+            return "doc.text.magnifyingglass"
+        }
+
+        switch storedJob.status {
+        case .toBeScheduled, .scheduled, .assigned:
+            return "play.fill"
+        case .inProgress:
+            return "checkmark.circle.fill"
+        case .completed:
+            return "doc.text.fill"
+        case .cancelled:
+            return "xmark.circle.fill"
+        }
+    }
+
+    private var isPrimaryActionDisabled: Bool {
+        storedJob.status == .cancelled ||
+        storedJob.lifecycleStatus == .archived
     }
     
     var body: some View {
@@ -406,38 +450,25 @@ struct JobDetailView: View {
             }
             
             
-            Section {
-                Button("Save Changes") {
-                    isInputFocused = false
-                    
-                    if job.status == .completed && job.completedDate == nil {
-                        job.completedDate = Date()
-                    }
-                    job.scheduledDurationOverrideMinutes =
-                    hasScheduledDurationOverride
-                    ? enteredScheduledDurationMinutes
-                    : nil
-                    job.lineItems = PricingCalculator.updatedLineItems(job.lineItems)
-                    job.subtotal = PricingCalculator.subtotal(for: job)
-                    job.total = PricingCalculator.total(for: job)
-                    store.updateJob(job)
-                    dismiss()
+            Section("Next Step") {
+                Button {
+                    performGuidedPrimaryAction()
+                } label: {
+                    Label(
+                        primaryActionTitle,
+                        systemImage: primaryActionSystemImage
+                    )
+                    .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                
-                if job.status == .completed &&
-                    !store.invoices.contains(where: { $0.jobNumber == job.jobNumber }) {
-                    
-                    Button {
-                        _ = store.createInvoiceFromJob(job)
-                    } label: {
-                        Label(
-                            "Create Invoice",
-                            systemImage: "doc.text.fill"
-                        )
-                    }
-                    .buttonStyle(.borderedProminent)
+                .disabled(isPrimaryActionDisabled)
+            }
+
+            Section {
+                Button("Save Changes") {
+                    saveJobChanges(shouldDismiss: true)
                 }
+                .buttonStyle(.borderedProminent)
                 
                 if job.lifecycleStatus == .archived {
                     Button("Restore Job") {
@@ -491,6 +522,12 @@ struct JobDetailView: View {
                     existingLineItem: item
                 )
                 .environmentObject(store)
+            }
+        }
+        .sheet(item: $presentedInvoice) { invoice in
+            NavigationStack {
+                InvoiceDetailView(invoice: invoice)
+                    .environmentObject(store)
             }
         }
     }
@@ -620,6 +657,73 @@ struct JobDetailView: View {
             minutes: minutes
         )
     }
+    private func saveJobChanges(shouldDismiss: Bool) {
+        isInputFocused = false
+
+        if job.status == .completed && job.completedDate == nil {
+            job.completedDate = Date()
+        }
+
+        job.scheduledDurationOverrideMinutes =
+            hasScheduledDurationOverride
+                ? enteredScheduledDurationMinutes
+                : nil
+
+        job.lineItems = PricingCalculator.updatedLineItems(job.lineItems)
+        job.subtotal = PricingCalculator.subtotal(for: job)
+        job.total = PricingCalculator.total(for: job)
+        store.updateJob(job)
+
+        if shouldDismiss {
+            dismiss()
+        }
+    }
+
+    private func refreshJobFromStore() {
+        guard let refreshed = store.jobs.first(where: {
+            $0.id == job.id
+        }) else {
+            return
+        }
+
+        job = refreshed
+    }
+
+    private func performGuidedPrimaryAction() {
+        saveJobChanges(shouldDismiss: false)
+
+        if let invoice = store.invoice(forJobID: job.id) {
+            presentedInvoice = invoice
+            return
+        }
+
+        switch job.status {
+        case .toBeScheduled, .scheduled, .assigned:
+            guard store.startJob(jobID: job.id) else {
+                return
+            }
+            refreshJobFromStore()
+
+        case .inProgress:
+            guard store.completeJob(jobID: job.id) else {
+                return
+            }
+            refreshJobFromStore()
+
+        case .completed:
+            guard let invoice = store.createInvoiceFromJob(job) else {
+                presentedInvoice = store.invoice(forJobID: job.id)
+                return
+            }
+
+            presentedInvoice = invoice
+            refreshJobFromStore()
+
+        case .cancelled:
+            return
+        }
+    }
+
     private func performPrimaryWorkflowAction() {
         let action = workflowContext.nextAction
 
