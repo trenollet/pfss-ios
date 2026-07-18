@@ -62,7 +62,16 @@ Planned goals:
 
 ## v0.9.6 B9 - Automatic Time Tracking
 
-
+Planned goals:
+- Use existing job start button to track time on job
+- Use existing job finsih to stop timer
+- Create a report in Admin tab called Job History Report that include the following information
+        - Job Number
+        - Customer Name
+        - Technician(s)
+        - Date
+        - Time on job
+        - Invoice Payment status
 
 
 ## v0.9.8 - Persona Engine
