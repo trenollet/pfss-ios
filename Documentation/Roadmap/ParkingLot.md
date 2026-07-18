@@ -106,6 +106,8 @@ Looking back, Brick 9 turned into more than just “automatic time tracking.” 
 One thing I do want to revisit in a future cleanup is the fallback logic. It’s a good safety net, but my preference is for the dedicated timestamp fields to be the authoritative source. Once we’re confident those fields are always populated correctly for every new job, we can simplify the model and reserve the timeline lookup purely as a migration path for older data.
 
 I also have one enhancement I’d like to propose for a future brick. Since we’re already capturing setup and completion timestamps, we can eventually show them in the Job Detail screen:
+
+```
 Time Tracking
 
 Setup Started
@@ -116,6 +118,6 @@ Completed
 
 Time on Job
 1 hr 23 min
-
+```
 END BRICK 9
 
