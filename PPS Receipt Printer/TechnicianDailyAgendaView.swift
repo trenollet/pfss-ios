@@ -32,14 +32,6 @@ struct TechnicianDailyAgendaView: View {
     @State private var routeSummary: DailyRouteOptimizer.RouteSummary?
     @State private var isRouteOptimized = false
 
-    private var summary: EmployeeCapacitySummary {
-        SchedulingEngine.capacitySummary(
-            for: employee,
-            on: selectedDate,
-            from: store.jobs
-        )
-    }
-
     private var agenda: TechnicianAgenda {
         SchedulingEngine.dailyAgenda(
             for: employee,
@@ -47,11 +39,9 @@ struct TechnicianDailyAgendaView: View {
             from: store.jobs
         )
     }
-    
+
     private var sortedJobs: [JobRecord] {
-        summary.assignedJobs.sorted {
-            $0.scheduledDate < $1.scheduledDate
-        }
+        agenda.jobs
     }
 
     private var completedJobCount: Int {
@@ -69,7 +59,7 @@ struct TechnicianDailyAgendaView: View {
         sortedJobs.compactMap { job in
             Calendar.current.date(
                 byAdding: .minute,
-                value: SchedulingCalculator.scheduledMinutes(
+                value: SchedulingEngine.scheduledMinutes(
                     for: job
                 ),
                 to: job.scheduledDate
@@ -177,7 +167,7 @@ struct TechnicianDailyAgendaView: View {
                 locationManager.refreshLocation()
             }
         }
-        .onChange(of: summary.assignedJobs.map(\.id)) {
+        .onChange(of: agenda.jobs.map(\.id)) {
             displayedJobs = sortedJobs
             routeSummary = nil
             isRouteOptimized = false
@@ -303,7 +293,7 @@ struct TechnicianDailyAgendaView: View {
                 Spacer()
 
                 Text(
-                    "\(summary.utilizationPercentage)%"
+                    "\(agenda.utilizationPercentage)%"
                 )
                 .font(.title2)
                 .fontWeight(.bold)
@@ -327,7 +317,7 @@ struct TechnicianDailyAgendaView: View {
             ) {
                 summaryMetric(
                     title: "Jobs",
-                    value: "\(summary.assignedJobCount)",
+                    value: "\(agenda.jobCount)",
                     systemImage: "briefcase.fill"
                 )
 
@@ -336,7 +326,7 @@ struct TechnicianDailyAgendaView: View {
                 summaryMetric(
                     title: "Scheduled",
                     value: durationText(
-                        summary.scheduledMinutes
+                        agenda.scheduledMinutes
                     ),
                     systemImage: "clock.fill"
                 )
@@ -364,15 +354,15 @@ struct TechnicianDailyAgendaView: View {
 
                 Text(
                     "\(completedJobCount) of "
-                    + "\(summary.assignedJobCount) complete"
+                    + "\(agenda.jobCount) complete"
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
 
-            if !summary.isWorkingDay {
+            if !agenda.isWorkingDay {
                 Label(
-                    summary.scheduledMinutes > 0
+                    agenda.scheduledMinutes > 0
                         ? "Work is assigned on a non-working day."
                         : "You are not normally scheduled today.",
                     systemImage:
@@ -382,11 +372,11 @@ struct TechnicianDailyAgendaView: View {
                 .foregroundStyle(.orange)
             }
 
-            if summary.isOverCapacity {
+            if agenda.isOverCapacity {
                 Label(
                     "Schedule exceeds daily capacity by "
                     + durationText(
-                        abs(summary.remainingMinutes)
+                        abs(agenda.remainingMinutes)
                     ),
                     systemImage:
                         "exclamationmark.triangle.fill"
@@ -796,7 +786,7 @@ struct TechnicianDailyAgendaView: View {
     }
 
     private var dailyHeadline: String {
-        switch summary.assignedJobCount {
+        switch agenda.jobCount {
         case 0:
             return "Your day is clear"
 
@@ -804,7 +794,7 @@ struct TechnicianDailyAgendaView: View {
             return "1 job scheduled"
 
         default:
-            return "\(summary.assignedJobCount) jobs scheduled"
+            return "\(agenda.jobCount) jobs scheduled"
         }
     }
 
@@ -820,12 +810,12 @@ struct TechnicianDailyAgendaView: View {
     }
 
     private var progressText: String {
-        if summary.assignedJobCount == 0 {
+        if agenda.jobCount == 0 {
             return "No work scheduled"
         }
 
         if completedJobCount ==
-            summary.assignedJobCount {
+            agenda.jobCount {
 
             return "Day complete"
         }
@@ -838,12 +828,12 @@ struct TechnicianDailyAgendaView: View {
     }
 
     private var progressIcon: String {
-        if summary.assignedJobCount == 0 {
+        if agenda.jobCount == 0 {
             return "calendar.badge.checkmark"
         }
 
         if completedJobCount ==
-            summary.assignedJobCount {
+            agenda.jobCount {
 
             return "checkmark.seal.fill"
         }
@@ -856,7 +846,7 @@ struct TechnicianDailyAgendaView: View {
     }
 
     private var safeUtilizationFraction: Double {
-        let fraction = summary.utilizationFraction
+        let fraction = agenda.utilization
 
         guard fraction.isFinite else {
             return 0
@@ -869,15 +859,15 @@ struct TechnicianDailyAgendaView: View {
     }
 
     private var utilizationColor: Color {
-        if !summary.isWorkingDay {
+        if !agenda.isWorkingDay {
             return .gray
         }
 
-        if summary.isOverCapacity {
+        if agenda.isOverCapacity {
             return .red
         }
 
-        if summary.utilizationPercentage >= 80 {
+        if agenda.utilizationPercentage >= 80 {
             return .yellow
         }
 
