@@ -8,6 +8,10 @@ struct ContentView: View {
                 .tabItem {
                     Label("Dashboard", systemImage: "chart.bar")
                 }
+            OperationsView()
+                .tabItem {
+                    Label("Operations", systemImage: "person.3.sequence")
+                }
             TechnicianWorkspaceView()
                 .tabItem {
                     Label(
