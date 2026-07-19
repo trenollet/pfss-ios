@@ -2,10 +2,14 @@
 //  SchedulingEngine.swift
 //  PPS Receipt Printer
 //
-//  Brick 11 — Authoritative scheduling business engine.
+//  Brick 12 — Scheduling and dispatch integration
+//  Authoritative business API for scheduling validation, availability,
+//  future-opening discovery, technician agendas, and dispatch candidates.
 //
 
 import Foundation
+
+// MARK: - Scheduling Results
 
 enum SchedulingConflictKind: String, Codable, CaseIterable {
     case inactiveEmployee
@@ -46,6 +50,57 @@ struct SchedulingAvailabilityResult {
     }
 }
 
+struct AvailableOpening: Identifiable {
+    let id = UUID()
+    let employee: EmployeeRecord
+    let start: Date
+    let end: Date
+
+    var durationMinutes: Int {
+        max(Int(end.timeIntervalSince(start) / 60), 0)
+    }
+
+    /// Retained for compatibility. This indicates that the opening duration
+    /// consumes the employee's configured daily capacity exactly.
+    var isExactFit: Bool {
+        employee.dailyCapacityMinutes == durationMinutes
+    }
+}
+
+struct AvailableEmployee: Identifiable {
+    let id = UUID()
+    let employee: EmployeeRecord
+    let capacitySummary: EmployeeCapacitySummary
+    let conflicts: [SchedulingConflict]
+    let earliestAvailableOpening: AvailableOpening?
+
+    var isAvailable: Bool {
+        conflicts.isEmpty && earliestAvailableOpening != nil
+    }
+
+    var remainingMinutes: Int {
+        capacitySummary.remainingMinutes
+    }
+
+    /// Baseline scheduling score. DispatchDecisionEngine applies the selected
+    /// decision policy and produces the final explainable ranking.
+    var recommendationScore: Double {
+        guard isAvailable else { return 0 }
+
+        let availableCapacityBonus = min(
+            Double(max(remainingMinutes, 0)) / 30.0,
+            20.0
+        )
+
+        let utilizationBonus = max(
+            0,
+            10.0 - capacitySummary.utilizationFraction * 10.0
+        )
+
+        return 100.0 + availableCapacityBonus + utilizationBonus
+    }
+}
+
 struct SchedulingTimeSlot: Identifiable {
     let id = UUID()
     let employee: EmployeeRecord
@@ -53,61 +108,43 @@ struct SchedulingTimeSlot: Identifiable {
     let end: Date
 
     var durationMinutes: Int {
-        max(
-            Int(end.timeIntervalSince(start) / 60),
-            0
-        )
+        max(Int(end.timeIntervalSince(start) / 60), 0)
     }
 }
 
 struct TechnicianAgenda {
     let employee: EmployeeRecord
     let date: Date
-
     let jobs: [JobRecord]
-
     let capacitySummary: EmployeeCapacitySummary
-
     let conflicts: [SchedulingConflict]
 
-    var scheduledMinutes: Int {
-        capacitySummary.scheduledMinutes
-    }
-
-    var remainingMinutes: Int {
-        capacitySummary.remainingMinutes
-    }
-
-    var utilization: Double {
-        capacitySummary.utilization
-    }
-
-    var jobCount: Int {
-        jobs.count
-    }
-
-    var hasConflicts: Bool {
-        !conflicts.isEmpty
-    }
-
-    var isFullyBooked: Bool {
-        remainingMinutes <= 0
-    }
-
-    var isOverCapacity: Bool {
-        remainingMinutes < 0
-    }
+    var scheduledMinutes: Int { capacitySummary.scheduledMinutes }
+    var remainingMinutes: Int { capacitySummary.remainingMinutes }
+    var utilization: Double { capacitySummary.utilizationFraction }
+    var utilizationPercentage: Int { capacitySummary.utilizationPercentage }
+    var isWorkingDay: Bool { capacitySummary.isWorkingDay }
+    var jobCount: Int { jobs.count }
+    var hasConflicts: Bool { !conflicts.isEmpty }
+    var isFullyBooked: Bool { remainingMinutes <= 0 }
+    var isOverCapacity: Bool { remainingMinutes < 0 }
 }
 
+// MARK: - Scheduling Engine
+
 struct SchedulingEngine {
-    
+
+    private static let defaultSlotIntervalMinutes = 15
+    private static let defaultFutureSearchDays = 30
+
+    // MARK: Technician Agenda
+
     static func dailyAgenda(
         for employee: EmployeeRecord,
         on date: Date,
         from jobs: [JobRecord],
         calendar: Calendar = .current
     ) -> TechnicianAgenda {
-
         let scheduledJobs = SchedulingCalculator
             .scheduledJobs(
                 for: employee,
@@ -115,8 +152,11 @@ struct SchedulingEngine {
                 from: jobs,
                 calendar: calendar
             )
-            .sorted {
-                $0.scheduledDate < $1.scheduledDate
+            .sorted { first, second in
+                if first.scheduledDate != second.scheduledDate {
+                    return first.scheduledDate < second.scheduledDate
+                }
+                return first.id.uuidString < second.id.uuidString
             }
 
         let summary = capacitySummary(
@@ -130,6 +170,7 @@ struct SchedulingEngine {
             conflicts(
                 for: job,
                 assigning: employee,
+                at: job.scheduledDate,
                 from: jobs,
                 calendar: calendar
             )
@@ -143,29 +184,19 @@ struct SchedulingEngine {
             conflicts: allConflicts
         )
     }
-    
-    static func estimatedMinutes(
-        for lineItem: ServiceLineItem
-    ) -> Int {
-        SchedulingCalculator.estimatedMinutes(
-            for: lineItem
-        )
+
+    // MARK: Duration and Capacity Facade
+
+    static func estimatedMinutes(for lineItem: ServiceLineItem) -> Int {
+        SchedulingCalculator.estimatedMinutes(for: lineItem)
     }
 
-    static func estimatedMinutes(
-        for lineItems: [ServiceLineItem]
-    ) -> Int {
-        SchedulingCalculator.estimatedMinutes(
-            for: lineItems
-        )
+    static func estimatedMinutes(for lineItems: [ServiceLineItem]) -> Int {
+        SchedulingCalculator.estimatedMinutes(for: lineItems)
     }
 
-    static func scheduledMinutes(
-        for job: JobRecord
-    ) -> Int {
-        SchedulingCalculator.scheduledMinutes(
-            for: job
-        )
+    static func scheduledMinutes(for job: JobRecord) -> Int {
+        SchedulingCalculator.scheduledMinutes(for: job)
     }
 
     static func capacitySummary(
@@ -182,6 +213,8 @@ struct SchedulingEngine {
         )
     }
 
+    // MARK: Validation
+
     static func conflicts(
         for job: JobRecord,
         assigning employee: EmployeeRecord,
@@ -197,28 +230,25 @@ struct SchedulingEngine {
             to: start
         ) ?? start
 
-        var conflicts: [SchedulingConflict] = []
-
-        guard employee.isActive,
-              employee.lifecycleStatus == .active else {
-            conflicts.append(
+        guard isActive(employee) else {
+            return [
                 SchedulingConflict(
                     kind: .inactiveEmployee,
                     message: "Employee is inactive.",
                     employeeID: employee.id,
                     conflictingJobID: nil
                 )
-            )
-
-            return conflicts
+            ]
         }
+
+        var results: [SchedulingConflict] = []
 
         if !SchedulingCalculator.isWorkingDay(
             start,
             for: employee,
             calendar: calendar
         ) {
-            conflicts.append(
+            results.append(
                 SchedulingConflict(
                     kind: .nonWorkingDay,
                     message: "Employee is not scheduled to work on this day.",
@@ -234,7 +264,7 @@ struct SchedulingEngine {
             employee: employee,
             calendar: calendar
         ) {
-            conflicts.append(
+            results.append(
                 SchedulingConflict(
                     kind: .outsideWorkingHours,
                     message: "Job falls outside the employee's working hours.",
@@ -244,15 +274,14 @@ struct SchedulingEngine {
             )
         }
 
-        let assignedJobs = SchedulingCalculator.scheduledJobs(
-            for: employee,
-            on: start,
-            from: jobs,
-            calendar: calendar
-        )
-        .filter { existingJob in
-            existingJob.id != job.id
-        }
+        let assignedJobs = SchedulingCalculator
+            .scheduledJobs(
+                for: employee,
+                on: start,
+                from: jobs,
+                calendar: calendar
+            )
+            .filter { $0.id != job.id }
 
         for existingJob in assignedJobs {
             let existingStart = existingJob.scheduledDate
@@ -262,13 +291,8 @@ struct SchedulingEngine {
                 to: existingStart
             ) ?? existingStart
 
-            if intervalsOverlap(
-                start,
-                end,
-                existingStart,
-                existingEnd
-            ) {
-                conflicts.append(
+            if intervalsOverlap(start, end, existingStart, existingEnd) {
+                results.append(
                     SchedulingConflict(
                         kind: .overlappingJob,
                         message: "Job overlaps an existing assignment.",
@@ -288,7 +312,7 @@ struct SchedulingEngine {
         ) - duration
 
         if projectedRemaining < 0 {
-            conflicts.append(
+            results.append(
                 SchedulingConflict(
                     kind: .overDailyCapacity,
                     message: "Assignment exceeds the employee's daily capacity.",
@@ -298,7 +322,7 @@ struct SchedulingEngine {
             )
         }
 
-        return conflicts
+        return results
     }
 
     static func validate(
@@ -330,6 +354,8 @@ struct SchedulingEngine {
         )
     }
 
+    // MARK: Point-in-Time Availability
+
     static func availableEmployees(
         for job: JobRecord,
         at proposedStart: Date? = nil,
@@ -337,15 +363,14 @@ struct SchedulingEngine {
         jobs: [JobRecord],
         calendar: Calendar = .current
     ) -> [SchedulingAvailabilityResult] {
-        employees
-            .filter { employee in
-                employee.isActive
-                    && employee.lifecycleStatus == .active
-            }
-            .map { employee in
-                let start = proposedStart ?? job.scheduledDate
+        let start = proposedStart ?? job.scheduledDate
 
-                return SchedulingAvailabilityResult(
+        return employees
+            .filter { employee in
+            employee.isActive && employee.lifecycleStatus == .active
+        }
+            .map { employee in
+                SchedulingAvailabilityResult(
                     employee: employee,
                     date: start,
                     capacitySummary: capacitySummary(
@@ -368,31 +393,32 @@ struct SchedulingEngine {
                     return first.isAvailable
                 }
 
-                if first.capacitySummary.remainingMinutes
-                    != second.capacitySummary.remainingMinutes {
-                    return first.capacitySummary.remainingMinutes
-                        > second.capacitySummary.remainingMinutes
+                if first.capacitySummary.remainingMinutes != second.capacitySummary.remainingMinutes {
+                    return first.capacitySummary.remainingMinutes > second.capacitySummary.remainingMinutes
                 }
 
-                return first.employee.displayName
-                    .localizedCaseInsensitiveCompare(
-                        second.employee.displayName
-                    ) == .orderedAscending
+                return compareEmployeeNames(
+                    first.employee,
+                    second.employee
+                )
             }
     }
+
+    // MARK: Time Slots
 
     static func candidateTimeSlots(
         for job: JobRecord,
         employee: EmployeeRecord,
         on date: Date,
         from jobs: [JobRecord],
-        intervalMinutes: Int = 15,
+        intervalMinutes: Int = defaultSlotIntervalMinutes,
         calendar: Calendar = .current
     ) -> [SchedulingTimeSlot] {
         let duration = scheduledMinutes(for: job)
         let safeInterval = max(intervalMinutes, 1)
 
         guard duration > 0,
+              isActive(employee),
               SchedulingCalculator.isWorkingDay(
                   date,
                   for: employee,
@@ -407,7 +433,8 @@ struct SchedulingEngine {
                   employee.defaultEndMinutes,
                   on: date,
                   calendar: calendar
-              ) else {
+              ),
+              workStart < workEnd else {
             return []
         }
 
@@ -451,14 +478,263 @@ struct SchedulingEngine {
         return slots
     }
 
+    // MARK: Opening Discovery
+
+    static func availableOpenings(
+        for job: JobRecord,
+        employees: [EmployeeRecord],
+        on date: Date? = nil,
+        from jobs: [JobRecord],
+        calendar: Calendar = .current
+    ) -> [AvailableOpening] {
+        let targetDate = date ?? job.scheduledDate
+
+        return employees
+            .filter { employee in
+            employee.isActive && employee.lifecycleStatus == .active
+        }
+            .flatMap { employee in
+                candidateTimeSlots(
+                    for: job,
+                    employee: employee,
+                    on: targetDate,
+                    from: jobs,
+                    calendar: calendar
+                )
+                .map { slot in
+                    AvailableOpening(
+                        employee: employee,
+                        start: slot.start,
+                        end: slot.end
+                    )
+                }
+            }
+            .sorted { first, second in
+            if first.start != second.start {
+                return first.start < second.start
+            }
+            if first.end != second.end {
+                return first.end < second.end
+            }
+            return compareEmployeeNames(first.employee, second.employee)
+        }
+    }
+
+    /// Returns the first valid opening on or after the supplied date.
+    /// Unlike the earlier implementation, this method searches future working
+    /// days instead of stopping after the first calendar day.
+    static func nextAvailableOpening(
+        for job: JobRecord,
+        employee: EmployeeRecord,
+        onOrAfter date: Date? = nil,
+        from jobs: [JobRecord],
+        searchDays: Int = defaultFutureSearchDays,
+        intervalMinutes: Int = defaultSlotIntervalMinutes,
+        calendar: Calendar = .current
+    ) -> AvailableOpening? {
+        guard isActive(employee) else { return nil }
+
+        let requestedStart = date ?? job.scheduledDate
+        let safeSearchDays = max(searchDays, 1)
+
+        for dayOffset in 0..<safeSearchDays {
+            guard let searchDate = calendar.date(
+                byAdding: .day,
+                value: dayOffset,
+                to: requestedStart
+            ) else {
+                continue
+            }
+
+            let slots = candidateTimeSlots(
+                for: job,
+                employee: employee,
+                on: searchDate,
+                from: jobs,
+                intervalMinutes: intervalMinutes,
+                calendar: calendar
+            )
+
+            let eligibleSlots: [SchedulingTimeSlot]
+
+            if dayOffset == 0 {
+                eligibleSlots = slots.filter { $0.start >= requestedStart }
+            } else {
+                eligibleSlots = slots
+            }
+
+            guard let firstSlot = eligibleSlots.first else {
+                continue
+            }
+
+            return AvailableOpening(
+                employee: employee,
+                start: firstSlot.start,
+                end: firstSlot.end
+            )
+        }
+
+        return nil
+    }
+
+    /// Produces the scheduling candidates consumed by DispatchDecisionEngine.
+    /// Conflict and capacity data are evaluated at each employee's discovered
+    /// opening, so a technician is not incorrectly rejected merely because the
+    /// originally requested time was unavailable.
+    static func availableEmployeeRecommendations(
+        for job: JobRecord,
+        employees: [EmployeeRecord],
+        onOrAfter date: Date? = nil,
+        from jobs: [JobRecord],
+        searchDays: Int = defaultFutureSearchDays,
+        intervalMinutes: Int = defaultSlotIntervalMinutes,
+        calendar: Calendar = .current
+    ) -> [AvailableEmployee] {
+        let requestedStart = date ?? job.scheduledDate
+
+        return employees
+            .filter { employee in
+            employee.isActive && employee.lifecycleStatus == .active
+        }
+            .map { employee in
+                let opening = nextAvailableOpening(
+                    for: job,
+                    employee: employee,
+                    onOrAfter: requestedStart,
+                    from: jobs,
+                    searchDays: searchDays,
+                    intervalMinutes: intervalMinutes,
+                    calendar: calendar
+                )
+
+                let evaluationDate = opening?.start ?? requestedStart
+                let openingConflicts: [SchedulingConflict]
+
+                if let opening {
+                    openingConflicts = conflicts(
+                        for: job,
+                        assigning: employee,
+                        at: opening.start,
+                        from: jobs,
+                        calendar: calendar
+                    )
+                } else {
+                    openingConflicts = availabilityFailureConflicts(
+                        for: job,
+                        employee: employee,
+                        requestedStart: requestedStart,
+                        from: jobs,
+                        calendar: calendar
+                    )
+                }
+
+                return AvailableEmployee(
+                    employee: employee,
+                    capacitySummary: capacitySummary(
+                        for: employee,
+                        on: evaluationDate,
+                        from: jobs,
+                        calendar: calendar
+                    ),
+                    conflicts: openingConflicts,
+                    earliestAvailableOpening: opening
+                )
+            }
+            .sorted { first, second in
+                if first.isAvailable != second.isAvailable {
+                    return first.isAvailable
+                }
+
+                let firstStart = first.earliestAvailableOpening?.start
+                let secondStart = second.earliestAvailableOpening?.start
+
+                switch (firstStart, secondStart) {
+                case let (.some(lhs), .some(rhs)) where lhs != rhs:
+                    return lhs < rhs
+                case (.some, .none):
+                    return true
+                case (.none, .some):
+                    return false
+                default:
+                    break
+                }
+
+                if first.recommendationScore != second.recommendationScore {
+                    return first.recommendationScore > second.recommendationScore
+                }
+
+                return compareEmployeeNames(
+                    first.employee,
+                    second.employee
+                )
+            }
+    }
+
+    // MARK: Private Helpers
+
+    private static func isActive(_ employee: EmployeeRecord) -> Bool {
+        employee.isActive && employee.lifecycleStatus == .active
+    }
+
+    private static func availabilityFailureConflicts(
+        for job: JobRecord,
+        employee: EmployeeRecord,
+        requestedStart: Date,
+        from jobs: [JobRecord],
+        calendar: Calendar
+    ) -> [SchedulingConflict] {
+        let directConflicts = conflicts(
+            for: job,
+            assigning: employee,
+            at: requestedStart,
+            from: jobs,
+            calendar: calendar
+        )
+
+        if !directConflicts.isEmpty {
+            return directConflicts
+        }
+
+        return [
+            SchedulingConflict(
+                kind: .overDailyCapacity,
+                message: "No valid opening was found within the scheduling search window.",
+                employeeID: employee.id,
+                conflictingJobID: nil
+            )
+        ]
+    }
+
+    private static func openingComesBefore(
+        _ first: AvailableOpening,
+        _ second: AvailableOpening
+    ) -> Bool {
+        if first.start != second.start {
+            return first.start < second.start
+        }
+
+        if first.end != second.end {
+            return first.end < second.end
+        }
+
+        return compareEmployeeNames(first.employee, second.employee)
+    }
+
+    private static func compareEmployeeNames(
+        _ first: EmployeeRecord,
+        _ second: EmployeeRecord
+    ) -> Bool {
+        first.displayName.localizedCaseInsensitiveCompare(second.displayName)
+            == .orderedAscending
+    }
+
     private static func intervalsOverlap(
         _ firstStart: Date,
         _ firstEnd: Date,
         _ secondStart: Date,
         _ secondEnd: Date
     ) -> Bool {
-        firstStart < secondEnd
-            && secondStart < firstEnd
+        firstStart < secondEnd && secondStart < firstEnd
     }
 
     private static func isWithinWorkingHours(
@@ -480,8 +756,7 @@ struct SchedulingEngine {
             return false
         }
 
-        return start >= workStart
-            && end <= workEnd
+        return start >= workStart && end <= workEnd
     }
 
     private static func dateAtMinutesAfterMidnight(
@@ -489,12 +764,10 @@ struct SchedulingEngine {
         on date: Date,
         calendar: Calendar
     ) -> Date? {
-        let startOfDay = calendar.startOfDay(for: date)
-
-        return calendar.date(
+        calendar.date(
             byAdding: .minute,
             value: max(minutes, 0),
-            to: startOfDay
+            to: calendar.startOfDay(for: date)
         )
     }
 }
