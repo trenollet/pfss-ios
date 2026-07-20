@@ -138,17 +138,15 @@ struct JobDetailView: View {
             return "Invoice Complete"
         }
 
-        switch storedJob.workflowState {
-        case .notStarted, .traveling, .arrived:
+        switch storedJob.status {
+        case .toBeScheduled, .scheduled, .assigned:
             return "Start Setup"
-        case .settingUp:
-            return "Start Job"
-        case .working, .packingUp:
-            return "Complete Job"
-        case .workComplete, .completed:
+        case .inProgress:
+            return storedJob.workflowState == .settingUp
+                ? "Start Job"
+                : "Complete Job"
+        case .completed:
             return "Create Invoice"
-        case .invoiceCreated, .paymentReceived:
-            return "Invoice Complete"
         case .cancelled:
             return "Job Cancelled"
         }
@@ -159,17 +157,15 @@ struct JobDetailView: View {
             return "doc.text.magnifyingglass"
         }
 
-        switch storedJob.workflowState {
-        case .notStarted, .traveling, .arrived:
+        switch storedJob.status {
+        case .toBeScheduled, .scheduled, .assigned:
             return "wrench.and.screwdriver.fill"
-        case .settingUp:
-            return "play.fill"
-        case .working, .packingUp:
-            return "checkmark.circle.fill"
-        case .workComplete, .completed:
+        case .inProgress:
+            return storedJob.workflowState == .settingUp
+                ? "play.fill"
+                : "checkmark.circle.fill"
+        case .completed:
             return "doc.text.fill"
-        case .invoiceCreated, .paymentReceived:
-            return "doc.text.magnifyingglass"
         case .cancelled:
             return "xmark.circle.fill"
         }
@@ -668,22 +664,8 @@ struct JobDetailView: View {
     private func saveJobChanges(shouldDismiss: Bool) {
         isInputFocused = false
 
-        // Workflow state is managed by AppDataStore. A JobDetailView can hold an
-        // older local copy after a workflow button is pressed, so preserve the
-        // store's latest workflow values before saving editable form fields.
-        if let latestStoredJob = store.jobs.first(where: {
-            $0.id == job.id
-        }) {
-            job.status = latestStoredJob.status
-            job.workflowState = latestStoredJob.workflowState
-            job.setupStartDate = latestStoredJob.setupStartDate
-            job.timelineEvents = latestStoredJob.timelineEvents
-
-            // Keep a deliberate completed-date edit, but never replace a newly
-            // recorded automatic completion time with a stale nil value.
-            if job.completedDate == nil {
-                job.completedDate = latestStoredJob.completedDate
-            }
+        if job.status == .completed && job.completedDate == nil {
+            job.completedDate = Date()
         }
 
         job.scheduledDurationOverrideMinutes =
@@ -714,53 +696,51 @@ struct JobDetailView: View {
     private func performGuidedPrimaryAction() {
         saveJobChanges(shouldDismiss: false)
 
-        guard let currentJob = store.jobs.first(where: {
-            $0.id == job.id
-        }) else {
-            return
-        }
-
-        if let invoice = store.invoice(forJobID: currentJob.id) {
+        if let invoice = store.invoice(forJobID: job.id) {
             presentedInvoice = invoice
-            refreshJobFromStore()
             return
         }
 
-        switch currentJob.workflowState {
-        case .notStarted, .traveling, .arrived:
+        switch storedJob.status {
+        case .toBeScheduled, .scheduled, .assigned:
             guard store.startSetup(
-                jobID: currentJob.id,
-                employeeID: currentJob.primaryTechnicianID
-            ) else { return }
-
-        case .settingUp:
-            guard store.startJob(
-                jobID: currentJob.id,
-                employeeID: currentJob.primaryTechnicianID
-            ) else { return }
-
-        case .working, .packingUp:
-            guard store.completeJob(
-                jobID: currentJob.id,
-                employeeID: currentJob.primaryTechnicianID
-            ) else { return }
-
-        case .workComplete, .completed:
-            guard let invoice = store.createInvoiceFromJob(
-                jobID: currentJob.id
+                jobID: job.id,
+                employeeID: job.primaryTechnicianID
             ) else {
                 return
             }
-            presentedInvoice = invoice
+            refreshJobFromStore()
 
-        case .invoiceCreated, .paymentReceived:
-            presentedInvoice = store.invoice(forJobID: currentJob.id)
+        case .inProgress:
+            if storedJob.workflowState == .settingUp {
+                guard store.startJob(
+                    jobID: job.id,
+                    employeeID: job.primaryTechnicianID
+                ) else {
+                    return
+                }
+            } else {
+                guard store.completeJob(
+                    jobID: job.id,
+                    employeeID: job.primaryTechnicianID
+                ) else {
+                    return
+                }
+            }
+            refreshJobFromStore()
+
+        case .completed:
+            guard let invoice = store.createInvoiceFromJob(job) else {
+                presentedInvoice = store.invoice(forJobID: job.id)
+                return
+            }
+
+            presentedInvoice = invoice
+            refreshJobFromStore()
 
         case .cancelled:
             return
         }
-
-        refreshJobFromStore()
     }
 
     private func performPrimaryWorkflowAction() {
