@@ -68,13 +68,6 @@ struct SiteDetailView: View {
                 }
                 .disabled(site.lifecycleStatus == .archived)
 
-                Button("Save Changes") {
-                    isInputFocused = false
-                    store.updateSite(site)
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-
                 if site.lifecycleStatus == .archived {
                     Button("Restore Site") {
                         store.restoreSite(site)
@@ -98,6 +91,14 @@ struct SiteDetailView: View {
             }
         }
         .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    isInputFocused = false
+                    store.updateSite(site)
+                    dismiss()
+                }
+            }
+
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
                 Button("Done") {

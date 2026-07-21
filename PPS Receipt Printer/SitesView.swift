@@ -1,129 +1,54 @@
-//
-//  SitesView.swift
-//  PPS Receipt Printer
-//
-//  Created by Timothy Renollet on 6/24/26.
-//
-
 import SwiftUI
 
 struct SitesView: View {
-    @EnvironmentObject var store: AppDataStore
-
-    @State private var selectedCustomerNumber = ""
-    @State private var siteName = ""
-    @State private var serviceAddress = ""
-    @State private var propertyType = ""
-    @State private var accessNotes = ""
-    @State private var workNotes = ""
+    @EnvironmentObject private var store: AppDataStore
     @State private var showArchived = false
+    @State private var showingNewSite = false
+    @State private var searchText = ""
 
-    @FocusState private var isInputFocused: Bool
+    private var filteredSites: [CustomerSite] {
+        let source = showArchived ? store.archivedSites : store.activeSites
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return source }
+
+        return source.filter {
+            $0.siteName.localizedCaseInsensitiveContains(query) ||
+            $0.serviceAddress.localizedCaseInsensitiveContains(query) ||
+            $0.customerNumber.localizedCaseInsensitiveContains(query) ||
+            $0.propertyType.localizedCaseInsensitiveContains(query) ||
+            $0.accessNotes.localizedCaseInsensitiveContains(query) ||
+            $0.workNotes.localizedCaseInsensitiveContains(query)
+        }
+    }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("New Site") {
-                    Picker("Customer", selection: $selectedCustomerNumber) {
-                        Text("Select Customer").tag("")
-
-                        ForEach(store.activeCustomers) { customer in
-                            Text(customerDisplayName(customer))
-                                .tag(customer.customerNumber)
-                        }
-                    }
-
-                    TextField("Site Name", text: $siteName)
-                        .focused($isInputFocused)
-
-                    TextField("Service Address", text: $serviceAddress)
-                        .focused($isInputFocused)
-
-                    TextField("Property Type", text: $propertyType)
-                        .focused($isInputFocused)
-
-                    TextField("Access Notes", text: $accessNotes, axis: .vertical)
-                        .lineLimit(2...4)
-                        .focused($isInputFocused)
-
-                    TextField("Work Notes", text: $workNotes, axis: .vertical)
-                        .lineLimit(3...6)
-                        .focused($isInputFocused)
-
-                    Button("Add Site") {
-                        isInputFocused = false
-                        addSite()
-                    }
-                    .disabled(selectedCustomerNumber.isEmpty)
-                }
-
-                Section("Sites") {
-                    Toggle("Show Archived", isOn: $showArchived)
-
-                    ForEach(showArchived ? store.archivedSites : store.activeSites) { site in
-                        NavigationLink {
-                            SiteDetailView(site: site)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(site.siteName.isEmpty ? site.serviceAddress : site.siteName)
-                                    .font(.headline)
-
-                                Text(site.serviceAddress)
-                                    .font(.caption)
-
-                                Text("Customer #: \(site.customerNumber)")
-                                    .font(.caption)
-
-                                if !site.propertyType.isEmpty {
-                                    Text("Property: \(site.propertyType)")
-                                        .font(.caption)
-                                }
-
-                                if site.lifecycleStatus == .archived {
-                                    Text("Archived")
-                                        .foregroundStyle(.red)
-                                        .font(.caption)
-                                }
-                            }
-                            .padding(.vertical, 4)
-                        }
-                    }
-                }
+        List {
+            Section {
+                Button("Add New Site") { showingNewSite = true }
+                Toggle("Show Archived", isOn: $showArchived)
             }
-            .navigationTitle("Sites")
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-
-                    Button("Done") {
-                        isInputFocused = false
+            Section("Sites") {
+                ForEach(filteredSites) { site in
+                    NavigationLink { SiteDetailView(site: site) } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(site.siteName.isEmpty ? site.serviceAddress : site.siteName).font(.headline)
+                            Text(site.serviceAddress).font(.caption)
+                            Text("Customer #: \(site.customerNumber)").font(.caption)
+                            if !site.propertyType.isEmpty {
+                                Text("Property: \(site.propertyType)").font(.caption)
+                            }
+                            if site.lifecycleStatus == .archived {
+                                Text("Archived").foregroundStyle(.red).font(.caption)
+                            }
+                        }.padding(.vertical, 4)
                     }
                 }
             }
         }
-    }
-
-    private func addSite() {
-        let site = CustomerSite(
-            customerNumber: selectedCustomerNumber,
-            siteName: siteName,
-            serviceAddress: serviceAddress,
-            propertyType: propertyType,
-            accessNotes: accessNotes,
-            workNotes: workNotes
-        )
-
-        store.addSite(site)
-
-        siteName = ""
-        serviceAddress = ""
-        propertyType = ""
-        accessNotes = ""
-        workNotes = ""
-    }
-
-    private func customerDisplayName(_ customer: Customer) -> String {
-        let name = customer.businessName.isEmpty ? customer.contactName : customer.businessName
-        return "\(name) - \(customer.customerNumber)"
+        .navigationTitle("Sites")
+        .searchable(text: $searchText, prompt: "Search sites")
+        .sheet(isPresented: $showingNewSite) {
+            SiteNewView().environmentObject(store)
+        }
     }
 }

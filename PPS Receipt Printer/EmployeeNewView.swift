@@ -183,19 +183,6 @@ struct EmployeeNewView: View {
                     }
                 }
 
-                Section {
-                    Button("Save Employee") {
-                        saveEmployee()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(
-                        firstName
-                            .trimmingCharacters(
-                                in: .whitespacesAndNewlines
-                            )
-                            .isEmpty
-                    )
-                }
             }
             .navigationTitle("New Employee")
             .toolbar {
@@ -205,6 +192,17 @@ struct EmployeeNewView: View {
                     Button("Cancel") {
                         dismiss()
                     }
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saveEmployee()
+                    }
+                    .disabled(
+                        firstName
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                            .isEmpty
+                    )
                 }
 
                 ToolbarItemGroup(

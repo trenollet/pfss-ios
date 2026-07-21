@@ -35,8 +35,7 @@ struct EmployeesView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
+        List {
                 Section {
                     NavigationLink {
                         WorkforceCapacityDashboardView()
@@ -133,7 +132,6 @@ struct EmployeesView: View {
             ) {
                 EmployeeNewView()
                     .environmentObject(store)
-            }
         }
     }
 }

@@ -84,13 +84,6 @@ struct LeadDetailView: View {
                 }
                 .disabled(lead.status == .converted || lead.lifecycleStatus == .archived)
 
-                Button("Save Changes") {
-                    isInputFocused = false
-                    store.updateLead(lead)
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-
                 if lead.lifecycleStatus == .archived {
                     Button("Restore Lead") {
                         store.restoreLead(lead)
@@ -107,6 +100,14 @@ struct LeadDetailView: View {
         }
         .navigationTitle("Edit Lead")
         .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    isInputFocused = false
+                    store.updateLead(lead)
+                    dismiss()
+                }
+            }
+
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
                 Button("Done") {

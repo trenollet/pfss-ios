@@ -56,13 +56,6 @@ struct CustomerDetailView: View {
             }
             
             Section {
-                Button("Save Changes") {
-                    isInputFocused = false
-                    store.updateCustomer(customer)
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-                
                 if customer.lifecycleStatus == .archived {
                     Button("Restore Customer") {
                         store.restoreCustomer(customer)
@@ -78,6 +71,14 @@ struct CustomerDetailView: View {
             }
             .navigationTitle("Edit Customer")
             .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        isInputFocused = false
+                        store.updateCustomer(customer)
+                        dismiss()
+                    }
+                }
+
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
                     Button("Done") {

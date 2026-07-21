@@ -90,24 +90,6 @@ struct ServiceCatalogNewItemView: View {
                     }
                 }
 
-                Section {
-                    Button("Save Catalog Item") {
-                        let item = ServiceCatalogItem(
-                            itemName: itemName,
-                            itemDescription: itemDescription,
-                            defaultQuantity: quantityValue,
-                            defaultPrice: priceValue,
-                            estimatedMinutesPerUnit: estimatedMinutesValue,
-                            itemType: itemType,
-                            taxTreatment: taxTreatment
-                        )
-
-                        store.addServiceCatalogItem(item)
-                        dismiss()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(itemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
             }
             .navigationTitle("New Catalog Item")
             .onAppear {
@@ -122,6 +104,13 @@ struct ServiceCatalogNewItemView: View {
                     }
                 }
 
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saveCatalogItem()
+                    }
+                    .disabled(itemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
                     Button("Done") {
@@ -130,5 +119,20 @@ struct ServiceCatalogNewItemView: View {
                 }
             }
         }
+    }
+
+    private func saveCatalogItem() {
+        let item = ServiceCatalogItem(
+            itemName: itemName,
+            itemDescription: itemDescription,
+            defaultQuantity: quantityValue,
+            defaultPrice: priceValue,
+            estimatedMinutesPerUnit: estimatedMinutesValue,
+            itemType: itemType,
+            taxTreatment: taxTreatment
+        )
+
+        store.addServiceCatalogItem(item)
+        dismiss()
     }
 }

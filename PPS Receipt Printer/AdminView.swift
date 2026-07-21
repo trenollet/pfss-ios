@@ -9,8 +9,7 @@ import SwiftUI
 
 struct AdminView: View {
     var body: some View {
-        NavigationStack {
-            List {
+        List {
                 Section("Business") {
                     NavigationLink {
                         BusinessProfileView()
@@ -67,7 +66,6 @@ struct AdminView: View {
                     .foregroundStyle(.secondary)
                 }
             }
-            .navigationTitle("Admin")
-        }
+        .navigationTitle("Admin")
     }
 }

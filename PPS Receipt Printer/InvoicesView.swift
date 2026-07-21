@@ -11,20 +11,36 @@ struct InvoicesView: View {
     @EnvironmentObject var store: AppDataStore
 
     @State private var showArchived = false
+    @State private var searchText = ""
 
-    private var displayedInvoices: [InvoiceRecord] {
+    private var filteredInvoices: [InvoiceRecord] {
         let source = showArchived
             ? store.archivedInvoices
             : store.activeInvoices
 
-        return source.sorted {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matchingInvoices: [InvoiceRecord]
+
+        if query.isEmpty {
+            matchingInvoices = source
+        } else {
+            matchingInvoices = source.filter { invoice in
+                invoice.invoiceNumber.localizedCaseInsensitiveContains(query)
+                    || invoice.customerNumber.localizedCaseInsensitiveContains(query)
+                    || customerDisplayName(for: invoice.customerNumber)
+                        .localizedCaseInsensitiveContains(query)
+                    || invoice.jobNumber.localizedCaseInsensitiveContains(query)
+                    || invoice.status.rawValue.localizedCaseInsensitiveContains(query)
+            }
+        }
+
+        return matchingInvoices.sorted {
             $0.issueDate > $1.issueDate
         }
     }
 
     var body: some View {
-        NavigationStack {
-            List {
+        List {
                 Section {
                     Toggle(
                         "Show Archived",
@@ -33,15 +49,15 @@ struct InvoicesView: View {
                 }
 
                 Section("Invoices") {
-                    if displayedInvoices.isEmpty {
+                    if filteredInvoices.isEmpty {
                         Text(
-                            showArchived
-                                ? "No archived invoices."
-                                : "No invoices yet."
+                            searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? (showArchived ? "No archived invoices." : "No invoices yet.")
+                                : "No invoices match your search."
                         )
                         .foregroundStyle(.secondary)
                     } else {
-                        ForEach(displayedInvoices) { invoice in
+                        ForEach(filteredInvoices) { invoice in
                             NavigationLink {
                                 InvoiceDetailView(invoice: invoice)
                             } label: {
@@ -97,8 +113,8 @@ struct InvoicesView: View {
                     }
                 }
             }
-            .navigationTitle("Invoices")
-        }
+        .navigationTitle("Invoices")
+        .searchable(text: $searchText, prompt: "Search invoices")
     }
 
     private func customerDisplayName(

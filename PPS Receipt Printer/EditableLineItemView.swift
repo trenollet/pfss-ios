@@ -81,13 +81,6 @@ struct EditableLineItemView: View {
                     }
                 }
 
-                Section {
-                    Button(isEditingExisting ? "Save Changes" : "Save Line Item") {
-                        saveLineItem()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(itemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
             }
             .navigationTitle(isEditingExisting ? "Edit Line Item" : "New Line Item")
             .onAppear {
@@ -98,6 +91,13 @@ struct EditableLineItemView: View {
                     Button("Cancel") {
                         dismiss()
                     }
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saveLineItem()
+                    }
+                    .disabled(itemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
 
                 ToolbarItemGroup(placement: .keyboard) {

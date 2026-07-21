@@ -48,8 +48,7 @@ struct PrintView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
+        Form {
                 Section("Printer") {
                     Button("Scan for Printer") {
                         printer.startScan()
@@ -154,7 +153,6 @@ struct PrintView: View {
                         isInputFocused = false
                     }
                 }
-            }
         }
     }
 

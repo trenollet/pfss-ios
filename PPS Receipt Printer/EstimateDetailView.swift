@@ -42,6 +42,13 @@ struct EstimateDetailView: View {
         PricingCalculator.total(for: estimate)
     }
 
+    private var availableSites: [CustomerSite] {
+        store.sites.filter {
+            $0.customerNumber == estimate.customerNumber &&
+            ($0.lifecycleStatus == .active || $0.id == estimate.siteID)
+        }
+    }
+
     var body: some View {
         Form {
             Section("Estimate") {
@@ -49,6 +56,13 @@ struct EstimateDetailView: View {
                     .font(.headline)
 
                 Text("Customer #: \(estimate.customerNumber)")
+
+                Picker("Site", selection: $estimate.siteID) {
+                    Text("No site selected").tag(UUID?.none)
+                    ForEach(availableSites) { site in
+                        Text(siteDisplayName(site)).tag(Optional(site.id))
+                    }
+                }
 
                 if !estimate.leadNumber.isEmpty {
                     Text("Lead: \(estimate.leadNumber)")
@@ -140,27 +154,6 @@ struct EstimateDetailView: View {
                 }
                 .disabled(estimate.lifecycleStatus == .archived)
 
-                Button("Save Changes") {
-                    isInputFocused = false
-
-                    estimate.lineItems = PricingCalculator.updatedLineItems(estimate.lineItems)
-                    estimate.subtotal = PricingCalculator.subtotal(for: estimate)
-                    estimate.total = PricingCalculator.total(for: estimate)
-
-                    if let firstItem = estimate.lineItems.first {
-                        estimate.serviceType = firstItem.serviceType
-                        estimate.otherService = firstItem.otherService
-                    }
-
-                    estimate.serviceDetails = estimate.lineItems.map { item in
-                        item.description.isEmpty ? serviceName(for: item) : item.description
-                    }.joined(separator: "\n")
-
-                    store.updateEstimate(estimate)
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-
                 if estimate.lifecycleStatus == .archived {
                     Button("Restore Estimate") {
                         store.restoreEstimate(estimate)
@@ -177,6 +170,12 @@ struct EstimateDetailView: View {
         }
         .navigationTitle("Edit Estimate")
         .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    saveEstimate()
+                }
+            }
+
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
                 Button("Done") {
@@ -232,6 +231,33 @@ struct EstimateDetailView: View {
             )
         }
     }
+
+    private func siteDisplayName(_ site: CustomerSite) -> String {
+        if site.siteName.isEmpty { return site.serviceAddress }
+        if site.serviceAddress.isEmpty { return site.siteName }
+        return "\(site.siteName) — \(site.serviceAddress)"
+    }
+
+    private func saveEstimate() {
+        isInputFocused = false
+
+        estimate.lineItems = PricingCalculator.updatedLineItems(estimate.lineItems)
+        estimate.subtotal = PricingCalculator.subtotal(for: estimate)
+        estimate.total = PricingCalculator.total(for: estimate)
+
+        if let firstItem = estimate.lineItems.first {
+            estimate.serviceType = firstItem.serviceType
+            estimate.otherService = firstItem.otherService
+        }
+
+        estimate.serviceDetails = estimate.lineItems.map { item in
+            item.description.isEmpty ? serviceName(for: item) : item.description
+        }.joined(separator: "\n")
+
+        store.updateEstimate(estimate)
+        dismiss()
+    }
+
     private func createAndSharePDF() {
         isInputFocused = false
 

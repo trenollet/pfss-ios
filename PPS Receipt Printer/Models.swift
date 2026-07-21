@@ -552,6 +552,9 @@ struct JobRecord: Identifiable, Codable, WorkOrder {
     var workNotes: String
 
     var isRecurring: Bool
+    var recurrenceFrequency: JobRecurrenceFrequency? = nil
+    var recurrenceSeriesID: UUID? = nil
+    var recurrenceSequence: Int = 0
     var createdDate: Date
 
     var lifecycleStatus: RecordLifecycleStatus = .active
@@ -581,6 +584,9 @@ extension JobRecord {
         case timelineEvents
         case workNotes
         case isRecurring
+        case recurrenceFrequency
+        case recurrenceSeriesID
+        case recurrenceSequence
         case createdDate
         case lifecycleStatus
     }
@@ -700,6 +706,21 @@ extension JobRecord {
             Bool.self,
             forKey: .isRecurring
         ) ?? false
+
+        recurrenceFrequency = try container.decodeIfPresent(
+            JobRecurrenceFrequency.self,
+            forKey: .recurrenceFrequency
+        )
+
+        recurrenceSeriesID = try container.decodeIfPresent(
+            UUID.self,
+            forKey: .recurrenceSeriesID
+        )
+
+        recurrenceSequence = try container.decodeIfPresent(
+            Int.self,
+            forKey: .recurrenceSequence
+        ) ?? 0
 
         createdDate = try container.decodeIfPresent(
             Date.self,
@@ -1011,4 +1032,3 @@ extension WorkOrder {
         )
     }
 }
-

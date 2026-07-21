@@ -343,8 +343,12 @@ struct OperationsView: View {
                 ForEach(dispatchQueueItems) { item in
                     DispatchQueueCard(
                         item: item,
-                        onAssign: {
-                            assignRecommendedTechnician(
+                        technicianOptions: technicianOptions(
+                            for: item.jobID
+                        ),
+                        onAssign: { technicianID in
+                            assignTechnician(
+                                technicianID,
                                 to: item.jobID
                             )
                         }
@@ -518,6 +522,70 @@ struct OperationsView: View {
         )
     }
 
+    private func rankedDecisions(
+        for job: JobRecord
+    ) -> [DispatchDecision] {
+        DispatchDecisionEngine.rankedDecisions(
+            for: job,
+            employees: activeTechnicians,
+            jobs: activeJobs,
+            policy: .balancedWorkload,
+            onOrAfter: max(job.scheduledDate, now),
+            calendar: calendar
+        )
+    }
+
+    /// Builds a complete picker list. Conflict-free candidates retain the
+    /// engine's ranking and proposed opening. Other active technicians remain
+    /// selectable as explicit human overrides.
+    private func technicianOptions(
+        for jobID: UUID?
+    ) -> [DispatchTechnicianOption] {
+        guard let jobID,
+              let job = activeJobs.first(where: { $0.id == jobID }) else {
+            return []
+        }
+
+        let decisions = rankedDecisions(for: job)
+        let decisionByEmployeeID = Dictionary(
+            uniqueKeysWithValues: decisions.map {
+                ($0.employee.id, $0)
+            }
+        )
+        let recommendedID = decisions.first?.employee.id
+
+        return activeTechnicians
+            .map { technician in
+                let decision = decisionByEmployeeID[technician.id]
+
+                return DispatchTechnicianOption(
+                    id: technician.id,
+                    name: technician.displayName,
+                    confidence: Double(
+                        decision?.confidencePercentage ?? 0
+                    ) / 100,
+                    proposedStart: decision?.opening.start
+                        ?? job.scheduledDate,
+                    isRecommended: technician.id == recommendedID,
+                    hasConflictFreeOpening: decision != nil
+                )
+            }
+            .sorted { first, second in
+                if first.isRecommended != second.isRecommended {
+                    return first.isRecommended
+                }
+                if first.hasConflictFreeOpening != second.hasConflictFreeOpening {
+                    return first.hasConflictFreeOpening
+                }
+                if first.confidence != second.confidence {
+                    return first.confidence > second.confidence
+                }
+                return first.name.localizedCaseInsensitiveCompare(
+                    second.name
+                ) == .orderedAscending
+            }
+    }
+
     private func assignRecommendedTechnician(
         to jobID: UUID?
     ) {
@@ -533,6 +601,37 @@ struct OperationsView: View {
 
         job.primaryTechnicianID = decision.employee.id
         job.scheduledDate = decision.opening.start
+
+        if job.status == .toBeScheduled {
+            job.status = .assigned
+        }
+
+        store.updateJob(job)
+    }
+
+    /// Assigns the technician selected by the dispatcher. When that technician
+    /// has a conflict-free recommendation, PFSS adopts the proposed opening.
+    /// A manual override keeps the job's existing scheduled date so the human
+    /// decision is never silently moved to another time.
+    private func assignTechnician(
+        _ technicianID: UUID,
+        to jobID: UUID?
+    ) {
+        guard let jobID,
+              var job = activeJobs.first(where: { $0.id == jobID }),
+              activeTechnicians.contains(where: { $0.id == technicianID }) else {
+            return
+        }
+
+        let selectedDecision = rankedDecisions(for: job).first {
+            $0.employee.id == technicianID
+        }
+
+        job.primaryTechnicianID = technicianID
+
+        if let selectedDecision {
+            job.scheduledDate = selectedDecision.opening.start
+        }
 
         if job.status == .toBeScheduled {
             job.status = .assigned

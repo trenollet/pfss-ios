@@ -200,18 +200,6 @@ struct EmployeeDetailView: View {
             }
 
             Section {
-                Button("Save Changes") {
-                    saveChanges()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(
-                    employee.firstName
-                        .trimmingCharacters(
-                            in: .whitespacesAndNewlines
-                        )
-                        .isEmpty
-                )
-
                 if employee.lifecycleStatus == .archived {
                     Button("Restore Employee") {
                         store.restoreEmployee(employee)
@@ -231,6 +219,17 @@ struct EmployeeDetailView: View {
         }
         .navigationTitle(employee.displayName)
         .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    saveChanges()
+                }
+                .disabled(
+                    employee.firstName
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty
+                )
+            }
+
             ToolbarItemGroup(
                 placement: .keyboard
             ) {

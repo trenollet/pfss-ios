@@ -118,6 +118,7 @@ final class AppDataStore: ObservableObject {
 
     init() {
         loadData()
+        materializePendingRecurringJobs()
     }
 
     func generateCustomerNumber() -> String {
@@ -295,12 +296,126 @@ final class AppDataStore: ObservableObject {
     }
     
     func addJob(_ job: JobRecord) {
-        jobs.append(job)
+        var storedJob = job
+        prepareRecurrenceIdentity(for: &storedJob)
+        jobs.append(storedJob)
+        ensureNextOccurrence(after: storedJob, includeInitialOccurrence: true)
     }
 
     func updateJob(_ job: JobRecord) {
-        if let index = jobs.firstIndex(where: { $0.id == job.id }) {
-            jobs[index] = job
+        if let originalIndex = jobs.firstIndex(where: { $0.id == job.id }) {
+            let previousJob = jobs[originalIndex]
+
+            if previousJob.isRecurring && !job.isRecurring {
+                removeUnstartedFutureOccurrences(after: previousJob)
+            }
+
+            var storedJob = job
+            prepareRecurrenceIdentity(for: &storedJob)
+
+            guard let currentIndex = jobs.firstIndex(where: {
+                $0.id == storedJob.id
+            }) else {
+                return
+            }
+
+            jobs[currentIndex] = storedJob
+            ensureNextOccurrence(
+                after: storedJob,
+                includeInitialOccurrence: storedJob.recurrenceSequence == 0
+            )
+        }
+    }
+
+    private func removeUnstartedFutureOccurrences(after job: JobRecord) {
+        guard let seriesID = job.recurrenceSeriesID else { return }
+
+        jobs.removeAll {
+            $0.id != job.id &&
+            $0.recurrenceSeriesID == seriesID &&
+            $0.recurrenceSequence > job.recurrenceSequence &&
+            ($0.status == .toBeScheduled || $0.status == .scheduled)
+        }
+    }
+
+    /// Keeps one upcoming occurrence available for dispatch without generating
+    /// an unlimited series of future jobs.
+    private func ensureNextOccurrence(
+        after job: JobRecord,
+        includeInitialOccurrence: Bool
+    ) {
+        guard job.lifecycleStatus == .active,
+              job.isRecurring,
+              let frequency = job.recurrenceFrequency,
+              includeInitialOccurrence || job.status == .completed,
+              let nextDate = frequency.nextDate(after: job.scheduledDate) else {
+            return
+        }
+
+        let seriesID = job.recurrenceSeriesID ?? job.id
+        let nextSequence = job.recurrenceSequence + 1
+
+        if let existingIndex = jobs.firstIndex(where: {
+            $0.recurrenceSeriesID == seriesID &&
+            $0.recurrenceSequence == nextSequence
+        }) {
+            guard jobs[existingIndex].status == .toBeScheduled ||
+                    jobs[existingIndex].status == .scheduled else {
+                return
+            }
+            jobs[existingIndex].recurrenceFrequency = frequency
+            jobs[existingIndex].scheduledDate = nextDate
+            return
+        }
+
+        var nextJob = job
+        nextJob.id = UUID()
+        nextJob.jobNumber = generateJobNumber(for: nextDate)
+        nextJob.primaryTechnicianID = nil
+        nextJob.secondaryTechnicianID = nil
+        nextJob.scheduledDate = nextDate
+        nextJob.setupStartDate = nil
+        nextJob.completedDate = nil
+        nextJob.status = .toBeScheduled
+        nextJob.workflowState = .notStarted
+        nextJob.timelineEvents = []
+        nextJob.createdDate = Date()
+        nextJob.lifecycleStatus = .active
+        nextJob.recurrenceSeriesID = seriesID
+        nextJob.recurrenceSequence = nextSequence
+        jobs.append(nextJob)
+    }
+
+    private func prepareRecurrenceIdentity(for job: inout JobRecord) {
+        guard job.isRecurring, job.recurrenceFrequency != nil else {
+            job.recurrenceFrequency = nil
+            job.recurrenceSeriesID = nil
+            job.recurrenceSequence = 0
+            return
+        }
+
+        if job.recurrenceSeriesID == nil {
+            job.recurrenceSeriesID = job.id
+        }
+    }
+
+    private func materializePendingRecurringJobs() {
+        let candidates = jobs.filter {
+            $0.isRecurring &&
+            $0.recurrenceFrequency != nil &&
+            ($0.recurrenceSequence == 0 || $0.status == .completed)
+        }
+
+        for candidate in candidates {
+            var normalized = candidate
+            prepareRecurrenceIdentity(for: &normalized)
+            if let index = jobs.firstIndex(where: { $0.id == normalized.id }) {
+                jobs[index] = normalized
+            }
+            ensureNextOccurrence(
+                after: normalized,
+                includeInitialOccurrence: normalized.recurrenceSequence == 0
+            )
         }
     }
 

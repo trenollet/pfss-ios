@@ -26,6 +26,7 @@ struct JobDetailView: View {
     @State private var scheduledDurationMinutes = 0
     @State private var technicianNoteDraft = ""
     @State private var presentedInvoice: InvoiceRecord?
+    @State private var showingRecurrencePicker = false
     
     private enum ActiveSheet: Identifiable {
         case catalogPicker
@@ -175,6 +176,13 @@ struct JobDetailView: View {
         storedJob.status == .cancelled ||
         storedJob.lifecycleStatus == .archived
     }
+
+    private var availableSites: [CustomerSite] {
+        store.sites.filter {
+            $0.customerNumber == job.customerNumber &&
+            ($0.lifecycleStatus == .active || $0.id == job.siteID)
+        }
+    }
     
     var body: some View {
         Form {
@@ -183,6 +191,13 @@ struct JobDetailView: View {
                     .font(.headline)
                 
                 Text("Customer #: \(job.customerNumber)")
+
+                Picker("Site", selection: $job.siteID) {
+                    Text("No site selected").tag(UUID?.none)
+                    ForEach(availableSites) { site in
+                        Text(siteDisplayName(site)).tag(Optional(site.id))
+                    }
+                }
                 
                 if !job.estimateNumber.isEmpty {
                     Text("Estimate: \(job.estimateNumber)")
@@ -359,7 +374,7 @@ struct JobDetailView: View {
             }
             
             Section("Schedule") {
-                DatePicker("Scheduled Date", selection: $job.scheduledDate, displayedComponents: [.date, .hourAndMinute])
+                QuarterHourDatePicker(selection: $job.scheduledDate)
                 HStack {
                     Text("Estimated Labor")
                     Spacer()
@@ -441,6 +456,17 @@ struct JobDetailView: View {
             }
             
             Toggle("Recurring Job", isOn: $job.isRecurring)
+
+            if job.isRecurring {
+                Button {
+                    showingRecurrencePicker = true
+                } label: {
+                    LabeledContent(
+                        "Frequency",
+                        value: job.recurrenceFrequency?.rawValue ?? "Select"
+                    )
+                }
+            }
             
             if job.completedDate != nil {
                 DatePicker(
@@ -469,11 +495,6 @@ struct JobDetailView: View {
             }
 
             Section {
-                Button("Save Changes") {
-                    saveJobChanges(shouldDismiss: true)
-                }
-                .buttonStyle(.borderedProminent)
-                
                 if job.lifecycleStatus == .archived {
                     Button("Restore Job") {
                         store.restoreJob(job)
@@ -506,8 +527,30 @@ struct JobDetailView: View {
                 to: remainingMinutes
             )
         }
+        .onChange(of: job.isRecurring) {
+            if job.isRecurring {
+                showingRecurrencePicker = true
+            } else {
+                job.recurrenceFrequency = nil
+            }
+        }
         .scrollDismissesKeyboard(.interactively)
         .navigationTitle("Edit Job")
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    saveJobChanges(shouldDismiss: true)
+                }
+                .disabled(job.isRecurring && job.recurrenceFrequency == nil)
+            }
+
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    isInputFocused = false
+                }
+            }
+        }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .catalogPicker:
@@ -534,6 +577,15 @@ struct JobDetailView: View {
                     .environmentObject(store)
             }
         }
+        .sheet(isPresented: $showingRecurrencePicker) {
+            JobRecurrencePickerView(selection: $job.recurrenceFrequency)
+        }
+    }
+
+    private func siteDisplayName(_ site: CustomerSite) -> String {
+        if site.siteName.isEmpty { return site.serviceAddress }
+        if site.serviceAddress.isEmpty { return site.siteName }
+        return "\(site.siteName) — \(site.serviceAddress)"
     }
     @ViewBuilder
     private func employeeCapacitySummary(

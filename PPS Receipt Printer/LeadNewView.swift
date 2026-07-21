@@ -1,0 +1,85 @@
+import SwiftUI
+
+struct LeadNewView: View {
+    @EnvironmentObject private var store: AppDataStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var businessName = ""
+    @State private var contactName = ""
+    @State private var phone = ""
+    @State private var email = ""
+    @State private var leadSource: LeadSource = .website
+    @State private var serviceRequested: ServiceType = .windowCleaning
+    @State private var otherService = ""
+    @State private var estimatedValue = ""
+    @State private var assignedSalesperson = ""
+    @State private var status: LeadStatus = .newLead
+    @State private var followUpDate = Date()
+    @FocusState private var isInputFocused: Bool
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Lead") {
+                    TextField("Business Name", text: $businessName).focused($isInputFocused)
+                    TextField("Contact Name", text: $contactName).focused($isInputFocused)
+                    TextField("Phone", text: $phone).keyboardType(.phonePad).focused($isInputFocused)
+                    TextField("Email", text: $email)
+                        .keyboardType(.emailAddress)
+                        .textInputAutocapitalization(.never)
+                        .focused($isInputFocused)
+                    Picker("Lead Source", selection: $leadSource) {
+                        ForEach(LeadSource.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Picker("Service Requested", selection: $serviceRequested) {
+                        ForEach(ServiceType.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    if serviceRequested == .other {
+                        TextField("Other Service", text: $otherService).focused($isInputFocused)
+                    }
+                    TextField("Estimated Value", text: $estimatedValue)
+                        .keyboardType(.decimalPad).focused($isInputFocused)
+                    TextField("Assigned Salesperson", text: $assignedSalesperson).focused($isInputFocused)
+                    Picker("Status", selection: $status) {
+                        ForEach(LeadStatus.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    DatePicker("Follow-Up Date", selection: $followUpDate, displayedComponents: .date)
+                }
+            }
+            .navigationTitle("New Lead")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { saveLead() }.disabled(!hasName)
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer(); Button("Done") { isInputFocused = false }
+                }
+            }
+        }
+    }
+
+    private var hasName: Bool {
+        !businessName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+        !contactName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func saveLead() {
+        isInputFocused = false
+        store.addLead(Lead(
+            leadNumber: store.generateLeadNumber(),
+            businessName: businessName,
+            contactName: contactName,
+            phone: phone,
+            email: email,
+            leadSource: leadSource,
+            serviceRequested: serviceRequested,
+            otherService: otherService,
+            estimatedValue: Double(estimatedValue) ?? 0,
+            assignedSalesperson: assignedSalesperson,
+            status: status,
+            followUpDate: followUpDate,
+            createdDate: Date()
+        ))
+        dismiss()
+    }
+}

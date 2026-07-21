@@ -87,13 +87,6 @@ struct ServiceCatalogDetailView: View {
             }
 
             Section {
-                Button("Save Changes") {
-                    isInputFocused = false
-                    store.updateServiceCatalogItem(item)
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-
                 if item.lifecycleStatus == .archived {
                     Button("Restore Catalog Item") {
                         store.restoreServiceCatalogItem(item)
@@ -110,6 +103,14 @@ struct ServiceCatalogDetailView: View {
         }
         .navigationTitle("Edit Catalog Item")
         .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    isInputFocused = false
+                    store.updateServiceCatalogItem(item)
+                    dismiss()
+                }
+            }
+
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
                 Button("Done") {

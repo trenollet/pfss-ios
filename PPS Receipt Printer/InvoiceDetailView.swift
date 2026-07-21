@@ -208,11 +208,6 @@ struct InvoiceDetailView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(!printer.isReadyToPrint)
                 
-                Button("Save Changes") {
-                    saveInvoice()
-                }
-                .buttonStyle(.borderedProminent)
-
                 if invoice.lifecycleStatus == .archived {
                     Button("Restore Invoice") {
                         store.restoreInvoice(invoice)
@@ -239,6 +234,12 @@ struct InvoiceDetailView: View {
                     dismiss()
                 } label: {
                     Label("Back", systemImage: "chevron.left")
+                }
+            }
+
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    saveInvoice()
                 }
             }
 
