@@ -259,6 +259,21 @@ Sarah
 
 The technician view, timeline view, and map view are synchronized lenses over the same operational state.
 
+### Decision 11 – Recommendations never remove technician choice
+
+The Dispatch Queue highlights PFSS's recommended technician but also presents every eligible technician in a picker. A dispatcher or self-managing technician may override the recommendation. Conflict and capacity warnings remain visible so the decision is informed rather than blocked.
+
+### Decision 12 – Recurring Jobs materialize one future occurrence
+
+Recurring Jobs support Weekly, Bi-Weekly, Monthly, Quarterly, Bi-Annual, and Annual schedules.
+
+- PFSS creates exactly one upcoming occurrence at a time.
+- The future occurrence is unassigned and enters dispatch planning naturally.
+- Completing an occurrence creates the next occurrence.
+- Series and sequence identifiers prevent duplicates across saves and app launches.
+- Disabling recurrence removes only unstarted future occurrences.
+- Existing saved Jobs remain backward compatible.
+
 ---
 
 ## 5. Engine Architecture
@@ -455,7 +470,7 @@ A step is complete only when:
 
 ## 8. Phase 14 Implementation Checklist
 
-- [ ] Step 1 – Assignment Engine
+- [ ] Step 1 – Assignment Engine *(implementation complete; automated tests pending)*
 - [ ] Step 2 – Dispatch Engine
 - [ ] Step 3 – Daily Planner Engine
 - [ ] Step 4 – Route Engine Integration
@@ -521,15 +536,18 @@ PFSS has a complete operational work object that all scheduling, routing, dispat
 
 ### Engineering Record
 
-- **Status:** Not started
-- **Start date:**
-- **Completion date:**
-- **Commit(s):**
-- **Files added:**
-- **Files modified:**
-- **Tests added/completed:**
-- **Decisions made during implementation:**
-- **Known improvements:**
+- **Status:** In validation — implementation and manual testing complete; dedicated unit tests pending
+- **Start date:** 2026-07-21
+- **Completion date:** Pending automated test completion
+- **Implementation commit:** `8ca08f8`
+- **Documentation/rebase commit:** Pending rebase completion
+- **Planned checkpoint tag:** `v0.9.9-phase14.1`
+- **Files added:** `Assignment.swift`, `AssignmentEnums.swift`, `AssignmentHistory.swift`, `AssignmentCrew.swift`, `AssignmentScheduling.swift`, `AssignmentStore.swift`, `AssignmentEngine.swift`, `AssignmentCard.swift`, `AssignmentStatusBadge.swift`, `AssignmentDetailView.swift`, `CrewEditor.swift`
+- **Files modified:** `AppDataStore.swift`, `Models.swift`, Operations and supporting record views
+- **Tests completed:** Product-owner manual integration and clean-build validation; Swift syntax validation during development
+- **Tests pending:** Assignment lifecycle, validation, history, crew, scheduling, store, Operations API, and recurring-job unit tests
+- **Decisions made during implementation:** AssignmentEngine is the public Operations API; store lookup methods use explicit names; recommendations remain overridable; recurrence generates one future occurrence
+- **Known improvements:** Complete automated tests before marking Step 1 done
 
 ---
 
@@ -1074,6 +1092,7 @@ Representative scenarios must include:
 - Record every relevant commit hash in the corresponding Engineering Record.
 - Update this workbook in the same step commit or an immediately following documentation commit.
 - Keep the stable branch protected from incomplete Phase 14 work until stabilization is complete.
+- Planned annotated checkpoint tag after Step 1 tests: `v0.9.9-phase14.1`.
 
 Recommended commit pattern:
 
@@ -1089,7 +1108,7 @@ docs(phase14): complete assignment engine record
 
 ### Current Status
 
-Planning and architecture decisions are complete.
+Planning, architecture, Assignment implementation, supporting UI work, and manual integration testing are complete. Automated Assignment-domain validation remains open.
 
 ### Current Step
 
@@ -1097,12 +1116,14 @@ Planning and architecture decisions are complete.
 
 ### Next Action
 
-Review the existing project model/store conventions and design the concrete Swift Assignment domain files before implementation.
+Create and run the Assignment-domain unit tests. Cover model validation, lifecycle transitions, history, crew rules, scheduling modes, store operations, Operations API commands, and recurring-job duplicate prevention. Record the results here before creating the checkpoint tag.
 
 ### Known Branch State
 
 - Stability Pass documentation was previously committed to `main`.
 - Phase 14 work belongs on `feature/phase14-dispatch-field-intelligence`.
+- Assignment implementation commit: `8ca08f8`.
+- The local branch was rebased onto remote documentation commits `8571b87` and `00541ed` before publication.
 - This workbook is the source of truth for the remainder of the phase.
 
 ---
@@ -1144,6 +1165,21 @@ Add a dated entry whenever an important implementation decision, milestone, or d
 - Added Daily Planner as a dedicated engine between Scheduling and Routing.
 - Confirmed technician-centric Dispatch Board with synchronized Timeline and Map views.
 - Established this workbook as the living Phase 14 engineering record.
+
+### 2026-07-21 – Assignment foundation and UI workflow cycle
+
+- Added the Assignment model family, store, and AssignmentEngine Operations API.
+- Added Assignment card, status badge, detail, and crew-editing interfaces.
+- Added an overridable technician picker to the Dispatch Queue while preserving recommendation highlighting and conflict warnings.
+- Added dedicated New Record screens for Customers, Leads, Sites, Jobs, and Estimates.
+- Added upper-right contextual Save actions and removed duplicate nested-navigation back buttons.
+- Added search to Customers, Leads, Sites, Jobs, Estimates, and Invoices.
+- Changed Job and Estimate cards to lead with the customer name.
+- Added Site name/address to Job and Estimate cards, search, and edit screens.
+- Limited Job scheduling to quarter-hour increments.
+- Added recurring-job frequencies and automatic one-occurrence-ahead dispatch scheduling.
+- Confirmed the updated flows manually in Xcode.
+- Deferred Step 1 completion and tag creation until automated unit tests pass.
 
 ---
 
