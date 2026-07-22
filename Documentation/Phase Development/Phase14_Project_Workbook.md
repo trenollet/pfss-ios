@@ -2,8 +2,8 @@
 
 **Phase:** 14 – Dispatch and Field Intelligence  
 **Branch:** `feature/phase14-dispatch-field-intelligence`  
-**Status:** Step 2 complete; Step 3 ready to begin
-**Current Step:** Step 3 – Daily Planner Engine
+**Status:** Step 3 complete and accepted; Step 4 ready to begin
+**Current Step:** Step 4 – Route Engine Integration
 **Document Type:** Living engineering workbook  
 
 ---
@@ -472,7 +472,7 @@ A step is complete only when:
 
 - [x] Step 1 – Assignment Engine *(completed and accepted 2026-07-22)*
 - [x] Step 2 – Dispatch Engine *(completed and accepted 2026-07-22)*
-- [ ] Step 3 – Daily Planner Engine
+- [x] Step 3 – Daily Planner Engine *(completed and accepted 2026-07-22)*
 - [ ] Step 4 – Route Engine Integration
 - [ ] Step 5 – Workforce Intelligence
 - [ ] Step 6 – Recommendation Engine
@@ -651,15 +651,15 @@ PFSS can convert a collection of constrained and flexible Assignments into a coh
 
 ### Engineering Record
 
-- **Status:** Not started
-- **Start date:**
-- **Completion date:**
-- **Commit(s):**
-- **Files added:**
-- **Files modified:**
-- **Tests added/completed:**
-- **Decisions made during implementation:**
-- **Known improvements:**
+- **Status:** Complete — implementation, automated tests, visual acceptance, and corrective retesting passed
+- **Start date:** 2026-07-22
+- **Completion date:** 2026-07-22
+- **Closeout checkpoint:** This workbook's containing commit, tagged `v0.9.12-phase14.3-complete`
+- **Files added:** `DailyPlannerModels.swift`, `DailyPlannerEngine.swift`, `AppDataStore+DailyPlanner.swift`, `DailyPlannerEngineTests.swift`, `DailyPlanPreviewView.swift`
+- **Files modified:** `OperationsView.swift`
+- **Tests added/completed:** The automated Daily Planner suite passed in Xcode and covers preservation of fixed commitments, flexible work filling the first valid gap, arrival-window placement, deadline completion, over-capacity work remaining unplaced, lunch movement around fixed work, configured transition buffers, and deterministic output. Product-owner visual acceptance passed through Operations → Daily Planner for plan generation, timeline presentation, open capacity, conflicts, planner decisions, non-mutating behavior, and use of the Job's manual scheduled-duration override.
+- **Decisions made during implementation:** The Daily Planner returns immutable proposals and never silently changes committed Assignments or Jobs; fixed commitments are placed first, lunch is fitted around fixed work, constrained work is placed before flexible work, and unplaceable work is surfaced rather than overlapped; Assignment remains the owner of scheduling mode, constraints, buffers, crew, priority, and history; the related Job's effective duration is resolved through `SchedulingEngine.scheduledMinutes(for:)` so manual duration overrides and calculated labor remain consistent with My Day; geographic ordering, mileage, road travel time, and constraint-preserving route recalculation remain intentionally deferred to Step 4.
+- **Known improvements:** Add road-network travel and ETA calculations during Step 4; add an explicit human-reviewed apply/commit workflow when planned proposals become operational schedules; expand regression coverage for inactive technicians, non-working days, Supporting Technician shared plans, daily reserve isolation, and proof that generating a proposal leaves persisted Assignment state unchanged.
 
 ---
 
@@ -1109,15 +1109,15 @@ docs(phase14): complete assignment engine record
 
 ### Current Status
 
-Phase 14 Step 2 is complete and accepted. Dispatch ownership, reassignment, crew coordination, three operating-mode permission policies, emergency insertion planning, lifecycle dispatch, durable Assignment history, My Day synchronization, and recurring-work business-day handling are operational and tested.
+Phase 14 Step 3 is complete and accepted. The deterministic, non-mutating Daily Planner handles fixed, arrival-window, flexible-day, and deadline Assignments; technician availability; lunch; operational buffers; open capacity; conflicts; unplaced work; and Job duration overrides. Automated tests and product-owner visual acceptance passed.
 
 ### Current Step
 
-**Step 3 – Daily Planner Engine**
+**Step 4 – Route Engine Integration**
 
 ### Next Action
 
-Review the Step 3 requirements and the existing Scheduling Engine, Assignment Scheduling Modes, employee availability, Business Operations route settings, and My Day capacity calculations. Then define the concrete Daily Planner input/output models and deterministic planning rules before implementation.
+Review the Step 4 requirements, the accepted `DailyPlan` proposal model, `DailyRouteOptimizer`, MapKit routing boundaries, Assignment scheduling constraints, and existing route summary behavior. Define the constraint-preserving route-integration contract before implementing mileage, road travel time, ETAs, and replanning.
 
 ### Known Branch State
 
@@ -1127,6 +1127,7 @@ Review the Step 3 requirements and the existing Scheduling Engine, Assignment Sc
 - Published Phase 14.1 integration checkpoint: `942c7b5` / tag `v0.9.9-phase14.1`.
 - Final tested Step 1 closeout will be published with tag `v0.9.10-phase14.1-complete`.
 - Final tested Step 2 closeout will be published with tag `v0.9.11-phase14.2-complete`.
+- Final tested Step 3 closeout will be published with tag `v0.9.12-phase14.3-complete`.
 - The local branch was rebased onto remote documentation commits `8571b87` and `00541ed` before publication.
 - This workbook is the source of truth for the remainder of the phase.
 
@@ -1152,6 +1153,20 @@ These should remain visible so the V1 architecture does not block them.
 ## 14. Engineering Log
 
 Add a dated entry whenever an important implementation decision, milestone, or deviation occurs.
+
+### 2026-07-22 – Step 3 Daily Planner Engine implementation and acceptance
+
+- Added immutable Daily Planner configuration, plan-item, planning-window, conflict, recommendation, and plan-result models.
+- Added a deterministic `DailyPlannerEngine` that preserves fixed commitments, fits lunch around fixed work, places arrival-window and deadline work before flexible-day work, and returns excess work as unplaced rather than creating overlaps.
+- Integrated technician working days, configured start/end times, lunch duration, Assignment pre/post buffers, Business Operations per-stop transition buffers, and daily route reserve.
+- Added `AppDataStore` planning entry points for one technician or all active technicians without allowing the planner to mutate the Assignment Store.
+- Added automated tests for fixed/flexible placement, arrival windows, deadlines, over-capacity handling, lunch movement, transition buffers, and deterministic output; the suite passed cleanly in Xcode.
+- Added Operations → Daily Planner → Build Daily Plan as a visual acceptance surface with technician/date selection, proposal summary, timeline, scheduling-mode indicators, service-versus-occupied duration, buffer windows, open capacity, conflicts, unplaced work, and planner decisions.
+- Corrected the Job/Assignment integration boundary so planning duration uses the same `SchedulingEngine.scheduledMinutes(for:)` calculation as My Day. A positive manual scheduled-duration override now takes precedence, while removing it returns planning to calculated labor duration.
+- Replaced the initial optional technician `Picker` with a selection `Menu`, eliminating the invalid `nil` picker-selection runtime error when opening Build Daily Plan.
+- Kept route geography, road travel time, mileage, live traffic, and ETA recalculation out of Step 3 so they enter through the dedicated Step 4 Route Engine Integration boundary.
+- **Acceptance result:** Application build passed, automated tests passed, Daily Plan visual acceptance passed, the manual duration-override correction passed, and the planner remained non-mutating.
+- **Status:** Complete and ready for the Phase 14.3 closeout commit and tag.
 
 ### 2026-07-22 – Step 2 Dispatch Engine implementation
 

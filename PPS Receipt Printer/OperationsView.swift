@@ -238,6 +238,7 @@ struct OperationsView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
                     summaryGrid
+                    dailyPlannerSection
                     technicianSection
                     dispatchSection
                     activeAssignmentsSection
@@ -267,6 +268,55 @@ struct OperationsView: View {
             } message: {
                 Text(operationErrorMessage)
             }
+        }
+    }
+
+    // MARK: - Daily Planner
+
+    private var dailyPlannerSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionHeader(
+                title: "Daily Planner",
+                systemImage: "calendar.badge.clock"
+            )
+
+            NavigationLink {
+                DailyPlanPreviewView()
+            } label: {
+                HStack(spacing: 14) {
+                    Image(systemName: "calendar.badge.clock")
+                        .font(.title2)
+                        .foregroundStyle(.blue)
+                        .frame(width: 42, height: 42)
+                        .background(Color.blue.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Build Daily Plan")
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+
+                        Text("Preview fixed work, flexible openings, lunch, buffers, and conflicts.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.leading)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "chevron.right")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+                .background(Color(.secondarySystemGroupedBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18)
+                        .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
         }
     }
 
