@@ -200,6 +200,32 @@ struct EmployeeDetailView: View {
             }
 
             Section {
+                NavigationLink {
+                    WorkforceProfileEditorView(
+                        profile: $employee.workforceProfile,
+                        employeeName: employee.displayName
+                    )
+                } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label(
+                            "Workforce Profile",
+                            systemImage: "person.text.rectangle"
+                        )
+                        .fontWeight(.semibold)
+
+                        Text(workforceProfileSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 3)
+                }
+            } header: {
+                Text("Workforce Intelligence")
+            } footer: {
+                Text("Skills, certifications, equipment, availability exceptions, and planning preferences are used by operational engines.")
+            }
+
+            Section {
                 if employee.lifecycleStatus == .archived {
                     Button("Restore Employee") {
                         store.restoreEmployee(employee)
@@ -241,6 +267,16 @@ struct EmployeeDetailView: View {
                 }
             }
         }
+    }
+
+    private var workforceProfileSummary: String {
+        let profile = employee.workforceProfile
+
+        guard profile.hasIntelligenceData else {
+            return "No operational profile information entered"
+        }
+
+        return "\(profile.skills.count) skills · \(profile.certifications.count) certifications · \(profile.resourceAccess.count) resources"
     }
 
     private func saveChanges() {

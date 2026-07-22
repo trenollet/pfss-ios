@@ -31,6 +31,7 @@ struct EmployeeNewView: View {
 
     @State private var colorName = "blue"
     @State private var isActive = true
+    @State private var workforceProfile = WorkforceOperationalProfile()
 
     @FocusState private var isInputFocused: Bool
 
@@ -183,6 +184,32 @@ struct EmployeeNewView: View {
                     }
                 }
 
+                Section {
+                    NavigationLink {
+                        WorkforceProfileEditorView(
+                            profile: $workforceProfile,
+                            employeeName: employeeDraftName
+                        )
+                    } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label(
+                                "Workforce Profile",
+                                systemImage: "person.text.rectangle"
+                            )
+                            .fontWeight(.semibold)
+
+                            Text(workforceProfileSummary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 3)
+                    }
+                } header: {
+                    Text("Workforce Intelligence")
+                } footer: {
+                    Text("Optional. Add skills, certifications, equipment, availability exceptions, and planning preferences now or later.")
+                }
+
             }
             .navigationTitle("New Employee")
             .toolbar {
@@ -217,6 +244,21 @@ struct EmployeeNewView: View {
                 }
             }
         }
+    }
+
+    private var employeeDraftName: String {
+        let name = "\(firstName) \(lastName)"
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return name.isEmpty ? "New Employee" : name
+    }
+
+    private var workforceProfileSummary: String {
+        guard workforceProfile.hasIntelligenceData else {
+            return "Optional operational profile"
+        }
+
+        return "\(workforceProfile.skills.count) skills · \(workforceProfile.certifications.count) certifications · \(workforceProfile.resourceAccess.count) resources"
     }
 
     private func workingDayBinding(
@@ -260,7 +302,8 @@ struct EmployeeNewView: View {
             workingDays: workingDays,
             colorName: colorName,
             isActive: isActive,
-            lifecycleStatus: .active
+            lifecycleStatus: .active,
+            workforceProfile: workforceProfile
         )
 
         store.addEmployee(employee)

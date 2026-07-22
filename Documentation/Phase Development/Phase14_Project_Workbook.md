@@ -2,8 +2,8 @@
 
 **Phase:** 14 – Dispatch and Field Intelligence  
 **Branch:** `feature/phase14-dispatch-field-intelligence`  
-**Status:** Step 3 complete and accepted; Step 4 ready to begin
-**Current Step:** Step 4 – Route Engine Integration
+**Status:** Steps 1–5 complete and accepted; Step 6 ready to begin  
+**Current Step:** Step 6 – Recommendation Engine  
 **Document Type:** Living engineering workbook  
 
 ---
@@ -473,8 +473,8 @@ A step is complete only when:
 - [x] Step 1 – Assignment Engine *(completed and accepted 2026-07-22)*
 - [x] Step 2 – Dispatch Engine *(completed and accepted 2026-07-22)*
 - [x] Step 3 – Daily Planner Engine *(completed and accepted 2026-07-22)*
-- [ ] Step 4 – Route Engine Integration
-- [ ] Step 5 – Workforce Intelligence
+- [x] Step 4 – Route Engine Integration *(completed and accepted 2026-07-22)*
+- [x] Step 5 – Workforce Intelligence *(completed and accepted 2026-07-22)*
 - [ ] Step 6 – Recommendation Engine
 - [ ] Step 7 – Dispatch Board UI
 - [ ] Step 8 – Timeline View
@@ -693,15 +693,16 @@ PFSS produces efficient routes that remain operationally and contractually valid
 
 ### Engineering Record
 
-- **Status:** Not started
-- **Start date:**
-- **Completion date:**
-- **Commit(s):**
-- **Files added:**
-- **Files modified:**
-- **Tests added/completed:**
-- **Decisions made during implementation:**
-- **Known improvements:**
+- **Status:** Complete — implementation, automated tests, route-preview acceptance, and corrective retesting passed
+- **Start date:** 2026-07-22
+- **Completion date:** 2026-07-22
+- **Commit:** `d917ec0` — `v0.9.13-phase14.4-complete Complete Phase 14 Route Engine Integration`
+- **Tag:** `v0.9.13-phase14.4-complete`
+- **Files added:** `RoutePlanningModels.swift`, `RouteEngine.swift`, `RouteEngineTests.swift`, `RouteLocationResolver.swift`, `MapKitRouteTravelEstimator.swift`, `RoutePlanPreviewView.swift`, `AppDataStore+RouteEngine.swift`, `DispatchEngine+RoutePlan.swift`
+- **Files modified:** `DailyPlanPreviewView.swift`, `BusinessProfileView.swift`, the Xcode project, and affected record/detail views during the system-wide keyboard-dismissal stabilization pass
+- **Tests added/completed:** Route Engine automated coverage and product-owner Route Preview acceptance passed. Testing covered schedule-constraint preservation, road travel estimates, ETAs, missing-location conflicts, human-reviewed application, and retained visibility of unroutable work.
+- **Decisions made during implementation:** Route optimization consumes Daily Planner output without owning Assignment scheduling constraints; MapKit provides road-network estimates behind a replaceable boundary; missing or invalid sites remain visible as explicit conflicts; route changes require human review and acceptance; Dispatch applies accepted plans through Assignment operations rather than mutating records directly.
+- **Known improvements:** Add live-traffic refresh, background ETA updates, automatic replan suggestions after delays or emergencies, planned-versus-actual route analytics, and richer map presentation in later Phase 14 steps.
 
 ---
 
@@ -735,15 +736,15 @@ Scheduling and dispatch engines can evaluate whether a technician is capable, av
 
 ### Engineering Record
 
-- **Status:** Not started
-- **Start date:**
-- **Completion date:**
-- **Commit(s):**
-- **Files added:**
-- **Files modified:**
-- **Tests added/completed:**
-- **Decisions made during implementation:**
-- **Known improvements:**
+- **Status:** Complete — models, engine, persistence, employee editing, Operations integration, automated tests, and credential-alert acceptance passed
+- **Start date:** 2026-07-22
+- **Completion date:** 2026-07-22
+- **Closeout checkpoint:** This workbook's containing commit, to be tagged `v0.9.14-phase14.5-complete`
+- **Files added:** `WorkforceIntelligenceModels.swift`, `WorkforceIntelligenceEngine.swift`, `WorkforceIntelligenceEngineTests.swift`, `WorkforceProfileEditorView.swift`, `AppDataStore+WorkforceIntelligence.swift`, `WorkforceIntelligenceDashboardView.swift`
+- **Files modified:** `Models.swift`, `EmployeeDetailView.swift`, `EmployeeNewView.swift`, `OperationsView.swift`, `PPS Receipt Printer.xcodeproj/project.pbxproj`, test-plan and shared-scheme configuration required for reliable test discovery
+- **Tests added/completed:** Nine Workforce Intelligence tests passed in Xcode. Coverage includes legacy employee decoding, matching skills/certifications/resources/vehicles, expired required-credential blocking, graceful handling of missing optional intelligence, unavailable and available-override exceptions, Primary and Supporting Technician workload attribution, technician-specific historical labor metrics, and unified capability-plus-availability snapshots. Product-owner acceptance passed for profile editing, persistence, Operations visibility, workload presentation, and credential alerts.
+- **Decisions made during implementation:** `EmployeeRecord` owns a backward-compatible nested operational profile; Workforce Intelligence remains read-only and never assigns, ranks, dispatches, or mutates technicians; capability, availability, workload, and history are separate explainable evidence groups; missing optional intelligence does not block unrestricted work; expired required credentials block qualification; recommendations and ranking remain reserved for Step 6; managers receive visible credential alerts in Operations and Workforce Intelligence while humans retain authority.
+- **Known improvements:** Step 6 will consume Workforce snapshots to rank eligible technicians with explainable evidence and tradeoffs. Later work may add credential-renewal notifications, document attachments, configurable warning windows, automatic metric refresh, service-territory preferences, training history, and crew-compatibility intelligence.
 
 ---
 
@@ -1109,15 +1110,15 @@ docs(phase14): complete assignment engine record
 
 ### Current Status
 
-Phase 14 Step 3 is complete and accepted. The deterministic, non-mutating Daily Planner handles fixed, arrival-window, flexible-day, and deadline Assignments; technician availability; lunch; operational buffers; open capacity; conflicts; unplaced work; and Job duration overrides. Automated tests and product-owner visual acceptance passed.
+Phase 14 Steps 1 through 5 are complete and accepted. PFSS now has an Assignment domain, hybrid Dispatch Engine, deterministic Daily Planner, constraint-preserving Route Engine integration, and persisted Workforce Intelligence profiles. Workforce Intelligence exposes technician capability, credentials, resources, availability, workload, and historical metrics through a read-only engine and live Operations dashboard. Nine automated tests and product-owner acceptance passed, including the final credential-alert visibility correction.
 
 ### Current Step
 
-**Step 4 – Route Engine Integration**
+**Step 6 – Recommendation Engine**
 
 ### Next Action
 
-Review the Step 4 requirements, the accepted `DailyPlan` proposal model, `DailyRouteOptimizer`, MapKit routing boundaries, Assignment scheduling constraints, and existing route summary behavior. Define the constraint-preserving route-integration contract before implementing mileage, road travel time, ETAs, and replanning.
+Begin Step 6 Part 1 by defining Recommendation models, evidence categories, scoring/ranking policy, exclusions, warnings, confidence, and human-acceptance records. The Recommendation Engine should consume Assignment requirements, Workforce Intelligence snapshots, Daily Planner capacity, and Route Engine travel evidence without directly mutating assignments or dispatching technicians.
 
 ### Known Branch State
 
@@ -1128,6 +1129,8 @@ Review the Step 4 requirements, the accepted `DailyPlan` proposal model, `DailyR
 - Final tested Step 1 closeout will be published with tag `v0.9.10-phase14.1-complete`.
 - Final tested Step 2 closeout will be published with tag `v0.9.11-phase14.2-complete`.
 - Final tested Step 3 closeout will be published with tag `v0.9.12-phase14.3-complete`.
+- Final tested Step 4 closeout was published as commit `d917ec0` with tag `v0.9.13-phase14.4-complete`.
+- Final tested Step 5 closeout will be published with tag `v0.9.14-phase14.5-complete`.
 - The local branch was rebased onto remote documentation commits `8571b87` and `00541ed` before publication.
 - This workbook is the source of truth for the remainder of the phase.
 
@@ -1153,6 +1156,31 @@ These should remain visible so the V1 architecture does not block them.
 ## 14. Engineering Log
 
 Add a dated entry whenever an important implementation decision, milestone, or deviation occurs.
+
+### 2026-07-22 – Step 5 Workforce Intelligence implementation and acceptance
+
+- Added backward-compatible `WorkforceOperationalProfile` persistence to `EmployeeRecord`; existing saved employees decode with an empty operational profile.
+- Added structured skills and proficiency, certifications and expiration, equipment and vehicle access, availability exceptions, planning limits, operational notes, and historical performance metrics.
+- Added the read-only `WorkforceIntelligenceEngine` to evaluate capability, availability, current workload, and historical evidence without assigning, ranking, dispatching, or mutating technicians.
+- Kept evidence explainable through explicit matches, warnings, and blockers. Expired required certifications block qualification; missing optional intelligence does not block unrestricted work.
+- Counted both Primary and Supporting Technician participation in workload while preserving technician-specific labor attribution in historical metrics.
+- Added Workforce Profile editing to New Employee and Employee Detail workflows with nested editors for skills, credentials, resources, vehicles, and availability exceptions.
+- Added `AppDataStore` integration and Operations → Review Workforce Readiness with selectable operational date, technician snapshots, availability, workload utilization, profile counts, resource counts, and historical-metric refresh.
+- Added manager-visible credential alerts to the Operations entry tile, a detailed Workforce Intelligence alert section, and affected technician cards. Alerts identify the technician, credential, expiration state, and link to the correct employee record.
+- Added nine automated tests covering backward-compatible decoding, complete capability matching, expired certification blocking, optional-data degradation, both availability-override directions, crew workload, technician labor history, and unified eligibility.
+- Resolved test discovery and Swift concurrency warnings by using the XCTest target, shared test configuration, explicit actor-safe overloads, and actor-safe test fixtures.
+- **Acceptance result:** Application build passed, all Workforce Intelligence tests passed, employee-profile editing and persistence passed, Operations integration passed, and expired/expiring credential visibility passed.
+- **Status:** Complete and ready for the Phase 14.5 closeout commit and tag.
+
+### 2026-07-22 – Step 4 Route Engine Integration implementation and acceptance
+
+- Added Route Planning models, a constraint-preserving Route Engine, MapKit road-travel estimation, geocoded Assignment location resolution, route preview, AppDataStore integration, and Dispatch application of reviewed routes.
+- Preserved fixed starts, arrival windows, deadlines, service duration, operational buffers, and human route overrides while calculating road distance, travel time, arrival, service, and completion estimates.
+- Kept missing or invalid service locations visible as explicit unroutable conflicts rather than silently dropping Assignments.
+- Improved missing-location messages to identify the customer and site instead of relying on an internal Assignment number.
+- Completed a system-wide keyboard-dismissal stabilization pass after identifying custom keyboard toolbar presentation as the source of invalid-frame runtime warnings.
+- **Acceptance result:** Automated Route Engine tests, route-preview validation, missing-location correction, UI stabilization, and final clean build passed.
+- **Status:** Complete in commit `d917ec0`, tagged `v0.9.13-phase14.4-complete`.
 
 ### 2026-07-22 – Step 3 Daily Planner Engine implementation and acceptance
 
@@ -1297,6 +1325,8 @@ This section is intentionally maintained throughout implementation.
 - Scheduling constraints are more expressive than a simple appointment model.
 - Daily planning and route optimization are related but distinct responsibilities.
 - Field-service software must support real-world judgment rather than enforce fragile theoretical optimization.
+- Operational alerts must identify the affected employee and credential, not merely present an aggregate count.
+- Workforce Intelligence should produce evidence; Recommendation should interpret and rank that evidence; Dispatch should apply only a human-approved decision.
 
 ---
 

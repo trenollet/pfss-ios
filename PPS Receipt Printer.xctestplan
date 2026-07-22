@@ -1,0 +1,38 @@
+{
+  "configurations" : [
+    {
+      "id" : "13997FBC-C11A-4718-B097-BE9CEBE72C0F",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "performanceAntipatternCheckerEnabled" : true,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:PPS Receipt Printer.xcodeproj",
+      "identifier" : "A24644302FEB424700DFECC5",
+      "name" : "PPS Receipt Printer"
+    }
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : true,
+      "target" : {
+        "containerPath" : "container:PPS Receipt Printer.xcodeproj",
+        "identifier" : "A246443D2FEB424900DFECC5",
+        "name" : "PPS Receipt PrinterTests"
+      }
+    },
+    {
+      "parallelizable" : true,
+      "target" : {
+        "containerPath" : "container:PPS Receipt Printer.xcodeproj",
+        "identifier" : "A24644472FEB424900DFECC5",
+        "name" : "PPS Receipt PrinterUITests"
+      }
+    }
+  ],
+  "version" : 1
+}

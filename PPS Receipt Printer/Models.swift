@@ -266,6 +266,10 @@ struct EmployeeRecord: Identifiable, Codable {
     var createdDate: Date
     var lifecycleStatus: RecordLifecycleStatus
 
+    /// Operational capabilities and preferences used by Workforce Intelligence.
+    /// Existing employees decode with an empty profile.
+    var workforceProfile: WorkforceOperationalProfile
+
     init(
         id: UUID = UUID(),
         firstName: String,
@@ -280,7 +284,8 @@ struct EmployeeRecord: Identifiable, Codable {
         colorName: String = "blue",
         isActive: Bool = true,
         createdDate: Date = Date(),
-        lifecycleStatus: RecordLifecycleStatus = .active
+        lifecycleStatus: RecordLifecycleStatus = .active,
+        workforceProfile: WorkforceOperationalProfile = WorkforceOperationalProfile()
     ) {
         self.id = id
         self.firstName = firstName
@@ -296,6 +301,7 @@ struct EmployeeRecord: Identifiable, Codable {
         self.isActive = isActive
         self.createdDate = createdDate
         self.lifecycleStatus = lifecycleStatus
+        self.workforceProfile = workforceProfile
     }
 
     var displayName: String {
@@ -317,6 +323,73 @@ struct EmployeeRecord: Identifiable, Codable {
             workdayMinutes - lunchDurationMinutes,
             0
         )
+    }
+}
+
+extension EmployeeRecord {
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case firstName
+        case lastName
+        case phone
+        case email
+        case role
+        case defaultStartMinutes
+        case defaultEndMinutes
+        case lunchDurationMinutes
+        case workingDays
+        case colorName
+        case isActive
+        case createdDate
+        case lifecycleStatus
+        case workforceProfile
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        firstName = try container.decodeIfPresent(String.self, forKey: .firstName) ?? ""
+        lastName = try container.decodeIfPresent(String.self, forKey: .lastName) ?? ""
+        phone = try container.decodeIfPresent(String.self, forKey: .phone) ?? ""
+        email = try container.decodeIfPresent(String.self, forKey: .email) ?? ""
+        role = try container.decodeIfPresent(EmployeeRole.self, forKey: .role) ?? .technician
+        defaultStartMinutes = try container.decodeIfPresent(
+            Int.self,
+            forKey: .defaultStartMinutes
+        ) ?? 480
+        defaultEndMinutes = try container.decodeIfPresent(
+            Int.self,
+            forKey: .defaultEndMinutes
+        ) ?? 1020
+        lunchDurationMinutes = try container.decodeIfPresent(
+            Int.self,
+            forKey: .lunchDurationMinutes
+        ) ?? 30
+        workingDays = try container.decodeIfPresent(
+            Set<Workday>.self,
+            forKey: .workingDays
+        ) ?? Workday.standardWorkweek
+        colorName = try container.decodeIfPresent(
+            String.self,
+            forKey: .colorName
+        ) ?? "blue"
+        isActive = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .isActive
+        ) ?? true
+        createdDate = try container.decodeIfPresent(
+            Date.self,
+            forKey: .createdDate
+        ) ?? Date()
+        lifecycleStatus = try container.decodeIfPresent(
+            RecordLifecycleStatus.self,
+            forKey: .lifecycleStatus
+        ) ?? .active
+        workforceProfile = try container.decodeIfPresent(
+            WorkforceOperationalProfile.self,
+            forKey: .workforceProfile
+        ) ?? WorkforceOperationalProfile()
     }
 }
 

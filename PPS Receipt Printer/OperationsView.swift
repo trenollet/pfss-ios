@@ -44,6 +44,15 @@ struct OperationsView: View {
         store.assignmentEngine.activeAssignments
     }
 
+    private var workforceCredentialAlertCount: Int {
+        activeTechnicians.reduce(0) { total, technician in
+            total + technician.workforceProfile.certifications.filter {
+                let status = $0.status(on: now)
+                return status == .expired || status == .expiresSoon
+            }.count
+        }
+    }
+
     private var todayJobs: [JobRecord] {
         activeJobs
             .filter {
@@ -240,6 +249,7 @@ struct OperationsView: View {
                     summaryGrid
                     dailyPlannerSection
                     technicianSection
+                    workforceIntelligenceSection
                     dispatchSection
                     activeAssignmentsSection
                     capacitySection
@@ -393,6 +403,64 @@ struct OperationsView: View {
                     TechnicianStatusCard(model: technician)
                 }
             }
+        }
+    }
+
+    // MARK: - Workforce Intelligence
+
+    private var workforceIntelligenceSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionHeader(
+                title: "Workforce Intelligence",
+                systemImage: "person.text.rectangle.fill"
+            )
+
+            NavigationLink {
+                WorkforceIntelligenceDashboardView()
+            } label: {
+                HStack(spacing: 14) {
+                    Image(systemName: "person.text.rectangle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.purple)
+                        .frame(width: 42, height: 42)
+                        .background(Color.purple.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Review Workforce Readiness")
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+
+                        Text("Review technician skills, credentials, resources, availability, and current workload.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.leading)
+
+                        if workforceCredentialAlertCount > 0 {
+                            Label(
+                                "\(workforceCredentialAlertCount) credential alert\(workforceCredentialAlertCount == 1 ? "" : "s")",
+                                systemImage: "exclamationmark.shield.fill"
+                            )
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                        }
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "chevron.right")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+                .background(Color(.secondarySystemGroupedBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18)
+                        .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
         }
     }
 

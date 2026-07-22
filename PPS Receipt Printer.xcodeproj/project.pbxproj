@@ -47,7 +47,9 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				DailyPlannerEngineTests.swift,
+				DispatchEngineTests.swift,
 				RouteEngineTests.swift,
+				WorkforceIntelligenceEngineTests.swift,
 			);
 			target = A24644302FEB424700DFECC5 /* PPS Receipt Printer */;
 		};
@@ -55,7 +57,9 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				DailyPlannerEngineTests.swift,
+				DispatchEngineTests.swift,
 				RouteEngineTests.swift,
+				WorkforceIntelligenceEngineTests.swift,
 			);
 			target = A246443D2FEB424900DFECC5 /* PPS Receipt PrinterTests */;
 		};
