@@ -13,6 +13,7 @@ final class AppDataStore: ObservableObject {
     private let fieldOperationsEngine = FieldOperationsEngine()
     let assignmentStore: AssignmentStore
     let assignmentEngine: AssignmentEngine
+    let dispatchEngine: DispatchEngine
     private var assignmentObservation: AnyCancellable?
     @Published var customers: [Customer] = [] {
         didSet { saveData() }
@@ -122,19 +123,26 @@ final class AppDataStore: ObservableObject {
 
     init() {
         let assignmentStore = AssignmentStore()
+        let assignmentEngine = AssignmentEngine(store: assignmentStore)
         self.assignmentStore = assignmentStore
-        self.assignmentEngine = AssignmentEngine(store: assignmentStore)
+        self.assignmentEngine = assignmentEngine
+        self.dispatchEngine = DispatchEngine(
+            assignmentEngine: assignmentEngine,
+            policy: DispatchPolicy(operatingMode: .hybrid)
+        )
 
         loadData()
         materializePendingRecurringJobs()
         synchronizeAssignmentsFromJobs()
 
-        assignmentStore.onAssignmentsChanged = { [weak self] _ in
+        assignmentStore.onAssignmentsChanged = { [weak self] assignments in
+            self?.synchronizeJobsFromAssignments(assignments)
             self?.saveData()
         }
         assignmentObservation = assignmentStore.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
+        synchronizeJobsFromAssignments(assignmentStore.assignments)
     }
 
     func generateCustomerNumber() -> String {
@@ -359,7 +367,13 @@ final class AppDataStore: ObservableObject {
         var createdCount = 0
 
         for job in jobs where isAssignmentEligible(job) {
-            guard assignment(forJobID: job.id) == nil else { continue }
+            if let existingAssignment = assignment(forJobID: job.id) {
+                synchronizeRecurringSchedule(
+                    from: job,
+                    to: existingAssignment
+                )
+                continue
+            }
 
             do {
                 _ = try assignmentEngine.createAssignment(
@@ -383,13 +397,48 @@ final class AppDataStore: ObservableObject {
         return createdCount
     }
 
+    /// A generated recurring Job can be moved off a weekend after its
+    /// Assignment already exists in persisted data. Keep the unstarted
+    /// recurring Assignment aligned so the Dispatch Queue and My Day use the
+    /// corrected business-day date instead of restoring the old weekend date.
+    private func synchronizeRecurringSchedule(
+        from job: JobRecord,
+        to assignment: Assignment
+    ) {
+        guard job.isRecurring,
+              assignment.creationSource == .recurringWork,
+              assignment.scheduling.mode == .fixedTime,
+              assignment.status == .scheduled || assignment.status == .dispatched,
+              assignment.scheduling.operationalDate != job.scheduledDate else {
+            return
+        }
+
+        var scheduling = assignment.scheduling
+        scheduling.serviceDate = job.scheduledDate
+        scheduling.fixedStartDate = job.scheduledDate
+
+        do {
+            _ = try assignmentEngine.reschedule(
+                assignmentID: assignment.id,
+                scheduling: scheduling,
+                note: "Recurring occurrence moved to the nearest PFSS business day."
+            )
+        } catch {
+            print(
+                "Failed to align recurring assignment \(assignment.assignmentNumber): " +
+                error.localizedDescription
+            )
+        }
+    }
+
     /// Applies a Dispatch Board decision through AssignmentEngine and mirrors
     /// the operational owner/start time to the related Job record.
     @discardableResult
     func assignTechnician(
         _ technicianID: UUID,
         toJobID jobID: UUID,
-        scheduledStart: Date? = nil
+        scheduledStart: Date? = nil,
+        isHumanOverride: Bool = false
     ) throws -> Assignment {
         guard var job = jobs.first(where: { $0.id == jobID }) else {
             throw AssignmentIntegrationError.jobNotFound(jobID)
@@ -399,38 +448,28 @@ final class AppDataStore: ObservableObject {
             synchronizeAssignmentsFromJobs()
         }
 
-        guard var assignment = assignment(forJobID: jobID) else {
+        guard let assignment = assignment(forJobID: jobID) else {
             throw AssignmentIntegrationError.assignmentUnavailable(jobID)
         }
 
-        if let currentPrimaryID = assignment.primaryTechnicianID,
-           currentPrimaryID != technicianID {
-            assignment = try assignmentEngine.replacePrimaryTechnician(
-                assignmentID: assignment.id,
-                with: technicianID,
-                reason: "Dispatcher reassigned the primary technician."
-            )
-        } else if assignment.primaryTechnicianID == nil {
-            assignment = try assignmentEngine.assignPrimaryTechnician(
-                assignmentID: assignment.id,
-                employeeID: technicianID,
-                note: "Assigned from the Operations dispatch queue."
-            )
+        guard let technician = activeEmployees.first(where: {
+            $0.id == technicianID
+        }) else {
+            throw AssignmentIntegrationError.employeeNotFound(technicianID)
         }
 
+        let result = try dispatchEngine.assignPrimaryTechnician(
+            assignmentID: assignment.id,
+            technician: technician,
+            actor: .system,
+            scheduledStart: scheduledStart,
+            note: assignment.primaryTechnicianID == nil
+                ? "Assigned from the Operations dispatch queue."
+                : "Dispatcher reassigned the primary technician.",
+            isHumanOverride: isHumanOverride
+        )
+
         if let scheduledStart {
-            var scheduling = assignment.scheduling
-            scheduling.mode = .fixedTime
-            scheduling.serviceDate = scheduledStart
-            scheduling.fixedStartDate = scheduledStart
-            scheduling.arrivalWindowStart = nil
-            scheduling.arrivalWindowEnd = nil
-            scheduling.completionDeadline = nil
-            assignment = try assignmentEngine.reschedule(
-                assignmentID: assignment.id,
-                scheduling: scheduling,
-                note: "Dispatch recommendation updated the planned start."
-            )
             job.scheduledDate = scheduledStart
         }
 
@@ -443,7 +482,83 @@ final class AppDataStore: ObservableObject {
             jobs[index] = job
         }
 
-        return assignment
+        return result.assignment
+    }
+
+    /// Keeps the established Job-based scheduling and My Day screens aligned
+    /// while Assignment remains the authoritative operational record.
+    private func synchronizeJobsFromAssignments(_ assignments: [Assignment]) {
+        var synchronizedJobs = jobs
+        var didChange = false
+
+        for assignment in assignments {
+            guard let index = synchronizedJobs.firstIndex(where: {
+                $0.id == assignment.jobID
+            }) else {
+                continue
+            }
+
+            var job = synchronizedJobs[index]
+            let original = job
+
+            job.primaryTechnicianID = assignment.primaryTechnicianID
+            job.secondaryTechnicianID = assignment.supportingTechnicianIDs.first
+
+            if let operationalDate = assignment.scheduling.operationalDate {
+                job.scheduledDate = operationalDate
+            }
+
+            switch assignment.status {
+            case .scheduled:
+                job.status = assignment.primaryTechnicianID == nil
+                    ? .scheduled
+                    : .assigned
+                job.workflowState = .notStarted
+
+            case .dispatched:
+                job.status = .assigned
+                job.workflowState = .notStarted
+
+            case .enRoute:
+                job.status = .inProgress
+                job.workflowState = .traveling
+
+            case .onSite:
+                job.status = .inProgress
+                job.workflowState = .arrived
+
+            case .workComplete:
+                job.status = .inProgress
+                job.workflowState = .workComplete
+
+            case .invoiceReady:
+                job.status = .inProgress
+                job.workflowState = .invoiceCreated
+
+            case .closed:
+                job.status = .completed
+                job.workflowState = .completed
+                job.completedDate = assignment.closedDate ?? job.completedDate
+
+            case .cancelled:
+                job.status = .cancelled
+                job.workflowState = .cancelled
+            }
+
+            if job.primaryTechnicianID != original.primaryTechnicianID ||
+                job.secondaryTechnicianID != original.secondaryTechnicianID ||
+                job.scheduledDate != original.scheduledDate ||
+                job.status != original.status ||
+                job.workflowState != original.workflowState ||
+                job.completedDate != original.completedDate {
+                synchronizedJobs[index] = job
+                didChange = true
+            }
+        }
+
+        if didChange {
+            jobs = synchronizedJobs
+        }
     }
 
     private func isAssignmentEligible(_ job: JobRecord) -> Bool {
@@ -493,13 +608,23 @@ final class AppDataStore: ObservableObject {
         guard job.lifecycleStatus == .active,
               job.isRecurring,
               let frequency = job.recurrenceFrequency,
-              includeInitialOccurrence || job.status == .completed,
-              let nextDate = frequency.nextDate(after: job.scheduledDate) else {
+              includeInitialOccurrence || job.status == .completed else {
             return
         }
 
         let seriesID = job.recurrenceSeriesID ?? job.id
         let nextSequence = job.recurrenceSequence + 1
+        let anchorDate = jobs.first(where: {
+            $0.recurrenceSeriesID == seriesID &&
+            $0.recurrenceSequence == 0
+        })?.scheduledDate ?? job.scheduledDate
+
+        guard let nextDate = frequency.occurrenceDate(
+            from: anchorDate,
+            occurrence: nextSequence
+        ) else {
+            return
+        }
 
         if let existingIndex = jobs.firstIndex(where: {
             $0.recurrenceSeriesID == seriesID &&
@@ -1316,6 +1441,7 @@ private struct AppDataSnapshot: Codable {
 private enum AssignmentIntegrationError: LocalizedError {
     case jobNotFound(UUID)
     case assignmentUnavailable(UUID)
+    case employeeNotFound(UUID)
 
     var errorDescription: String? {
         switch self {
@@ -1323,6 +1449,8 @@ private enum AssignmentIntegrationError: LocalizedError {
             return "The related job could not be found."
         case .assignmentUnavailable:
             return "The operational assignment could not be created or loaded."
+        case .employeeNotFound:
+            return "The selected technician could not be found or is inactive."
         }
     }
 }

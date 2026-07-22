@@ -140,6 +140,52 @@ struct AssignmentScheduling: Codable, Hashable {
     var isValid: Bool {
         validationIssues.isEmpty
     }
+
+    /// Best date for placing this Assignment on operational calendars until
+    /// the Daily Planner produces a more specific planned start.
+    var operationalDate: Date? {
+        switch mode {
+        case .fixedTime:
+            return fixedStartDate ?? serviceDate
+        case .arrivalWindow:
+            return arrivalWindowStart ?? serviceDate
+        case .flexibleDay:
+            return serviceDate
+        case .deadline:
+            return latestPermittedStart ?? completionDeadline
+        }
+    }
+
+    var displayDateText: String {
+        guard let operationalDate else { return "Date not set" }
+        return operationalDate.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    var displayTimeText: String {
+        switch mode {
+        case .fixedTime:
+            guard let date = fixedStartDate ?? serviceDate else {
+                return "Time not set"
+            }
+            return date.formatted(date: .omitted, time: .shortened)
+
+        case .arrivalWindow:
+            guard let start = arrivalWindowStart,
+                  let end = arrivalWindowEnd else {
+                return "Window not set"
+            }
+            return "\(start.formatted(date: .omitted, time: .shortened))–\(end.formatted(date: .omitted, time: .shortened))"
+
+        case .flexibleDay:
+            return "Flexible Day"
+
+        case .deadline:
+            guard let deadline = completionDeadline else {
+                return "Deadline not set"
+            }
+            return "Due \(deadline.formatted(date: .omitted, time: .shortened))"
+        }
+    }
 }
 
 enum AssignmentSchedulingValidationIssue: String, Codable, Hashable {

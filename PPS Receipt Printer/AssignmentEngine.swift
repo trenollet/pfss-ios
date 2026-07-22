@@ -549,10 +549,6 @@ final class AssignmentEngine: ObservableObject {
             guard assignment.crew.containsActiveEmployee(employeeID) == false else {
                 throw AssignmentEngineError.technicianAlreadyAssigned(employeeID)
             }
-            guard assignment.crew.supportingTechnicians.isEmpty else {
-                throw AssignmentEngineError.supportingTechnicianLimitReached
-            }
-
             for index in assignment.crew.members.indices where
                 assignment.crew.members[index].employeeID == formerID &&
                 assignment.crew.members[index].isActive {
@@ -614,6 +610,64 @@ final class AssignmentEngine: ObservableObject {
                     actorEmployeeID: actorEmployeeID,
                     affectedEmployeeID: employeeID,
                     note: normalizedOptional(note)
+                )
+            )
+        }
+    }
+
+    @discardableResult
+    func replaceSupportingTechnician(
+        assignmentID: UUID,
+        with employeeID: UUID,
+        actorEmployeeID: UUID? = nil,
+        reason: String,
+        at timestamp: Date = Date()
+    ) throws -> Assignment {
+        let cleanReason = normalizedRequired(reason)
+        guard cleanReason.isEmpty == false else {
+            throw record(.reasonRequired("Supporting technician replacement"))
+        }
+
+        return try mutateEditableAssignment(
+            assignmentID: assignmentID,
+            at: timestamp,
+            operation: .supportingTechnicianReplaced
+        ) { assignment in
+            try self.requireCrewEditable(assignment)
+            guard let formerMember = assignment.crew.supportingTechnicians.first else {
+                throw AssignmentEngineError.supportingTechnicianNotFound(employeeID)
+            }
+            guard formerMember.employeeID != employeeID else {
+                throw AssignmentEngineError.technicianAlreadyAssigned(employeeID)
+            }
+            guard assignment.crew.containsActiveEmployee(employeeID) == false else {
+                throw AssignmentEngineError.technicianAlreadyAssigned(employeeID)
+            }
+
+            for index in assignment.crew.members.indices where
+                assignment.crew.members[index].id == formerMember.id {
+                assignment.crew.members[index].removedDate = timestamp
+            }
+
+            assignment.crew.members.append(
+                AssignmentCrewMember(
+                    employeeID: employeeID,
+                    role: .supporting,
+                    assignedDate: timestamp,
+                    note: cleanReason
+                )
+            )
+            assignment.history.append(
+                AssignmentHistoryEvent(
+                    type: .supportingTechnicianReplaced,
+                    title: "Supporting technician replaced",
+                    timestamp: timestamp,
+                    actorEmployeeID: actorEmployeeID,
+                    affectedEmployeeID: employeeID,
+                    note: cleanReason,
+                    metadata: [
+                        "formerEmployeeID": formerMember.employeeID.uuidString
+                    ]
                 )
             )
         }
@@ -1212,6 +1266,7 @@ struct AssignmentOperation: Identifiable, Codable, Hashable {
         case primaryTechnicianAssigned
         case primaryTechnicianReplaced
         case supportingTechnicianAdded
+        case supportingTechnicianReplaced
         case technicianRemoved
         case laborRecorded
         case priorityUpdated

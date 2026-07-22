@@ -949,19 +949,6 @@ enum AssignmentStoreError: LocalizedError, Equatable {
 // MARK: - Scheduling Query Helpers
 
 private extension AssignmentScheduling {
-    var operationalDate: Date? {
-        switch mode {
-        case .fixedTime:
-            return fixedStartDate ?? serviceDate
-        case .arrivalWindow:
-            return arrivalWindowStart ?? serviceDate
-        case .flexibleDay:
-            return serviceDate
-        case .deadline:
-            return serviceDate ?? completionDeadline
-        }
-    }
-
     var operationalDueDate: Date? {
         switch mode {
         case .fixedTime:

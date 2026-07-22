@@ -2,8 +2,8 @@
 
 **Phase:** 14 – Dispatch and Field Intelligence  
 **Branch:** `feature/phase14-dispatch-field-intelligence`  
-**Status:** Step 1 complete; Step 2 ready to begin
-**Current Step:** Step 2 – Dispatch Engine
+**Status:** Step 2 complete; Step 3 ready to begin
+**Current Step:** Step 3 – Daily Planner Engine
 **Document Type:** Living engineering workbook  
 
 ---
@@ -471,7 +471,7 @@ A step is complete only when:
 ## 8. Phase 14 Implementation Checklist
 
 - [x] Step 1 – Assignment Engine *(completed and accepted 2026-07-22)*
-- [ ] Step 2 – Dispatch Engine
+- [x] Step 2 – Dispatch Engine *(completed and accepted 2026-07-22)*
 - [ ] Step 3 – Daily Planner Engine
 - [ ] Step 4 – Route Engine Integration
 - [ ] Step 5 – Workforce Intelligence
@@ -594,15 +594,15 @@ PFSS can assign, dispatch, reassign, and monitor operational work while maintain
 
 ### Engineering Record
 
-- **Status:** Not started
-- **Start date:**
-- **Completion date:**
-- **Commit(s):**
-- **Files added:**
-- **Files modified:**
-- **Tests added/completed:**
-- **Decisions made during implementation:**
-- **Known improvements:**
+- **Status:** Complete — implementation, integration, corrective stabilization, and product-owner acceptance testing passed
+- **Start date:** 2026-07-22
+- **Completion date:** 2026-07-22
+- **Closeout checkpoint:** This workbook's containing commit, tagged `v0.9.11-phase14.2-complete`
+- **Files added:** `DispatchModels.swift`, `DispatchEngine.swift`, `DispatchEngineTests.swift`
+- **Files modified:** `AppDataStore.swift`, `AssignmentCard.swift`, `AssignmentDetailView.swift`, `AssignmentEngine.swift`, `AssignmentEnums.swift`, `AssignmentScheduling.swift`, `AssignmentStore.swift`, `CrewEditor.swift`, `OperationsView.swift`, `TechnicianDailyAgendaView.swift`
+- **Tests added/completed:** Automated coverage includes hybrid technician self-assignment, dispatcher-managed restrictions, durable dispatch history, Primary Technician reassignment with Supporting Technician preservation, Supporting Technician replacement with audit history, authorized office status override, technician-owned route reordering, emergency insertion planning/application, weekend recurring-work adjustment, time preservation, and recurrence-anchor preservation. Product-owner acceptance testing passed for dispatch, reassignment, crew editing, schedule visibility, My Day synchronization, calendar navigation, and recurring-work weekend behavior.
+- **Decisions made during implementation:** `DispatchDecisionEngine` remains the advisory technician-ranking component; `DispatchEngine` is the execution boundary for human-approved dispatch decisions; `AssignmentEngine` remains the only Assignment mutation API and its history remains the durable audit trail; the default operating policy is Hybrid; no duplicate `DispatchStore` was introduced because `AssignmentStore` remains the single source of operational truth; emergency insertion returns ranked options but allows an authorized human override.
+- **Known improvements:** Persist configurable Dispatch operating mode when the Business Operations UI is added; connect authenticated employee identity when application authentication is introduced; add the dedicated emergency-insertion UI during the Dispatch Board workstream; expand full-device automated execution during stabilization.
 
 ---
 
@@ -1109,15 +1109,15 @@ docs(phase14): complete assignment engine record
 
 ### Current Status
 
-Phase 14 Step 1 is complete. The Assignment domain, Operations API, live Operations integration, persistence, migration, scheduling modes, crew rules, UI workflow corrections, and customer/site refinements have passed product-owner acceptance testing.
+Phase 14 Step 2 is complete and accepted. Dispatch ownership, reassignment, crew coordination, three operating-mode permission policies, emergency insertion planning, lifecycle dispatch, durable Assignment history, My Day synchronization, and recurring-work business-day handling are operational and tested.
 
 ### Current Step
 
-**Step 2 – Dispatch Engine**
+**Step 3 – Daily Planner Engine**
 
 ### Next Action
 
-Review the Step 2 requirements and the existing `DispatchDecisionEngine`, Operations workflow, Assignment Operations API, employee availability data, and dispatch UI. Then define the concrete Dispatch Engine boundary before implementing assignment, reassignment, emergency insertion, status coordination, and history behavior.
+Review the Step 3 requirements and the existing Scheduling Engine, Assignment Scheduling Modes, employee availability, Business Operations route settings, and My Day capacity calculations. Then define the concrete Daily Planner input/output models and deterministic planning rules before implementation.
 
 ### Known Branch State
 
@@ -1126,10 +1126,9 @@ Review the Step 2 requirements and the existing `DispatchDecisionEngine`, Operat
 - Assignment implementation commit: `8ca08f8`.
 - Published Phase 14.1 integration checkpoint: `942c7b5` / tag `v0.9.9-phase14.1`.
 - Final tested Step 1 closeout will be published with tag `v0.9.10-phase14.1-complete`.
+- Final tested Step 2 closeout will be published with tag `v0.9.11-phase14.2-complete`.
 - The local branch was rebased onto remote documentation commits `8571b87` and `00541ed` before publication.
 - This workbook is the source of truth for the remainder of the phase.
-
----
 
 ## 13. Deferred and Future Enhancements
 
@@ -1153,6 +1152,32 @@ These should remain visible so the V1 architecture does not block them.
 ## 14. Engineering Log
 
 Add a dated entry whenever an important implementation decision, milestone, or deviation occurs.
+
+### 2026-07-22 – Step 2 Dispatch Engine implementation
+
+- Added `DispatchModels.swift` with Dispatch operating modes, permission policy, actor identity, command types, command results, and emergency-insertion request/option/plan models.
+- Added `DispatchEngine.swift` as the public execution boundary for assigning and reassigning Primary Technicians, managing Supporting Technicians, dispatching scheduled Assignments, and applying emergency insertion plans.
+- Kept `DispatchDecisionEngine` advisory: it ranks technician options while an authorized dispatcher or technician makes the final selection.
+- Kept `AssignmentStore` as the single operational source of truth and routed every mutation through `AssignmentEngine` so lifecycle validation and durable Assignment history remain centralized.
+- Added Dispatcher Managed, Technician Self-Managed, and Hybrid permission policies; Hybrid remains the default agreed operating mode.
+- Added audited dispatcher status override and technician-owned route reordering APIs so human operational decisions remain authoritative without bypassing Assignment history.
+- Integrated the shared Dispatch Engine into `AppDataStore`, Operations assignment actions, Assignment Detail, and Crew Editor.
+- Corrected Primary Technician reassignment so an existing Supporting Technician is preserved instead of blocking the operation.
+- Added automated Dispatch tests covering permissions, ownership, durable history, crew-preserving reassignment, status override, route reordering, and emergency insertion.
+- Completed clean Swift type-check validation for the application module and Dispatch test suite.
+- Cleared Xcode concurrency warnings in Assignment Detail and Crew Editor by resolving the acting employee outside `Optional.map` before creating the `DispatchActor`; dispatch behavior is unchanged.
+- Added scheduled date and time beneath the status on Active Assignment cards and between Status and Priority in Assignment Detail. Presentation is derived from the Assignment's Scheduling Mode, including fixed times, arrival windows, flexible days, and deadlines.
+- Added visible Replace and Remove actions for the V1 Supporting Technician slot. Replacement is atomic, permission-checked, and recorded as a durable Assignment history event.
+- Added Assignment-to-Job synchronization for Primary Technician, Supporting Technician, scheduled date, lifecycle status, workflow state, and completion date. Synchronization runs after Assignment mutations and at launch so dispatched work appears in the existing Job-backed My Day workflow.
+- Made the displayed date beneath the My Day greeting interactive. Tapping it opens a graphical month calendar while retaining the previous/next-day and Return to Today controls.
+- Added an automated regression test for Supporting Technician replacement and its audit-history entry.
+- Corrected recurring scheduling at the Job-to-Assignment boundary: Saturday occurrences move to the preceding Friday and Sunday occurrences move to the following Monday while preserving the scheduled time.
+- Recurrence dates are calculated from the original series anchor so a weekend adjustment does not cause monthly, quarterly, biannual, or annual schedules to drift in later occurrences.
+- Existing unstarted recurring Assignments are rescheduled to the corrected business-day date during Job/Assignment synchronization, preventing a persisted weekend Assignment from restoring the obsolete date in Dispatch or My Day.
+- Added recurrence regression coverage for Saturday-to-Friday, Sunday-to-Monday, time preservation, and monthly anchor preservation.
+- **Acceptance corrections passed:** schedule visibility on cards/details; Supporting Technician replace/remove; dispatched Assignment visibility in My Day; graphical My Day date selection.
+- **Acceptance result:** All Step 2 implementation and corrective retests passed, including newly generated and previously persisted recurring occurrences following the Saturday-to-Friday and Sunday-to-Monday business-day rule.
+- **Status:** Complete and ready for the Phase 14.2 closeout commit and tag.
 
 ### 2026-07-20 – Phase 14 planning completed
 

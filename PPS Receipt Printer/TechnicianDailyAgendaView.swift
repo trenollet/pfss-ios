@@ -23,6 +23,7 @@ struct TechnicianDailyAgendaView: View {
     
     @State private var selectedDate = Date()
     @State private var selectedJobID: UUID?
+    @State private var showingDatePicker = false
 
     @StateObject private var locationManager = TechnicianLocationManager()
     @State private var displayedJobs: [JobRecord] = []
@@ -107,6 +108,27 @@ struct TechnicianDailyAgendaView: View {
         )
         .navigationTitle("My Day")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showingDatePicker) {
+            NavigationStack {
+                DatePicker(
+                    "Select Day",
+                    selection: $selectedDate,
+                    displayedComponents: .date
+                )
+                .datePickerStyle(.graphical)
+                .padding()
+                .navigationTitle("Choose a Date")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") {
+                            showingDatePicker = false
+                        }
+                    }
+                }
+            }
+            .presentationDetents([.medium])
+        }
         .navigationDestination(
             item: $selectedJobID
         ) { jobID in
@@ -213,14 +235,24 @@ struct TechnicianDailyAgendaView: View {
                 .font(.title2)
                 .fontWeight(.bold)
 
-                Text(
-                    selectedDate.formatted(
-                        date: .complete,
-                        time: .omitted
-                    )
-                )
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                Button {
+                    showingDatePicker = true
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(
+                            selectedDate.formatted(
+                                date: .complete,
+                                time: .omitted
+                            )
+                        )
+                        Image(systemName: "calendar")
+                            .font(.caption)
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Choose agenda date")
             }
 
             Spacer()

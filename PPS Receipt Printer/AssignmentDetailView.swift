@@ -7,6 +7,7 @@ import SwiftUI
 
 struct AssignmentDetailView: View {
     @ObservedObject var engine: AssignmentEngine
+    let dispatchEngine: DispatchEngine?
 
     let assignmentID: UUID
     let employees: [EmployeeRecord]
@@ -23,6 +24,7 @@ struct AssignmentDetailView: View {
 
     init(
         engine: AssignmentEngine,
+        dispatchEngine: DispatchEngine? = nil,
         assignmentID: UUID,
         employees: [EmployeeRecord],
         customers: [Customer],
@@ -30,6 +32,7 @@ struct AssignmentDetailView: View {
         actorEmployeeID: UUID? = nil
     ) {
         self.engine = engine
+        self.dispatchEngine = dispatchEngine
         self.assignmentID = assignmentID
         self.employees = employees
         self.customers = customers
@@ -80,6 +83,7 @@ struct AssignmentDetailView: View {
         .sheet(isPresented: $showingCrewEditor) {
             CrewEditor(
                 engine: engine,
+                dispatchEngine: dispatchEngine,
                 assignmentID: assignmentID,
                 employees: employees,
                 actorEmployeeID: actorEmployeeID
@@ -159,6 +163,16 @@ struct AssignmentDetailView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
             }
+
+            LabeledContent("Scheduled") {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(assignment.scheduling.displayDateText)
+                    Text(assignment.scheduling.displayTimeText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Picker("Priority", selection: priorityBinding(for: assignment)) {
                 ForEach(AssignmentPriority.allCases) { priority in
                     Text(priority.rawValue).tag(priority)
@@ -380,7 +394,27 @@ struct AssignmentDetailView: View {
         perform {
             switch action {
             case .dispatch:
-                _ = try engine.dispatch(assignmentID: assignmentID, actorEmployeeID: actorEmployeeID)
+                if let dispatchEngine {
+                    let actor: DispatchActor
+                    if let actorEmployeeID,
+                       let employee = employees.first(where: {
+                           $0.id == actorEmployeeID
+                       }) {
+                        actor = DispatchActor.employee(employee)
+                    } else {
+                        actor = .system
+                    }
+
+                    _ = try dispatchEngine.dispatch(
+                        assignmentID: assignmentID,
+                        actor: actor
+                    )
+                } else {
+                    _ = try engine.dispatch(
+                        assignmentID: assignmentID,
+                        actorEmployeeID: actorEmployeeID
+                    )
+                }
             case .beginTravel:
                 _ = try engine.beginTravel(assignmentID: assignmentID, actorEmployeeID: actorEmployeeID)
             case .arrive:

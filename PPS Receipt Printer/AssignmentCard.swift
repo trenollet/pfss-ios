@@ -25,7 +25,18 @@ struct AssignmentCard: View {
                 }
 
                 Spacer(minLength: 8)
-                AssignmentStatusBadge(status: assignment.status)
+
+                VStack(alignment: .trailing, spacing: 4) {
+                    AssignmentStatusBadge(status: assignment.status)
+
+                    Text(assignment.scheduling.displayDateText)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    Text(assignment.scheduling.displayTimeText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             HStack(spacing: 12) {

@@ -7,6 +7,7 @@ import SwiftUI
 
 struct CrewEditor: View {
     @ObservedObject var engine: AssignmentEngine
+    let dispatchEngine: DispatchEngine?
 
     let assignmentID: UUID
     let employees: [EmployeeRecord]
@@ -19,11 +20,13 @@ struct CrewEditor: View {
 
     init(
         engine: AssignmentEngine,
+        dispatchEngine: DispatchEngine? = nil,
         assignmentID: UUID,
         employees: [EmployeeRecord],
         actorEmployeeID: UUID? = nil
     ) {
         self.engine = engine
+        self.dispatchEngine = dispatchEngine
         self.assignmentID = assignmentID
         self.employees = employees
         self.actorEmployeeID = actorEmployeeID
@@ -69,6 +72,28 @@ struct CrewEditor: View {
                                             }
                                         }
                                     }
+                            }
+
+                            if let currentSupporting = assignment.crew.supportingTechnicians.first {
+                                Menu("Replace Supporting Technician", systemImage: "arrow.triangle.2.circlepath") {
+                                    ForEach(availableEmployees(excluding: assignment.crew.activeEmployeeIDs)) { employee in
+                                        Button(employee.displayName) {
+                                            replaceSupporting(
+                                                with: employee.id
+                                            )
+                                        }
+                                    }
+                                }
+                                .disabled(!crewCanChange(assignment))
+
+                                Button(
+                                    "Remove Supporting Technician",
+                                    systemImage: "person.badge.minus",
+                                    role: .destructive
+                                ) {
+                                    pendingRemoval = employee(currentSupporting.employeeID)
+                                }
+                                .disabled(!crewCanChange(assignment))
                             }
                         }
 
@@ -184,44 +209,113 @@ struct CrewEditor: View {
 
     private func assignPrimary(_ employeeID: UUID) {
         perform {
-            _ = try engine.assignPrimaryTechnician(
-                assignmentID: assignmentID,
-                employeeID: employeeID,
-                actorEmployeeID: actorEmployeeID
-            )
+            if let dispatchEngine,
+               let technician = employee(employeeID) {
+                _ = try dispatchEngine.assignPrimaryTechnician(
+                    assignmentID: assignmentID,
+                    technician: technician,
+                    actor: dispatchActor
+                )
+            } else {
+                _ = try engine.assignPrimaryTechnician(
+                    assignmentID: assignmentID,
+                    employeeID: employeeID,
+                    actorEmployeeID: actorEmployeeID
+                )
+            }
         }
     }
 
     private func replacePrimary(with employeeID: UUID) {
         perform {
-            _ = try engine.replacePrimaryTechnician(
-                assignmentID: assignmentID,
-                with: employeeID,
-                actorEmployeeID: actorEmployeeID,
-                reason: "Primary technician changed in Crew Editor"
-            )
+            if let dispatchEngine,
+               let technician = employee(employeeID) {
+                _ = try dispatchEngine.assignPrimaryTechnician(
+                    assignmentID: assignmentID,
+                    technician: technician,
+                    actor: dispatchActor,
+                    note: "Primary technician changed in Crew Editor"
+                )
+            } else {
+                _ = try engine.replacePrimaryTechnician(
+                    assignmentID: assignmentID,
+                    with: employeeID,
+                    actorEmployeeID: actorEmployeeID,
+                    reason: "Primary technician changed in Crew Editor"
+                )
+            }
         }
     }
 
     private func addSupporting(_ employeeID: UUID) {
         perform {
-            _ = try engine.addSupportingTechnician(
-                assignmentID: assignmentID,
-                employeeID: employeeID,
-                actorEmployeeID: actorEmployeeID
-            )
+            if let dispatchEngine,
+               let technician = employee(employeeID) {
+                _ = try dispatchEngine.addSupportingTechnician(
+                    assignmentID: assignmentID,
+                    technician: technician,
+                    actor: dispatchActor
+                )
+            } else {
+                _ = try engine.addSupportingTechnician(
+                    assignmentID: assignmentID,
+                    employeeID: employeeID,
+                    actorEmployeeID: actorEmployeeID
+                )
+            }
         }
     }
 
     private func removeSupporting(_ employeeID: UUID) {
         perform {
-            _ = try engine.removeSupportingTechnician(
-                assignmentID: assignmentID,
-                employeeID: employeeID,
-                actorEmployeeID: actorEmployeeID,
-                reason: "Supporting technician removed in Crew Editor"
-            )
+            if let dispatchEngine {
+                _ = try dispatchEngine.removeSupportingTechnician(
+                    assignmentID: assignmentID,
+                    technicianID: employeeID,
+                    actor: dispatchActor,
+                    reason: "Supporting technician removed in Crew Editor"
+                )
+            } else {
+                _ = try engine.removeSupportingTechnician(
+                    assignmentID: assignmentID,
+                    employeeID: employeeID,
+                    actorEmployeeID: actorEmployeeID,
+                    reason: "Supporting technician removed in Crew Editor"
+                )
+            }
         }
+    }
+
+    private func replaceSupporting(with replacementEmployeeID: UUID) {
+        perform {
+            if let dispatchEngine,
+               let technician = employee(replacementEmployeeID) {
+                _ = try dispatchEngine.replaceSupportingTechnician(
+                    assignmentID: assignmentID,
+                    technician: technician,
+                    actor: dispatchActor,
+                    reason: "Supporting technician changed in Crew Editor"
+                )
+            } else {
+                _ = try engine.replaceSupportingTechnician(
+                    assignmentID: assignmentID,
+                    with: replacementEmployeeID,
+                    actorEmployeeID: actorEmployeeID,
+                    reason: "Supporting technician changed in Crew Editor"
+                )
+            }
+        }
+    }
+
+    private var dispatchActor: DispatchActor {
+        guard let actorEmployeeID,
+              let employee = employees.first(where: {
+                  $0.id == actorEmployeeID
+              }) else {
+            return .system
+        }
+
+        return DispatchActor.employee(employee)
     }
 
     private func perform(_ operation: () throws -> Void) {

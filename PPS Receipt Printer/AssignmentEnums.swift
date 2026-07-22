@@ -109,6 +109,7 @@ enum AssignmentHistoryEventType: String, CaseIterable, Identifiable, Codable, Ha
     case priorityChanged = "Priority Changed"
     case primaryTechnicianAssigned = "Primary Technician Assigned"
     case supportingTechnicianAdded = "Supporting Technician Added"
+    case supportingTechnicianReplaced = "Supporting Technician Replaced"
     case technicianRemoved = "Technician Removed"
     case dispatched = "Dispatched"
     case statusChanged = "Status Changed"

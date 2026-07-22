@@ -255,6 +255,7 @@ struct OperationsView: View {
             .navigationDestination(item: $selectedAssignmentID) { assignmentID in
                 AssignmentDetailView(
                     engine: store.assignmentEngine,
+                    dispatchEngine: store.dispatchEngine,
                     assignmentID: assignmentID,
                     employees: store.activeEmployees,
                     customers: store.customers,
@@ -660,7 +661,8 @@ struct OperationsView: View {
             _ = try store.assignTechnician(
                 decision.employee.id,
                 toJobID: jobID,
-                scheduledStart: decision.opening.start
+                scheduledStart: decision.opening.start,
+                isHumanOverride: false
             )
         } catch {
             presentOperationError(error)
@@ -684,12 +686,14 @@ struct OperationsView: View {
         let selectedDecision = rankedDecisions(for: job).first {
             $0.employee.id == technicianID
         }
+        let recommendedTechnicianID = bestDecision(for: job)?.employee.id
 
         do {
             _ = try store.assignTechnician(
                 technicianID,
                 toJobID: jobID,
-                scheduledStart: selectedDecision?.opening.start
+                scheduledStart: selectedDecision?.opening.start,
+                isHumanOverride: technicianID != recommendedTechnicianID
             )
         } catch {
             presentOperationError(error)
