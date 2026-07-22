@@ -9,9 +9,9 @@ import SwiftUI
 
 /// Displays a safe, non-mutating Daily Planner proposal.
 ///
-/// Generating or refreshing this preview never changes an Assignment. A plan
-/// must be explicitly accepted through a future Operations API before any
-/// committed schedule can change.
+/// Generating or refreshing this preview never changes an Assignment. The
+/// proposed timeline can be passed to RoutePlanPreviewView, where the user must
+/// explicitly review and apply a route before routeSequence values change.
 struct DailyPlanPreviewView: View {
 
     @EnvironmentObject private var store: AppDataStore
@@ -45,6 +45,7 @@ struct DailyPlanPreviewView: View {
 
                 if let generatedPlan {
                     planHeader(generatedPlan)
+                    routePlanningSection(generatedPlan)
                     timelineSection(generatedPlan)
                     openCapacitySection(generatedPlan)
                     conflictSection(generatedPlan)
@@ -276,6 +277,49 @@ struct DailyPlanPreviewView: View {
         .padding(12)
         .background(Color(.tertiarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    // MARK: - Route Planning
+
+    private func routePlanningSection(_ plan: DailyPlan) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "map.fill")
+                    .font(.title2)
+                    .foregroundStyle(.blue)
+                    .frame(width: 42, height: 42)
+                    .background(Color.blue.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Route This Plan")
+                        .font(.headline)
+
+                    Text("Calculate road mileage, drive time, stop ETAs, and scheduling-constraint conflicts before applying a route.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            NavigationLink {
+                RoutePlanPreviewView(
+                    dailyPlan: plan,
+                    technicianName: selectedTechnician?.displayName
+                        ?? "Technician"
+                )
+            } label: {
+                Label(
+                    "Review Road Route",
+                    systemImage: "map.fill"
+                )
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(plan.assignmentItems.isEmpty)
+        }
+        .padding()
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 18))
     }
 
     // MARK: - Timeline
@@ -613,3 +657,4 @@ struct DailyPlanPreviewView: View {
         return "\(remainder) min"
     }
 }
+

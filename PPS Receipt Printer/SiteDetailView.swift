@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct SiteDetailView: View {
     @EnvironmentObject var store: AppDataStore
@@ -13,6 +14,7 @@ struct SiteDetailView: View {
 
     @State var site: CustomerSite
     @State private var createdJob: JobRecord?
+    @State private var isClosing = false
     @FocusState private var isInputFocused: Bool
 
     private var customerDisplayName: String {
@@ -88,18 +90,20 @@ struct SiteDetailView: View {
                 if site.lifecycleStatus == .archived {
                     Button("Restore Site") {
                         store.restoreSite(site)
-                        dismiss()
+                        closeSiteDetail()
                     }
                     .buttonStyle(.borderedProminent)
                 } else {
                     Button("Archive Site", role: .destructive) {
                         store.archiveSite(site)
-                        dismiss()
+                        closeSiteDetail()
                     }
                 }
             }
         }
         .navigationTitle("Edit Site")
+        .navigationBarBackButtonHidden(true)
+        .scrollDismissesKeyboard(.interactively)
         .sheet(item: $createdJob) { job in
             NavigationStack {
                 JobDetailView(
@@ -109,20 +113,60 @@ struct SiteDetailView: View {
             .environmentObject(store)
         }
         .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Save") {
-                    isInputFocused = false
-                    store.updateSite(site)
-                    dismiss()
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    closeSiteDetail()
+                } label: {
+                    Label("Back", systemImage: "chevron.left")
                 }
+                .disabled(isClosing)
             }
 
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") {
-                    isInputFocused = false
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    closeSiteDetail(savingChanges: true)
                 }
+                .disabled(isClosing)
             }
+
         }
+        .onDisappear {
+            isInputFocused = false
+        }
+    }
+
+    /// Ends text editing before beginning the navigation transition.
+    ///
+    /// Popping a Form while one of its text fields is still UIKit's first
+    /// responder can make the navigation snapshot briefly request a zero-height
+    /// image. The Site editor intentionally does not install a keyboard toolbar:
+    /// on this navigation path UIKit can invalidate that accessory view's input
+    /// session while it is being removed, producing RTIInputSystemClient and
+    /// invalid-frame runtime messages. Waiting for the standard keyboard to
+    /// resign avoids tearing down navigation and input accessory views together.
+    private func closeSiteDetail(savingChanges: Bool = false) {
+        guard !isClosing else { return }
+        isClosing = true
+
+        resignInputFocus()
+
+        if savingChanges {
+            store.updateSite(site)
+        }
+
+        Task { @MainActor in
+            try? await Task<Never, Never>.sleep(for: .milliseconds(150))
+            dismiss()
+        }
+    }
+
+    private func resignInputFocus() {
+        isInputFocused = false
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
     }
 }

@@ -544,10 +544,14 @@ struct JobDetailView: View {
                 .disabled(job.isRecurring && job.recurrenceFrequency == nil)
             }
 
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") {
-                    isInputFocused = false
+            if isInputFocused {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isInputFocused = false
+                    } label: {
+                        Image(systemName: "keyboard.chevron.compact.down")
+                    }
+                    .accessibilityLabel("Dismiss Keyboard")
                 }
             }
         }

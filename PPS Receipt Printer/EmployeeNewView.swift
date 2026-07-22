@@ -205,13 +205,14 @@ struct EmployeeNewView: View {
                     )
                 }
 
-                ToolbarItemGroup(
-                    placement: .keyboard
-                ) {
-                    Spacer()
-
-                    Button("Done") {
-                        isInputFocused = false
+                if isInputFocused {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            isInputFocused = false
+                        } label: {
+                            Image(systemName: "keyboard.chevron.compact.down")
+                        }
+                        .accessibilityLabel("Dismiss Keyboard")
                     }
                 }
             }
