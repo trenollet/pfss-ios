@@ -101,6 +101,10 @@ struct AssignmentCrew: Codable, Hashable {
             issues.append(.duplicateActiveTechnician)
         }
 
+        if supportingTechnicians.count > 1 {
+            issues.append(.tooManySupportingTechnicians)
+        }
+
         return issues
     }
 
@@ -113,4 +117,5 @@ enum AssignmentCrewValidationIssue: String, Codable, Hashable {
     case missingPrimaryTechnician = "The assignment requires one primary technician."
     case multiplePrimaryTechnicians = "The assignment may have only one active primary technician."
     case duplicateActiveTechnician = "A technician may appear only once in the active crew."
+    case tooManySupportingTechnicians = "Version 1 supports only one active supporting technician per assignment."
 }

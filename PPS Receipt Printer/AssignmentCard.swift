@@ -8,53 +8,44 @@ import SwiftUI
 struct AssignmentCard: View {
     let assignment: Assignment
     let employees: [EmployeeRecord]
+    let customers: [Customer]
+    let sites: [CustomerSite]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(assignment.jobNumber)
-                        .font(.headline)
+                    Text(customerDisplayName)
+                        .font(.headline.weight(.bold))
 
-                    Text(assignment.assignmentNumber)
-                        .font(.caption)
+                    Label(siteDisplayName, systemImage: "mappin.and.ellipse")
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
+
                 }
 
                 Spacer(minLength: 8)
                 AssignmentStatusBadge(status: assignment.status)
             }
 
-            Divider()
+            HStack(spacing: 12) {
+                Label(primaryTechnicianName, systemImage: "person.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(
+                        assignment.primaryTechnicianID == nil ? .secondary : .primary
+                    )
 
-            Label(assignment.customerNumber, systemImage: "person.crop.circle")
-                .font(.subheadline)
-
-            Label(primaryTechnicianName, systemImage: "person.fill")
-                .font(.subheadline)
-                .foregroundStyle(
-                    assignment.primaryTechnicianID == nil ? .secondary : .primary
-                )
-
-            HStack(spacing: 14) {
-                Label(
-                    assignment.scheduling.mode.rawValue,
-                    systemImage: "calendar.badge.clock"
-                )
+                Spacer(minLength: 8)
 
                 if assignment.supportingTechnicianIDs.isEmpty == false {
                     Label(
                         "+\(assignment.supportingTechnicianIDs.count)",
                         systemImage: "person.2.fill"
                     )
-                }
-
-                if let routeSequence = assignment.routeSequence {
-                    Label("Stop \(routeSequence)", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
                 }
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
         .padding()
         .background(.background)
@@ -73,6 +64,36 @@ struct AssignmentCard: View {
 
         return employees.first { $0.id == employeeID }?.displayName
             ?? "Unknown technician"
+    }
+
+    private var customerDisplayName: String {
+        guard let customer = customers.first(where: {
+            $0.customerNumber == assignment.customerNumber
+        }) else {
+            return assignment.customerNumber.isEmpty
+                ? "Unknown Customer"
+                : assignment.customerNumber
+        }
+
+        let businessName = customer.businessName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let contactName = customer.contactName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !businessName.isEmpty { return businessName }
+        if !contactName.isEmpty { return contactName }
+        return customer.customerNumber
+    }
+
+    private var siteDisplayName: String {
+        guard let siteID = assignment.siteID,
+              let site = sites.first(where: { $0.id == siteID }) else {
+            return "No site assigned"
+        }
+
+        let name = site.siteName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "Unnamed Site" : name
     }
 }
 //

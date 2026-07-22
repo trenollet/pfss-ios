@@ -21,6 +21,24 @@ struct SitesView: View {
         }
     }
 
+    private func customerDisplayName(for customerNumber: String) -> String {
+        guard let customer = store.customers.first(where: {
+            $0.customerNumber == customerNumber
+        }) else {
+            return "Customer Not Found"
+        }
+
+        if !customer.businessName.isEmpty {
+            return customer.businessName
+        }
+
+        if !customer.contactName.isEmpty {
+            return customer.contactName
+        }
+
+        return "Unnamed Customer"
+    }
+
     var body: some View {
         List {
             Section {
@@ -33,7 +51,8 @@ struct SitesView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(site.siteName.isEmpty ? site.serviceAddress : site.siteName).font(.headline)
                             Text(site.serviceAddress).font(.caption)
-                            Text("Customer #: \(site.customerNumber)").font(.caption)
+                            Text("Customer: \(customerDisplayName(for: site.customerNumber))")
+                                .font(.caption)
                             if !site.propertyType.isEmpty {
                                 Text("Property: \(site.propertyType)").font(.caption)
                             }
@@ -48,7 +67,10 @@ struct SitesView: View {
         .navigationTitle("Sites")
         .searchable(text: $searchText, prompt: "Search sites")
         .sheet(isPresented: $showingNewSite) {
-            SiteNewView().environmentObject(store)
+            NavigationStack {
+                SiteNewView()
+            }
+            .environmentObject(store)
         }
     }
 }

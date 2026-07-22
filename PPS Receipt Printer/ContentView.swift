@@ -44,11 +44,6 @@ struct ContentView: View {
                     Label("Catalog Items", systemImage: "book.pages")
                 }
             
-            SitesView()
-                .tabItem {
-                    Label("Sites", systemImage: "house")
-                }
-            
             PrintView()
                 .tabItem {
                     Label("Print", systemImage: "printer")
@@ -60,4 +55,3 @@ struct ContentView: View {
             }
         }
     }
-

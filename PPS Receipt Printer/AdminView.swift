@@ -31,6 +31,15 @@ struct AdminView: View {
 
                 Section("Reports") {
                     NavigationLink {
+                        SitesView()
+                    } label: {
+                        Label(
+                            "Sites",
+                            systemImage: "house"
+                        )
+                    }
+
+                    NavigationLink {
                         JobHistoryReportView()
                     } label: {
                         Label(

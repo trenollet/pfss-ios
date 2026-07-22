@@ -716,6 +716,8 @@ struct JobDetailView: View {
     private func saveJobChanges(shouldDismiss: Bool) {
         isInputFocused = false
 
+        job.scheduledDate = QuarterHourDatePicker.normalized(job.scheduledDate)
+
         if job.status == .completed && job.completedDate == nil {
             job.completedDate = Date()
         }

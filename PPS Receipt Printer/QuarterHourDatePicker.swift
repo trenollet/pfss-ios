@@ -5,18 +5,21 @@ import SwiftUI
 struct QuarterHourDatePicker: View {
     @Binding var selection: Date
 
+    var dateLabel = "Scheduled Date"
+    var timeLabel = "Scheduled Time"
+
     private let calendar = Calendar.current
     private let minuteChoices = [0, 15, 30, 45]
 
     var body: some View {
         Group {
             DatePicker(
-                "Scheduled Date",
+                dateLabel,
                 selection: dateBinding,
                 displayedComponents: .date
             )
 
-            LabeledContent("Scheduled Time") {
+            LabeledContent(timeLabel) {
                 HStack(spacing: 8) {
                     Picker("Hour", selection: hourBinding) {
                         ForEach(0..<24, id: \.self) { hour in
@@ -34,9 +37,6 @@ struct QuarterHourDatePicker: View {
                 }
                 .pickerStyle(.menu)
             }
-        }
-        .onAppear {
-            selection = normalizedQuarterHour(selection)
         }
     }
 
@@ -87,10 +87,16 @@ struct QuarterHourDatePicker: View {
         ) ?? selection
     }
 
-    private func normalizedQuarterHour(_ date: Date) -> Date {
-        calendar.date(
+    static func normalized(_ date: Date, calendar: Calendar = .current) -> Date {
+        let minute = calendar.component(.minute, from: date)
+        let quarterHours = [0, 15, 30, 45]
+        let nearestMinute = quarterHours.min {
+            abs($0 - minute) < abs($1 - minute)
+        } ?? 0
+
+        return calendar.date(
             bySettingHour: calendar.component(.hour, from: date),
-            minute: selectedMinute,
+            minute: nearestMinute,
             second: 0,
             of: date
         ) ?? date

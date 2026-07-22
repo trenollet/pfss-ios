@@ -11,6 +11,9 @@ import SwiftUI
 struct OperationsView: View {
 
     @EnvironmentObject private var store: AppDataStore
+    @State private var selectedAssignmentID: UUID?
+    @State private var operationErrorMessage = ""
+    @State private var showingOperationError = false
 
     private let calendar = Calendar.current
     private let forecastDayCount = 4
@@ -37,6 +40,10 @@ struct OperationsView: View {
         store.activeJobs
     }
 
+    private var activeAssignments: [Assignment] {
+        store.assignmentEngine.activeAssignments
+    }
+
     private var todayJobs: [JobRecord] {
         activeJobs
             .filter {
@@ -49,11 +56,9 @@ struct OperationsView: View {
     }
 
     private var dispatchJobs: [JobRecord] {
-        activeJobs
-            .filter { job in
-                job.primaryTechnicianID == nil &&
-                job.status != .completed &&
-                job.status != .cancelled
+        store.assignmentEngine.unassignedAssignments
+            .compactMap { assignment in
+                activeJobs.first { $0.id == assignment.jobID }
             }
             .sorted { first, second in
                 let firstPriority = dispatchPriority(for: first)
@@ -235,6 +240,7 @@ struct OperationsView: View {
                     summaryGrid
                     technicianSection
                     dispatchSection
+                    activeAssignmentsSection
                     capacitySection
                     revenueSection
                     recommendationsSection
@@ -245,6 +251,20 @@ struct OperationsView: View {
             .navigationBarTitleDisplayMode(.large)
             .refreshable {
                 await objectWillChangeRefresh()
+            }
+            .navigationDestination(item: $selectedAssignmentID) { assignmentID in
+                AssignmentDetailView(
+                    engine: store.assignmentEngine,
+                    assignmentID: assignmentID,
+                    employees: store.activeEmployees,
+                    customers: store.customers,
+                    sites: store.sites
+                )
+            }
+            .alert("Assignment Error", isPresented: $showingOperationError) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(operationErrorMessage)
             }
         }
     }
@@ -351,8 +371,45 @@ struct OperationsView: View {
                                 technicianID,
                                 to: item.jobID
                             )
+                        },
+                        onViewDetails: {
+                            guard let jobID = item.jobID else { return }
+                            selectedAssignmentID = store.assignment(forJobID: jobID)?.id
                         }
                     )
+                }
+            }
+        }
+    }
+
+    // MARK: - Active Assignments
+
+    private var activeAssignmentsSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionHeader(
+                title: "Active Assignments",
+                systemImage: "person.text.rectangle.fill"
+            )
+
+            if activeAssignments.isEmpty {
+                emptyCard(
+                    title: "No active assignments",
+                    message: "Eligible jobs will appear here as operational assignments."
+                )
+            } else {
+                ForEach(activeAssignments) { assignment in
+                    Button {
+                        selectedAssignmentID = assignment.id
+                    } label: {
+                        AssignmentCard(
+                            assignment: assignment,
+                            employees: store.activeEmployees,
+                            customers: store.customers,
+                            sites: store.sites
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Opens assignment details")
                 }
             }
         }
@@ -591,7 +648,7 @@ struct OperationsView: View {
     ) {
         guard
             let jobID,
-            var job = activeJobs.first(where: {
+            let job = activeJobs.first(where: {
                 $0.id == jobID
             }),
             let decision = bestDecision(for: job)
@@ -599,14 +656,15 @@ struct OperationsView: View {
             return
         }
 
-        job.primaryTechnicianID = decision.employee.id
-        job.scheduledDate = decision.opening.start
-
-        if job.status == .toBeScheduled {
-            job.status = .assigned
+        do {
+            _ = try store.assignTechnician(
+                decision.employee.id,
+                toJobID: jobID,
+                scheduledStart: decision.opening.start
+            )
+        } catch {
+            presentOperationError(error)
         }
-
-        store.updateJob(job)
     }
 
     /// Assigns the technician selected by the dispatcher. When that technician
@@ -618,7 +676,7 @@ struct OperationsView: View {
         to jobID: UUID?
     ) {
         guard let jobID,
-              var job = activeJobs.first(where: { $0.id == jobID }),
+              let job = activeJobs.first(where: { $0.id == jobID }),
               activeTechnicians.contains(where: { $0.id == technicianID }) else {
             return
         }
@@ -627,17 +685,20 @@ struct OperationsView: View {
             $0.employee.id == technicianID
         }
 
-        job.primaryTechnicianID = technicianID
-
-        if let selectedDecision {
-            job.scheduledDate = selectedDecision.opening.start
+        do {
+            _ = try store.assignTechnician(
+                technicianID,
+                toJobID: jobID,
+                scheduledStart: selectedDecision?.opening.start
+            )
+        } catch {
+            presentOperationError(error)
         }
+    }
 
-        if job.status == .toBeScheduled {
-            job.status = .assigned
-        }
-
-        store.updateJob(job)
+    private func presentOperationError(_ error: Error) {
+        operationErrorMessage = error.localizedDescription
+        showingOperationError = true
     }
 
     // MARK: - Technician Helpers

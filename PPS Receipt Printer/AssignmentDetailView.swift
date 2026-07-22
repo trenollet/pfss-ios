@@ -10,9 +10,12 @@ struct AssignmentDetailView: View {
 
     let assignmentID: UUID
     let employees: [EmployeeRecord]
+    let customers: [Customer]
+    let sites: [CustomerSite]
     let actorEmployeeID: UUID?
 
     @State private var showingCrewEditor = false
+    @State private var showingScheduleEditor = false
     @State private var showingCancellation = false
     @State private var cancellationReason = ""
     @State private var errorMessage = ""
@@ -22,11 +25,15 @@ struct AssignmentDetailView: View {
         engine: AssignmentEngine,
         assignmentID: UUID,
         employees: [EmployeeRecord],
+        customers: [Customer],
+        sites: [CustomerSite],
         actorEmployeeID: UUID? = nil
     ) {
         self.engine = engine
         self.assignmentID = assignmentID
         self.employees = employees
+        self.customers = customers
+        self.sites = sites
         self.actorEmployeeID = actorEmployeeID
     }
 
@@ -34,6 +41,7 @@ struct AssignmentDetailView: View {
         Group {
             if let assignment {
                 List {
+                    customerSiteHeader(assignment)
                     overviewSection(assignment)
                     schedulingSection(assignment)
                     crewSection(assignment)
@@ -41,6 +49,7 @@ struct AssignmentDetailView: View {
                     notesSection(assignment)
                     historySection(assignment)
                 }
+                .contentMargins(.top, 4, for: .scrollContent)
                 .navigationTitle("Assignment")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -76,6 +85,16 @@ struct AssignmentDetailView: View {
                 actorEmployeeID: actorEmployeeID
             )
         }
+        .sheet(isPresented: $showingScheduleEditor) {
+            if let assignment {
+                AssignmentSchedulingEditorView(
+                    engine: engine,
+                    assignmentID: assignmentID,
+                    scheduling: assignment.scheduling,
+                    actorEmployeeID: actorEmployeeID
+                )
+            }
+        }
         .alert("Assignment Error", isPresented: $showingError) {
             Button("OK", role: .cancel) { }
         } message: {
@@ -98,25 +117,68 @@ struct AssignmentDetailView: View {
         engine.assignment(id: assignmentID)
     }
 
+    private func customerSiteHeader(_ assignment: Assignment) -> some View {
+        Section {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(customerDisplayName(for: assignment))
+                    .font(.title2.weight(.bold))
+
+                Label(siteDisplayName(for: assignment), systemImage: "mappin.and.ellipse")
+                    .font(.subheadline.weight(.medium))
+
+                if let address = siteAddress(for: assignment) {
+                    Text(address)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(assignment.jobNumber)
+                    Text(assignment.assignmentNumber)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
     private func overviewSection(_ assignment: Assignment) -> some View {
         Section("Overview") {
-            LabeledContent("Status") {
-                AssignmentStatusBadge(status: assignment.status)
+            HStack(spacing: 12) {
+                Text("Status")
+                Spacer(minLength: 12)
+                Label(
+                    assignment.status.rawValue,
+                    systemImage: statusSymbol(for: assignment.status)
+                )
+                .font(.body.weight(.semibold))
+                .foregroundStyle(statusColor(for: assignment.status))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
             }
-            LabeledContent("Assignment", value: assignment.assignmentNumber)
-            LabeledContent("Job", value: assignment.jobNumber)
-            LabeledContent("Customer", value: assignment.customerNumber)
-            LabeledContent("Priority", value: assignment.priority.rawValue)
-
-            if let routeSequence = assignment.routeSequence {
-                LabeledContent("Route Stop", value: String(routeSequence))
+            Picker("Priority", selection: priorityBinding(for: assignment)) {
+                ForEach(AssignmentPriority.allCases) { priority in
+                    Text(priority.rawValue).tag(priority)
+                }
             }
+            .pickerStyle(.menu)
         }
     }
 
     private func schedulingSection(_ assignment: Assignment) -> some View {
         Section("Scheduling") {
             LabeledContent("Mode", value: assignment.scheduling.mode.rawValue)
+
+            Button("Edit Schedule", systemImage: "calendar.badge.clock") {
+                showingScheduleEditor = true
+            }
+            .disabled(
+                assignment.status != .scheduled &&
+                assignment.status != .dispatched
+            )
 
             if assignment.scheduling.schedulingNotes.isEmpty == false {
                 VStack(alignment: .leading, spacing: 4) {
@@ -212,6 +274,90 @@ struct AssignmentDetailView: View {
     private func employeeName(_ id: UUID?) -> String {
         guard let id else { return "Not assigned" }
         return employees.first { $0.id == id }?.displayName ?? "Unknown technician"
+    }
+
+    private func priorityBinding(for assignment: Assignment) -> Binding<AssignmentPriority> {
+        Binding(
+            get: { assignment.priority },
+            set: { newPriority in
+                guard newPriority != assignment.priority else { return }
+                perform {
+                    _ = try engine.updatePriority(
+                        assignmentID: assignmentID,
+                        priority: newPriority,
+                        actorEmployeeID: actorEmployeeID,
+                        note: "Priority updated from Assignment Detail."
+                    )
+                }
+            }
+        )
+    }
+
+    private func customerDisplayName(for assignment: Assignment) -> String {
+        guard let customer = customers.first(where: {
+            $0.customerNumber == assignment.customerNumber
+        }) else {
+            return assignment.customerNumber.isEmpty
+                ? "Unknown Customer"
+                : assignment.customerNumber
+        }
+
+        let businessName = customer.businessName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let contactName = customer.contactName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !businessName.isEmpty { return businessName }
+        if !contactName.isEmpty { return contactName }
+        return customer.customerNumber
+    }
+
+    private func siteDisplayName(for assignment: Assignment) -> String {
+        guard let site = site(for: assignment) else {
+            return "No site assigned"
+        }
+
+        let name = site.siteName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "Unnamed Site" : name
+    }
+
+    private func siteAddress(for assignment: Assignment) -> String? {
+        guard let site = site(for: assignment) else { return nil }
+        let address = site.serviceAddress
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return address.isEmpty ? nil : address
+    }
+
+    private func site(for assignment: Assignment) -> CustomerSite? {
+        guard let siteID = assignment.siteID else { return nil }
+        return sites.first { $0.id == siteID }
+    }
+
+    private func statusColor(for status: AssignmentStatus) -> Color {
+        switch status {
+        case .scheduled: return .blue
+        case .dispatched: return .indigo
+        case .enRoute: return .orange
+        case .onSite: return .purple
+        case .workComplete: return .teal
+        case .invoiceReady: return .mint
+        case .closed: return .green
+        case .cancelled: return .red
+        }
+    }
+
+    private func statusSymbol(for status: AssignmentStatus) -> String {
+        switch status {
+        case .scheduled: return "calendar"
+        case .dispatched: return "paperplane.fill"
+        case .enRoute: return "car.fill"
+        case .onSite: return "location.fill"
+        case .workComplete: return "checkmark.circle.fill"
+        case .invoiceReady: return "doc.text.fill"
+        case .closed: return "checkmark.seal.fill"
+        case .cancelled: return "xmark.circle.fill"
+        }
     }
 
     private func canCancel(_ assignment: Assignment) -> Bool {

@@ -11,40 +11,86 @@ struct CustomerNewView: View {
     @State private var estimateStatus: EstimateStatus = .newLead
     @State private var assignedEmployee = ""
     @State private var followUpDate = Date()
+    @State private var createdCustomer: Customer?
+    @State private var isCreatingInitialSite = false
     @FocusState private var isInputFocused: Bool
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Customer") {
-                    TextField("Business Name", text: $businessName).focused($isInputFocused)
-                    TextField("Contact Name", text: $contactName).focused($isInputFocused)
-                    TextField("Phone", text: $phone).keyboardType(.phonePad).focused($isInputFocused)
-                    TextField("Email", text: $email)
-                        .keyboardType(.emailAddress)
-                        .textInputAutocapitalization(.never)
-                        .focused($isInputFocused)
-                    Picker("Lead Source", selection: $leadSource) {
-                        ForEach(LeadSource.allCases) { Text($0.rawValue).tag($0) }
+            Group {
+                if let createdCustomer {
+                    if isCreatingInitialSite {
+                        SiteNewView(
+                            preselectedCustomerNumber: createdCustomer.customerNumber,
+                            onSaved: { _ in
+                                isCreatingInitialSite = false
+                            },
+                            onCancel: {
+                                isCreatingInitialSite = false
+                            }
+                        )
+                    } else {
+                        CustomerDetailView(customer: currentCreatedCustomer)
                     }
-                    Picker("Status", selection: $estimateStatus) {
-                        ForEach(EstimateStatus.allCases) { Text($0.rawValue).tag($0) }
+                } else {
+                    Form {
+                        Section("Customer") {
+                            TextField("Business Name", text: $businessName)
+                                .focused($isInputFocused)
+                            TextField("Contact Name", text: $contactName)
+                                .focused($isInputFocused)
+                            TextField("Phone", text: $phone)
+                                .keyboardType(.phonePad)
+                                .focused($isInputFocused)
+                            TextField("Email", text: $email)
+                                .keyboardType(.emailAddress)
+                                .textInputAutocapitalization(.never)
+                                .focused($isInputFocused)
+                            Picker("Lead Source", selection: $leadSource) {
+                                ForEach(LeadSource.allCases) {
+                                    Text($0.rawValue).tag($0)
+                                }
+                            }
+                            Picker("Status", selection: $estimateStatus) {
+                                ForEach(EstimateStatus.allCases) {
+                                    Text($0.rawValue).tag($0)
+                                }
+                            }
+                            TextField("Assigned Employee", text: $assignedEmployee)
+                                .focused($isInputFocused)
+                            DatePicker(
+                                "Follow-Up Date",
+                                selection: $followUpDate,
+                                displayedComponents: .date
+                            )
+                        }
                     }
-                    TextField("Assigned Employee", text: $assignedEmployee).focused($isInputFocused)
-                    DatePicker("Follow-Up Date", selection: $followUpDate, displayedComponents: .date)
-                }
-            }
-            .navigationTitle("New Customer")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { saveCustomer() }.disabled(!hasName)
-                }
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer(); Button("Done") { isInputFocused = false }
+                    .navigationTitle("New Customer")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { dismiss() }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Save") { saveCustomer() }
+                                .disabled(!hasName)
+                        }
+                        ToolbarItemGroup(placement: .keyboard) {
+                            Spacer()
+                            Button("Done") { isInputFocused = false }
+                        }
+                    }
                 }
             }
         }
+    }
+
+    private var currentCreatedCustomer: Customer {
+        guard let createdCustomer else {
+            preconditionFailure("A created customer is required for Customer Detail.")
+        }
+
+        return store.customers.first(where: { $0.id == createdCustomer.id }) ??
+            createdCustomer
     }
 
     private var hasName: Bool {
@@ -54,7 +100,7 @@ struct CustomerNewView: View {
 
     private func saveCustomer() {
         isInputFocused = false
-        store.addCustomer(Customer(
+        let customer = Customer(
             customerNumber: store.generateCustomerNumber(),
             businessName: businessName,
             contactName: contactName,
@@ -64,7 +110,10 @@ struct CustomerNewView: View {
             estimateStatus: estimateStatus,
             assignedEmployee: assignedEmployee,
             followUpDate: followUpDate
-        ))
-        dismiss()
+        )
+
+        store.addCustomer(customer)
+        createdCustomer = customer
+        isCreatingInitialSite = true
     }
 }

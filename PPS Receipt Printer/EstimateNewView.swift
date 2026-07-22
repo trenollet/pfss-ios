@@ -62,7 +62,7 @@ struct EstimateNewView: View {
                     Picker("Lead", selection: $selectedLeadNumber) {
                         Text("None").tag("")
                         ForEach(store.activeLeads) { lead in
-                            Text("\(lead.leadNumber) - \(leadName(lead))")
+                            Text(leadName(lead))
                                 .tag(lead.leadNumber)
                         }
                     }
@@ -209,8 +209,15 @@ struct EstimateNewView: View {
     }
 
     private func customerName(_ customer: Customer) -> String {
-        let name = customer.businessName.isEmpty ? customer.contactName : customer.businessName
-        return "\(name) - \(customer.customerNumber)"
+        if !customer.businessName.isEmpty {
+            return customer.businessName
+        }
+
+        if !customer.contactName.isEmpty {
+            return customer.contactName
+        }
+
+        return "Unnamed Customer"
     }
 
     private func leadName(_ lead: Lead) -> String {

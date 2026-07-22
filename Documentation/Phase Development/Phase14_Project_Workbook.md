@@ -2,8 +2,8 @@
 
 **Phase:** 14 – Dispatch and Field Intelligence  
 **Branch:** `feature/phase14-dispatch-field-intelligence`  
-**Status:** Planning complete; implementation ready to begin  
-**Current Step:** Step 1 – Assignment Engine  
+**Status:** Step 1 complete; Step 2 ready to begin
+**Current Step:** Step 2 – Dispatch Engine
 **Document Type:** Living engineering workbook  
 
 ---
@@ -470,7 +470,7 @@ A step is complete only when:
 
 ## 8. Phase 14 Implementation Checklist
 
-- [ ] Step 1 – Assignment Engine *(implementation complete; automated tests pending)*
+- [x] Step 1 – Assignment Engine *(completed and accepted 2026-07-22)*
 - [ ] Step 2 – Dispatch Engine
 - [ ] Step 3 – Daily Planner Engine
 - [ ] Step 4 – Route Engine Integration
@@ -536,18 +536,19 @@ PFSS has a complete operational work object that all scheduling, routing, dispat
 
 ### Engineering Record
 
-- **Status:** In validation — implementation and manual testing complete; dedicated unit tests pending
+- **Status:** Complete — implementation, integration, stabilization, and product-owner acceptance testing passed
 - **Start date:** 2026-07-21
-- **Completion date:** Pending automated test completion
+- **Completion date:** 2026-07-22
 - **Implementation commit:** `8ca08f8`
-- **Documentation/rebase commit:** Pending rebase completion
-- **Planned checkpoint tag:** `v0.9.9-phase14.1`
+- **Published integration checkpoint:** `942c7b5` / `v0.9.9-phase14.1`
+- **Final closeout checkpoint:** This workbook's containing commit, tagged `v0.9.10-phase14.1-complete`
 - **Files added:** `Assignment.swift`, `AssignmentEnums.swift`, `AssignmentHistory.swift`, `AssignmentCrew.swift`, `AssignmentScheduling.swift`, `AssignmentStore.swift`, `AssignmentEngine.swift`, `AssignmentCard.swift`, `AssignmentStatusBadge.swift`, `AssignmentDetailView.swift`, `CrewEditor.swift`
 - **Files modified:** `AppDataStore.swift`, `Models.swift`, Operations and supporting record views
-- **Tests completed:** Product-owner manual integration and clean-build validation; Swift syntax validation during development
-- **Tests pending:** Assignment lifecycle, validation, history, crew, scheduling, store, Operations API, and recurring-job unit tests
+- **Tests completed:** Product-owner end-to-end acceptance testing; lifecycle and scheduling-mode validation; Primary/Supporting Technician rules; Operations dispatch override; persistence and legacy Job migration; recurring-job generation; Assignment Detail and Active Assignment UI; customer/site creation workflow; navigation regression checks; clean-build validation; full Swift-module type-check validation
+- **Automated coverage note:** Dedicated Assignment-domain unit-test expansion remains desirable and is tracked for the stabilization/test-hardening workstream; it is not a blocker to Step 2 after successful acceptance and integration testing
 - **Decisions made during implementation:** AssignmentEngine is the public Operations API; store lookup methods use explicit names; recommendations remain overridable; recurrence generates one future occurrence
-- **Known improvements:** Complete automated tests before marking Step 1 done
+- **Known improvements:** Expand automated Assignment-domain regression coverage during test hardening
+- **Acceptance result:** All corrective retests passed; no known blocking Step 1 defect remains
 
 ---
 
@@ -1108,21 +1109,23 @@ docs(phase14): complete assignment engine record
 
 ### Current Status
 
-Planning, architecture, Assignment implementation, supporting UI work, and manual integration testing are complete. Automated Assignment-domain validation remains open.
+Phase 14 Step 1 is complete. The Assignment domain, Operations API, live Operations integration, persistence, migration, scheduling modes, crew rules, UI workflow corrections, and customer/site refinements have passed product-owner acceptance testing.
 
 ### Current Step
 
-**Step 1 – Assignment Engine**
+**Step 2 – Dispatch Engine**
 
 ### Next Action
 
-Create and run the Assignment-domain unit tests. Cover model validation, lifecycle transitions, history, crew rules, scheduling modes, store operations, Operations API commands, and recurring-job duplicate prevention. Record the results here before creating the checkpoint tag.
+Review the Step 2 requirements and the existing `DispatchDecisionEngine`, Operations workflow, Assignment Operations API, employee availability data, and dispatch UI. Then define the concrete Dispatch Engine boundary before implementing assignment, reassignment, emergency insertion, status coordination, and history behavior.
 
 ### Known Branch State
 
 - Stability Pass documentation was previously committed to `main`.
 - Phase 14 work belongs on `feature/phase14-dispatch-field-intelligence`.
 - Assignment implementation commit: `8ca08f8`.
+- Published Phase 14.1 integration checkpoint: `942c7b5` / tag `v0.9.9-phase14.1`.
+- Final tested Step 1 closeout will be published with tag `v0.9.10-phase14.1-complete`.
 - The local branch was rebased onto remote documentation commits `8571b87` and `00541ed` before publication.
 - This workbook is the source of truth for the remainder of the phase.
 
@@ -1180,6 +1183,69 @@ Add a dated entry whenever an important implementation decision, milestone, or d
 - Added recurring-job frequencies and automatic one-occurrence-ahead dispatch scheduling.
 - Confirmed the updated flows manually in Xcode.
 - Deferred Step 1 completion and tag creation until automated unit tests pass.
+
+### 2026-07-21 – Step 1 manual test findings and corrections
+
+- **Finding:** Only Fixed Time was exposed through the current scheduling UI.
+- **Correction:** Added `AssignmentSchedulingEditorView` with Fixed Time, Arrival Window, Flexible Day, and Deadline modes, mode-specific fields, duration, buffers, confirmation, notes, validation, and Operations API persistence.
+- **Retest required:** Create and save each scheduling mode, reopen it, and confirm the selected constraints persist.
+- **Finding:** The Assignment domain and Crew Editor allowed multiple Supporting Technicians even though the current V1 product limit is one.
+- **Correction:** Added the one-Supporting-Technician rule to model validation, Assignment creation, AssignmentEngine mutations, errors, and Crew Editor availability.
+- **Retest required:** Confirm one Supporting Technician succeeds and a second is prevented until the first is removed.
+- **Finding:** Opening a technician Job from My Day produced `Invalid frame dimension (negative or non-finite)` during navigation.
+- **Likely cause:** `QuarterHourDatePicker` normalized and mutated its bound date during `.onAppear`, while SwiftUI was performing the Job Detail navigation animation.
+- **Correction:** Removed navigation-time state mutation. Quarter-hour normalization now occurs during Job creation/save, outside the navigation layout pass.
+- **Retest required:** Launch PFSS, open My Day, tap multiple Jobs from Today's Schedule, return, and repeat while monitoring the console.
+
+### 2026-07-21 – Assignment domain connected to live Operations
+
+- **Finding:** Assignment models, store, engine, and UI compiled but were not owned by `AppDataStore`, persisted, migrated from existing Jobs, or reachable through app navigation.
+- **Correction:** `AppDataStore` now owns the shared `AssignmentStore` and `AssignmentEngine` used throughout live Operations.
+- Added backward-compatible Assignment persistence to the existing application data snapshot.
+- Added one-time/idempotent migration that creates one active Assignment for each eligible legacy or newly created Job.
+- Changed the Dispatch Queue source from job-only ownership checks to the Assignment store's unassigned operational records.
+- Dispatch selection now flows through `AssignmentEngine` before mirroring technician ownership and recommended start time to the related Job.
+- Added an Active Assignments section to Operations and wired both its cards and Dispatch Queue Details actions to `AssignmentDetailView`.
+- Connected My Day workflow milestones—dispatch/travel, arrival, work completion, invoice readiness, and closure—to the corresponding Assignment lifecycle commands.
+- **Retest required:** Verify migration creates no duplicates across relaunches, Assignment edits persist, dispatch remains synchronized with Jobs, and My Day actions advance Assignment history/status.
+
+### 2026-07-21 – Assignment visual identification and priority editing
+
+- Updated Active Assignment cards to lead with the resolved customer name in bold rather than the internal customer number.
+- Added the resolved site name directly beneath the customer name.
+- Retained Job and Assignment numbers as smaller diagnostic identifiers during Phase 14 testing.
+- Added a compact customer/site header to Assignment Detail, including the site address when available, and reduced the initial List content spacing.
+- Added an always-visible Priority picker to Assignment Detail for Low, Normal, High, and Emergency.
+- Priority changes flow through `AssignmentEngine.updatePriority`, persist through `AssignmentStore`, and create Assignment history events.
+- **Retest required:** Confirm customer/site resolution, compact detail layout, priority persistence, and priority history entries.
+- **Layout correction:** The reusable capsule badge stretched vertically inside a large-text List row on iOS. Assignment Detail now uses a compact colored icon-and-text status row; capsule badges remain on cards where they render correctly.
+- Stacked the Job number and ASN vertically in the customer/site header using matching secondary typography, and removed the duplicate ASN row from Overview.
+- Simplified Assignment Detail's Overview section to operational state only: Status and editable Priority. Job, customer number, and route-stop identifiers are no longer repeated there.
+- Simplified Operations Active Assignment cards to customer name, site name, status, primary technician, and the supporting-technician count indicator. Removed Job/ASN identifiers, scheduling mode, route stop, and the extra divider from this summary card.
+
+### 2026-07-22 – Customer and site workflow refinement
+
+- Simplified the New Job customer picker to display customer names without internal customer numbers.
+- Simplified the New Estimate customer and lead pickers to display names without customer or lead identifiers.
+- Moved the standalone Sites directory from the primary More menu into Admin → Reports.
+- Added an associated Sites section to Customer Detail with direct site navigation and an inline Add Site action.
+- Changed New Customer save behavior to immediately continue into New Site creation with the new customer preselected.
+- After the initial site is saved—or the site step is canceled—the workflow now lands on Customer Detail so additional sites can be added without leaving the customer workflow.
+- Changed Site Detail and the administrative Sites directory to resolve and display the customer name instead of the internal customer number.
+- Replaced free-form property type entry during New Site creation with built-in choices for Retail, Restaurant, Office, Home, Warehouse, and Gas Station.
+- Added a New Property Type choice that accepts a custom value; custom values are retained through saved sites and automatically become available in future property-type pickers.
+- Replaced Site Detail's context-dependent Job navigation destination with a self-contained Job Detail sheet, eliminating the misplaced `navigationDestination` runtime warning when a site is opened from either Customer Detail or Admin Sites.
+- **Retest result:** Customer/site creation, additional-site creation, customer-name resolution, built-in/custom property types, name-only Job/Estimate pickers, and both Site Detail entry paths passed acceptance testing.
+
+### 2026-07-22 – Step 1 accepted and closed
+
+- Completed the full Phase 14 Step 1 acceptance-test cycle.
+- Confirmed Assignment creation, persistence, lifecycle status, history, priorities, all four Scheduling Modes, V1 crew limits, dispatch overrides, recurring-work behavior, and live Operations/My Day synchronization.
+- Confirmed the corrected Job, Estimate, Customer, and Site workflows operate as designed.
+- Confirmed the Site Detail navigation warning is resolved from both Customer Detail and Admin Sites.
+- Confirmed no known blocking Step 1 defects remain.
+- Marked Step 1 complete and moved the authoritative resume point to Step 2 – Dispatch Engine.
+- Selected `v0.9.10-phase14.1-complete` as the immutable final Step 1 checkpoint tag; the earlier `v0.9.9-phase14.1` integration tag remains unchanged.
 
 ---
 

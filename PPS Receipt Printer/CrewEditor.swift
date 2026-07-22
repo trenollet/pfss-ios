@@ -55,7 +55,7 @@ struct CrewEditor: View {
                         }
                     }
 
-                    Section("Supporting Technicians") {
+                    Section("Supporting Technician") {
                         if assignment.crew.supportingTechnicians.isEmpty {
                             Text("No supporting technicians assigned")
                                 .foregroundStyle(.secondary)
@@ -72,12 +72,18 @@ struct CrewEditor: View {
                             }
                         }
 
-                        Menu("Add Supporting Technician") {
-                            ForEach(availableEmployees(excluding: assignment.crew.activeEmployeeIDs)) { employee in
-                                Button(employee.displayName) {
-                                    addSupporting(employee.id)
+                        if assignment.crew.supportingTechnicians.isEmpty {
+                            Menu("Add Supporting Technician") {
+                                ForEach(availableEmployees(excluding: assignment.crew.activeEmployeeIDs)) { employee in
+                                    Button(employee.displayName) {
+                                        addSupporting(employee.id)
+                                    }
                                 }
                             }
+                        } else {
+                            Text("Version 1 supports one supporting technician.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
 

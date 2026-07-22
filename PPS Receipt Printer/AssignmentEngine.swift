@@ -549,6 +549,9 @@ final class AssignmentEngine: ObservableObject {
             guard assignment.crew.containsActiveEmployee(employeeID) == false else {
                 throw AssignmentEngineError.technicianAlreadyAssigned(employeeID)
             }
+            guard assignment.crew.supportingTechnicians.isEmpty else {
+                throw AssignmentEngineError.supportingTechnicianLimitReached
+            }
 
             for index in assignment.crew.members.indices where
                 assignment.crew.members[index].employeeID == formerID &&
@@ -1051,6 +1054,10 @@ final class AssignmentEngine: ObservableObject {
         supportingTechnicianIDs: [UUID],
         timestamp: Date
     ) throws -> AssignmentCrew {
+        guard supportingTechnicianIDs.count <= 1 else {
+            throw record(.supportingTechnicianLimitReached)
+        }
+
         var uniqueSupportingIDs: [UUID] = []
         var seen = Set<UUID>()
 
@@ -1264,6 +1271,7 @@ enum AssignmentEngineError: LocalizedError, Equatable {
     case technicianCannotHoldMultipleCrewRoles(UUID)
     case technicianNotFound(UUID)
     case supportingTechnicianNotFound(UUID)
+    case supportingTechnicianLimitReached
     case laborMinutesCannotBeNegative
     case workCanOnlyCompleteFromOnSite(current: AssignmentStatus)
     case cannotCancelAfterInvoiceReady
@@ -1303,6 +1311,8 @@ enum AssignmentEngineError: LocalizedError, Equatable {
             return "Technician \(id.uuidString) is not present in the assignment crew history."
         case let .supportingTechnicianNotFound(id):
             return "Technician \(id.uuidString) is not an active supporting technician on this assignment."
+        case .supportingTechnicianLimitReached:
+            return "Version 1 supports one supporting technician per assignment. Remove the current supporting technician before assigning another."
         case .laborMinutesCannotBeNegative:
             return "Labor minutes cannot be negative."
         case let .workCanOnlyCompleteFromOnSite(status):

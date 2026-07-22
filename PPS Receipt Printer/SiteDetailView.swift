@@ -12,14 +12,31 @@ struct SiteDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State var site: CustomerSite
-    @State private var createdJobID: UUID?
+    @State private var createdJob: JobRecord?
     @FocusState private var isInputFocused: Bool
+
+    private var customerDisplayName: String {
+        guard let customer = store.customers.first(where: {
+            $0.customerNumber == site.customerNumber
+        }) else {
+            return "Customer Not Found"
+        }
+
+        if !customer.businessName.isEmpty {
+            return customer.businessName
+        }
+
+        if !customer.contactName.isEmpty {
+            return customer.contactName
+        }
+
+        return "Unnamed Customer"
+    }
 
     var body: some View {
         Form {
             Section("Site / Work Location") {
-                Text("Customer #: \(site.customerNumber)")
-                    .font(.headline)
+                LabeledContent("Customer", value: customerDisplayName)
 
                 TextField("Site Name", text: $site.siteName)
                     .focused($isInputFocused)
@@ -64,7 +81,7 @@ struct SiteDetailView: View {
                     )
 
                     store.addJob(job)
-                    createdJobID = job.id
+                    createdJob = job
                 }
                 .disabled(site.lifecycleStatus == .archived)
 
@@ -83,12 +100,13 @@ struct SiteDetailView: View {
             }
         }
         .navigationTitle("Edit Site")
-        .navigationDestination(item: $createdJobID) { jobID in
-            if let job = store.jobs.first(where: { $0.id == jobID }) {
-                JobDetailView(job: job)
-            } else {
-                Text("Job not found")
+        .sheet(item: $createdJob) { job in
+            NavigationStack {
+                JobDetailView(
+                    job: store.jobs.first(where: { $0.id == job.id }) ?? job
+                )
             }
+            .environmentObject(store)
         }
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {

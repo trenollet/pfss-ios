@@ -8,8 +8,12 @@
 import Foundation
 import Combine
 
+@MainActor
 final class AppDataStore: ObservableObject {
     private let fieldOperationsEngine = FieldOperationsEngine()
+    let assignmentStore: AssignmentStore
+    let assignmentEngine: AssignmentEngine
+    private var assignmentObservation: AnyCancellable?
     @Published var customers: [Customer] = [] {
         didSet { saveData() }
     }
@@ -117,8 +121,20 @@ final class AppDataStore: ObservableObject {
     private let saveFileName = "pps-field-manager-data.json"
 
     init() {
+        let assignmentStore = AssignmentStore()
+        self.assignmentStore = assignmentStore
+        self.assignmentEngine = AssignmentEngine(store: assignmentStore)
+
         loadData()
         materializePendingRecurringJobs()
+        synchronizeAssignmentsFromJobs()
+
+        assignmentStore.onAssignmentsChanged = { [weak self] _ in
+            self?.saveData()
+        }
+        assignmentObservation = assignmentStore.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     func generateCustomerNumber() -> String {
@@ -300,6 +316,7 @@ final class AppDataStore: ObservableObject {
         prepareRecurrenceIdentity(for: &storedJob)
         jobs.append(storedJob)
         ensureNextOccurrence(after: storedJob, includeInitialOccurrence: true)
+        synchronizeAssignmentsFromJobs()
     }
 
     func updateJob(_ job: JobRecord) {
@@ -324,7 +341,136 @@ final class AppDataStore: ObservableObject {
                 after: storedJob,
                 includeInitialOccurrence: storedJob.recurrenceSequence == 0
             )
+            synchronizeAssignmentsFromJobs()
         }
+    }
+
+    // MARK: - Assignment Integration
+
+    func assignment(forJobID jobID: UUID) -> Assignment? {
+        assignmentEngine.assignmentsForJob(jobID)
+            .first { $0.lifecycleStatus == .active }
+    }
+
+    /// Creates the V1 operational record for eligible legacy and new jobs.
+    /// Phase 14 intentionally maintains one active Assignment per Job.
+    @discardableResult
+    func synchronizeAssignmentsFromJobs() -> Int {
+        var createdCount = 0
+
+        for job in jobs where isAssignmentEligible(job) {
+            guard assignment(forJobID: job.id) == nil else { continue }
+
+            do {
+                _ = try assignmentEngine.createAssignment(
+                    jobID: job.id,
+                    jobNumber: job.jobNumber,
+                    customerNumber: job.customerNumber,
+                    siteID: job.siteID,
+                    scheduling: assignmentScheduling(for: job),
+                    primaryTechnicianID: job.primaryTechnicianID,
+                    supportingTechnicianIDs: [job.secondaryTechnicianID].compactMap { $0 },
+                    priority: assignmentPriority(for: job),
+                    source: job.isRecurring ? .recurringWork : .jobConversion,
+                    note: "Created from the existing PFSS job workflow."
+                )
+                createdCount += 1
+            } catch {
+                print("Failed to create assignment for \(job.jobNumber): \(error.localizedDescription)")
+            }
+        }
+
+        return createdCount
+    }
+
+    /// Applies a Dispatch Board decision through AssignmentEngine and mirrors
+    /// the operational owner/start time to the related Job record.
+    @discardableResult
+    func assignTechnician(
+        _ technicianID: UUID,
+        toJobID jobID: UUID,
+        scheduledStart: Date? = nil
+    ) throws -> Assignment {
+        guard var job = jobs.first(where: { $0.id == jobID }) else {
+            throw AssignmentIntegrationError.jobNotFound(jobID)
+        }
+
+        if assignment(forJobID: jobID) == nil {
+            synchronizeAssignmentsFromJobs()
+        }
+
+        guard var assignment = assignment(forJobID: jobID) else {
+            throw AssignmentIntegrationError.assignmentUnavailable(jobID)
+        }
+
+        if let currentPrimaryID = assignment.primaryTechnicianID,
+           currentPrimaryID != technicianID {
+            assignment = try assignmentEngine.replacePrimaryTechnician(
+                assignmentID: assignment.id,
+                with: technicianID,
+                reason: "Dispatcher reassigned the primary technician."
+            )
+        } else if assignment.primaryTechnicianID == nil {
+            assignment = try assignmentEngine.assignPrimaryTechnician(
+                assignmentID: assignment.id,
+                employeeID: technicianID,
+                note: "Assigned from the Operations dispatch queue."
+            )
+        }
+
+        if let scheduledStart {
+            var scheduling = assignment.scheduling
+            scheduling.mode = .fixedTime
+            scheduling.serviceDate = scheduledStart
+            scheduling.fixedStartDate = scheduledStart
+            scheduling.arrivalWindowStart = nil
+            scheduling.arrivalWindowEnd = nil
+            scheduling.completionDeadline = nil
+            assignment = try assignmentEngine.reschedule(
+                assignmentID: assignment.id,
+                scheduling: scheduling,
+                note: "Dispatch recommendation updated the planned start."
+            )
+            job.scheduledDate = scheduledStart
+        }
+
+        job.primaryTechnicianID = technicianID
+        if job.status == .toBeScheduled || job.status == .scheduled {
+            job.status = .assigned
+        }
+
+        if let index = jobs.firstIndex(where: { $0.id == job.id }) {
+            jobs[index] = job
+        }
+
+        return assignment
+    }
+
+    private func isAssignmentEligible(_ job: JobRecord) -> Bool {
+        job.lifecycleStatus == .active &&
+            job.status != .completed &&
+            job.status != .cancelled
+    }
+
+    private func assignmentScheduling(for job: JobRecord) -> AssignmentScheduling {
+        AssignmentScheduling(
+            mode: .fixedTime,
+            serviceDate: job.scheduledDate,
+            fixedStartDate: job.scheduledDate,
+            estimatedDurationMinutes: max(
+                SchedulingEngine.scheduledMinutes(for: job),
+                15
+            ),
+            isCustomerConfirmed: true,
+            schedulingNotes: "Imported from Job \(job.jobNumber)."
+        )
+    }
+
+    private func assignmentPriority(for job: JobRecord) -> AssignmentPriority {
+        let today = Calendar.current.startOfDay(for: Date())
+        if job.scheduledDate < today { return .emergency }
+        if Calendar.current.isDateInToday(job.scheduledDate) { return .high }
+        return .normal
     }
 
     private func removeUnstartedFutureOccurrences(after job: JobRecord) {
@@ -480,7 +626,16 @@ final class AppDataStore: ObservableObject {
         }
 
         if action == .createInvoice {
-            return createInvoiceFromJob(jobID: jobID) != nil
+            let created = createInvoiceFromJob(jobID: jobID) != nil
+            if created {
+                synchronizeAssignmentWorkflow(
+                    jobID: jobID,
+                    action: action,
+                    employeeID: employeeID,
+                    at: timestamp
+                )
+            }
+            return created
         }
 
         if action == .recordPayment {
@@ -506,7 +661,88 @@ final class AppDataStore: ObservableObject {
         }
 
         jobs[index] = updated
+        synchronizeAssignmentWorkflow(
+            jobID: jobID,
+            action: action,
+            employeeID: employeeID,
+            at: timestamp
+        )
         return true
+    }
+
+    /// Keeps the Assignment lifecycle aligned with the established My Day
+    /// field workflow without duplicating lifecycle rules outside the engine.
+    private func synchronizeAssignmentWorkflow(
+        jobID: UUID,
+        action: JobWorkflowAction,
+        employeeID: UUID?,
+        at timestamp: Date
+    ) {
+        guard var assignment = assignment(forJobID: jobID) else { return }
+
+        do {
+            switch action {
+            case .startTravel:
+                if assignment.status == .scheduled {
+                    assignment = try assignmentEngine.dispatch(
+                        assignmentID: assignment.id,
+                        actorEmployeeID: employeeID,
+                        note: "Dispatched by the My Day workflow.",
+                        at: timestamp
+                    )
+                }
+                if assignment.status == .dispatched {
+                    _ = try assignmentEngine.beginTravel(
+                        assignmentID: assignment.id,
+                        actorEmployeeID: employeeID,
+                        at: timestamp
+                    )
+                }
+
+            case .markArrived:
+                if assignment.status == .enRoute {
+                    _ = try assignmentEngine.arrive(
+                        assignmentID: assignment.id,
+                        actorEmployeeID: employeeID,
+                        at: timestamp
+                    )
+                }
+
+            case .finishWork:
+                if assignment.status == .onSite {
+                    _ = try assignmentEngine.complete(
+                        assignmentID: assignment.id,
+                        actorEmployeeID: employeeID,
+                        at: timestamp
+                    )
+                }
+
+            case .createInvoice:
+                if assignment.status == .workComplete {
+                    _ = try assignmentEngine.markInvoiceReady(
+                        assignmentID: assignment.id,
+                        actorEmployeeID: employeeID,
+                        at: timestamp
+                    )
+                }
+
+            case .completeJob:
+                if assignment.status == .workComplete ||
+                    assignment.status == .invoiceReady {
+                    _ = try assignmentEngine.close(
+                        assignmentID: assignment.id,
+                        actorEmployeeID: employeeID,
+                        at: timestamp
+                    )
+                }
+
+            case .startSetup, .startWork, .startPackUp,
+                 .recordPayment, .viewDetails:
+                break
+            }
+        } catch {
+            print("Failed to synchronize Assignment workflow: \(error.localizedDescription)")
+        }
     }
 
     @discardableResult
@@ -901,7 +1137,8 @@ final class AppDataStore: ObservableObject {
             nextCustomerNumber: nextCustomerNumber,
             recordSequencesByMonth: recordSequencesByMonth,
             recommendationRules: recommendationRules,
-            employees: employees
+            employees: employees,
+            assignments: assignmentStore.assignments
         )
 
         do {
@@ -935,6 +1172,7 @@ final class AppDataStore: ObservableObject {
             recordSequencesByMonth = snapshot.recordSequencesByMonth
             recommendationRules = snapshot.recommendationRules
             employees = snapshot.employees
+            try assignmentStore.replaceAll(with: snapshot.assignments)
             seedRecommendationRulesIfNeeded()
         } catch {
             print("Failed to load app data: \(error.localizedDescription)")
@@ -960,6 +1198,7 @@ private struct AppDataSnapshot: Codable {
     var recordSequencesByMonth: [String: Int]
     var recommendationRules: [RecommendationRule]
     var employees: [EmployeeRecord] = []
+    var assignments: [Assignment] = []
 
     private enum CodingKeys: String, CodingKey {
         case customers
@@ -974,6 +1213,7 @@ private struct AppDataSnapshot: Codable {
         case recordSequencesByMonth
         case recommendationRules
         case employees
+        case assignments
     }
 
     init(
@@ -988,7 +1228,8 @@ private struct AppDataSnapshot: Codable {
         nextCustomerNumber: Int,
         recordSequencesByMonth: [String: Int],
         recommendationRules: [RecommendationRule],
-        employees: [EmployeeRecord] = []
+        employees: [EmployeeRecord] = [],
+        assignments: [Assignment] = []
     ) {
         self.customers = customers
         self.sites = sites
@@ -1002,6 +1243,7 @@ private struct AppDataSnapshot: Codable {
         self.recordSequencesByMonth = recordSequencesByMonth
         self.recommendationRules = recommendationRules
         self.employees = employees
+        self.assignments = assignments
     }
 
     init(from decoder: Decoder) throws {
@@ -1050,6 +1292,10 @@ private struct AppDataSnapshot: Codable {
             [EmployeeRecord].self,
             forKey: .employees
         ) ?? []
+        assignments = try container.decodeIfPresent(
+            [Assignment].self,
+            forKey: .assignments
+        ) ?? []
         nextCustomerNumber = try container.decode(
             Int.self,
             forKey: .nextCustomerNumber
@@ -1064,5 +1310,19 @@ private struct AppDataSnapshot: Codable {
             [RecommendationRule].self,
             forKey: .recommendationRules
         ) ?? []
+    }
+}
+
+private enum AssignmentIntegrationError: LocalizedError {
+    case jobNotFound(UUID)
+    case assignmentUnavailable(UUID)
+
+    var errorDescription: String? {
+        switch self {
+        case .jobNotFound:
+            return "The related job could not be found."
+        case .assignmentUnavailable:
+            return "The operational assignment could not be created or loaded."
+        }
     }
 }

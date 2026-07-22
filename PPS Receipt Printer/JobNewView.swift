@@ -21,7 +21,7 @@ struct JobNewView: View {
     @State private var primaryTechnicianID: UUID?
     @State private var secondaryTechnicianID: UUID?
 
-    @State private var scheduledDate = Date()
+    @State private var scheduledDate = QuarterHourDatePicker.normalized(Date())
     @State private var status: JobStatus = .toBeScheduled
     @State private var workNotes = ""
     @State private var isRecurring = false
@@ -126,7 +126,7 @@ struct JobNewView: View {
             total: totalValue,
             primaryTechnicianID: primaryTechnicianID,
             secondaryTechnicianID: secondaryTechnicianID,
-            scheduledDate: scheduledDate,
+            scheduledDate: QuarterHourDatePicker.normalized(scheduledDate),
             completedDate: nil,
             status: status,
             workNotes: workNotes,
@@ -372,7 +372,7 @@ struct JobNewView: View {
             total: totalValue,
             primaryTechnicianID: primaryTechnicianID,
             secondaryTechnicianID: secondaryTechnicianID,
-            scheduledDate: scheduledDate,
+            scheduledDate: QuarterHourDatePicker.normalized(scheduledDate),
             completedDate: status == .completed ? Date() : nil,
             status: status,
             workNotes: workNotes,
@@ -530,8 +530,15 @@ struct JobNewView: View {
         )
     }
     private func customerName(_ customer: Customer) -> String {
-        let name = customer.businessName.isEmpty ? customer.contactName : customer.businessName
-        return "\(name) - \(customer.customerNumber)"
+        if !customer.businessName.isEmpty {
+            return customer.businessName
+        }
+
+        if !customer.contactName.isEmpty {
+            return customer.contactName
+        }
+
+        return "Unnamed Customer"
     }
 
     private func serviceName(for job: JobRecord) -> String {
