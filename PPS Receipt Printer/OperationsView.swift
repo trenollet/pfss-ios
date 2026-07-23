@@ -252,6 +252,7 @@ struct OperationsView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
                     summaryGrid
+                    dispatchBoardSection
                     dailyPlannerSection
                     technicianSection
                     workforceIntelligenceSection
@@ -283,6 +284,55 @@ struct OperationsView: View {
             } message: {
                 Text(operationErrorMessage)
             }
+        }
+    }
+
+    // MARK: - Technician Dispatch Board
+
+    private var dispatchBoardSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionHeader(
+                title: "Dispatch Board",
+                systemImage: "rectangle.3.group.fill"
+            )
+
+            NavigationLink {
+                DispatchBoardView()
+            } label: {
+                HStack(spacing: 14) {
+                    Image(systemName: "rectangle.3.group.fill")
+                        .font(.title2)
+                        .foregroundStyle(.indigo)
+                        .frame(width: 42, height: 42)
+                        .background(Color.indigo.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Open Technician Dispatch Board")
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+
+                        Text("Review technician lanes, current and next work, route order, workload, conflicts, and the unassigned queue.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.leading)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "chevron.right")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+                .background(Color(.secondarySystemGroupedBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18)
+                        .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
         }
     }
 

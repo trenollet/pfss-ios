@@ -170,34 +170,47 @@ struct AssignmentDetailView: View {
 
     private func overviewSection(_ assignment: Assignment) -> some View {
         Section("Overview") {
-            HStack(spacing: 12) {
-                Text("Status")
-                Spacer(minLength: 12)
-                Label(
-                    assignment.status.rawValue,
-                    systemImage: statusSymbol(for: assignment.status)
-                )
-                .font(.body.weight(.semibold))
-                .foregroundStyle(statusColor(for: assignment.status))
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-            }
+            VStack(spacing: 12) {
+                HStack(spacing: 12) {
+                    Text("Status")
+                    Spacer(minLength: 12)
+                    Label(
+                        assignment.status.rawValue,
+                        systemImage: statusSymbol(for: assignment.status)
+                    )
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(statusColor(for: assignment.status))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                }
 
-            LabeledContent("Scheduled") {
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(assignment.scheduling.displayDateText)
-                    Text(assignment.scheduling.displayTimeText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                Divider()
+
+                LabeledContent("Scheduled") {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(assignment.scheduling.displayDateText)
+                        Text(assignment.scheduling.displayTimeText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Divider()
+
+                Picker("Priority", selection: priorityBinding(for: assignment)) {
+                    ForEach(AssignmentPriority.allCases) { priority in
+                        Text(priority.rawValue).tag(priority)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+            .padding(assignment.priority == .emergency ? 10 : 0)
+            .overlay {
+                if assignment.priority == .emergency {
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(Color.red, lineWidth: 2)
                 }
             }
-
-            Picker("Priority", selection: priorityBinding(for: assignment)) {
-                ForEach(AssignmentPriority.allCases) { priority in
-                    Text(priority.rawValue).tag(priority)
-                }
-            }
-            .pickerStyle(.menu)
         }
     }
 
