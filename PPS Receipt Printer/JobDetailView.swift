@@ -11,7 +11,10 @@ struct JobDetailView: View {
     private let showWorkflow = false
     private let showTimeline = false
     private let showCapacity = false
-    private let showWorkOrder = false
+    // Field technicians may add requested work to the existing Job while on
+    // site. The same work-order editor is reused so pricing and labor duration
+    // remain consistent with office-created line items.
+    private let showWorkOrder = true
 
     @EnvironmentObject var store: AppDataStore
     @Environment(\.dismiss) private var dismiss

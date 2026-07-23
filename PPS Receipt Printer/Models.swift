@@ -616,6 +616,12 @@ struct JobRecord: Identifiable, Codable, WorkOrder {
     var secondaryTechnicianID: UUID?
     var scheduledDate: Date
     var scheduledDurationOverrideMinutes: Int? = nil
+    /// Dispatch constraints selected while the Job is created. Keeping these
+    /// on the business record allows recurring occurrences to inherit them.
+    var assignmentSchedulingMode: AssignmentSchedulingMode = .fixedTime
+    var arrivalWindowEnd: Date? = nil
+    var completionDeadline: Date? = nil
+    var assignmentPriority: AssignmentPriority = .normal
     var setupStartDate: Date? = nil
     var completedDate: Date?
 
@@ -650,6 +656,10 @@ extension JobRecord {
         case secondaryTechnicianID
         case scheduledDate
         case scheduledDurationOverrideMinutes
+        case assignmentSchedulingMode
+        case arrivalWindowEnd
+        case completionDeadline
+        case assignmentPriority
         case setupStartDate
         case completedDate
         case status
@@ -744,6 +754,26 @@ extension JobRecord {
                 Int.self,
                 forKey: .scheduledDurationOverrideMinutes
             )
+
+        assignmentSchedulingMode = try container.decodeIfPresent(
+            AssignmentSchedulingMode.self,
+            forKey: .assignmentSchedulingMode
+        ) ?? .fixedTime
+
+        arrivalWindowEnd = try container.decodeIfPresent(
+            Date.self,
+            forKey: .arrivalWindowEnd
+        )
+
+        completionDeadline = try container.decodeIfPresent(
+            Date.self,
+            forKey: .completionDeadline
+        )
+
+        assignmentPriority = try container.decodeIfPresent(
+            AssignmentPriority.self,
+            forKey: .assignmentPriority
+        ) ?? .normal
 
         setupStartDate = try container.decodeIfPresent(
             Date.self,

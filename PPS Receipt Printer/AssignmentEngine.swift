@@ -712,6 +712,74 @@ final class AssignmentEngine: ObservableObject {
         }
     }
 
+    /// Removes the complete active crew and returns an unstarted Assignment
+    /// to the dispatch queue. This is intentionally limited to scheduled or
+    /// dispatched work; once travel begins, the lifecycle must be handled as
+    /// an operational exception instead of silently unassigning the crew.
+    @discardableResult
+    func unassignCrew(
+        assignmentID: UUID,
+        actorEmployeeID: UUID? = nil,
+        reason: String,
+        at timestamp: Date = Date()
+    ) throws -> Assignment {
+        let cleanReason = normalizedRequired(reason)
+        guard cleanReason.isEmpty == false else {
+            throw record(.reasonRequired("Unassign"))
+        }
+
+        let updated = try mutateEditableAssignment(
+            assignmentID: assignmentID,
+            at: timestamp,
+            operation: .technicianRemoved
+        ) { assignment in
+            try self.requireCrewEditable(assignment)
+            guard let formerPrimaryID = assignment.primaryTechnicianID else {
+                throw AssignmentEngineError.primaryTechnicianRequired
+            }
+
+            for index in assignment.crew.members.indices where
+                assignment.crew.members[index].isActive {
+                assignment.crew.members[index].removedDate = timestamp
+            }
+
+            assignment.dispatchedDate = nil
+            assignment.routeSequence = nil
+            assignment.history.append(
+                AssignmentHistoryEvent(
+                    type: .technicianRemoved,
+                    title: "Assignment returned to dispatch queue",
+                    timestamp: timestamp,
+                    actorEmployeeID: actorEmployeeID,
+                    affectedEmployeeID: formerPrimaryID,
+                    note: cleanReason,
+                    metadata: [
+                        "formerPrimaryEmployeeID": formerPrimaryID.uuidString,
+                        "action": "unassigned"
+                    ]
+                )
+            )
+        }
+
+        if updated.status == .dispatched {
+            do {
+                try store.changeStatus(
+                    assignmentID: assignmentID,
+                    to: .scheduled,
+                    actorEmployeeID: actorEmployeeID,
+                    note: "Returned to dispatch queue: \(cleanReason)",
+                    at: timestamp
+                )
+            } catch {
+                throw record(.storeFailure(message(for: error)))
+            }
+        }
+
+        let result = try requireAssignment(assignmentID)
+        recordSuccess(.technicianRemoved, assignmentID: assignmentID, at: timestamp)
+        return result
+    }
+
     @discardableResult
     func recordLabor(
         assignmentID: UUID,

@@ -22,6 +22,14 @@ struct JobNewView: View {
     @State private var secondaryTechnicianID: UUID?
 
     @State private var scheduledDate = QuarterHourDatePicker.normalized(Date())
+    @State private var schedulingMode: AssignmentSchedulingMode = .fixedTime
+    @State private var arrivalWindowEnd = QuarterHourDatePicker.normalized(
+        Calendar.current.date(byAdding: .hour, value: 2, to: Date()) ?? Date()
+    )
+    @State private var completionDeadline = QuarterHourDatePicker.normalized(
+        Calendar.current.date(byAdding: .hour, value: 4, to: Date()) ?? Date()
+    )
+    @State private var assignmentPriority: AssignmentPriority = .normal
     @State private var status: JobStatus = .toBeScheduled
     @State private var workNotes = ""
     @State private var isRecurring = false
@@ -80,6 +88,11 @@ struct JobNewView: View {
     private var totalValue: Double {
         PricingCalculator.total(for: lineItems, discount: discountValue)
     }
+    private var operationalJobDate: Date {
+        schedulingMode == .deadline
+            ? QuarterHourDatePicker.normalized(completionDeadline)
+            : QuarterHourDatePicker.normalized(scheduledDate)
+    }
     private var assignableEmployees: [EmployeeRecord] {
         store.activeEmployees.sorted {
             $0.displayName.localizedCaseInsensitiveCompare(
@@ -126,7 +139,15 @@ struct JobNewView: View {
             total: totalValue,
             primaryTechnicianID: primaryTechnicianID,
             secondaryTechnicianID: secondaryTechnicianID,
-            scheduledDate: QuarterHourDatePicker.normalized(scheduledDate),
+            scheduledDate: operationalJobDate,
+            assignmentSchedulingMode: schedulingMode,
+            arrivalWindowEnd: schedulingMode == .arrivalWindow
+                ? QuarterHourDatePicker.normalized(arrivalWindowEnd)
+                : nil,
+            completionDeadline: schedulingMode == .deadline
+                ? QuarterHourDatePicker.normalized(completionDeadline)
+                : nil,
+            assignmentPriority: assignmentPriority,
             completedDate: nil,
             status: status,
             workNotes: workNotes,
@@ -286,7 +307,19 @@ struct JobNewView: View {
                         }
                     }
 
-                    QuarterHourDatePicker(selection: $scheduledDate)
+                    Picker("Scheduling Mode", selection: $schedulingMode) {
+                        ForEach(AssignmentSchedulingMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+
+                    schedulingControls
+
+                    Picker("Priority", selection: $assignmentPriority) {
+                        ForEach(AssignmentPriority.allCases) { priority in
+                            Text(priority.rawValue).tag(priority)
+                        }
+                    }
 
                     Toggle("Recurring Job", isOn: $isRecurring)
 
@@ -311,6 +344,15 @@ struct JobNewView: View {
                     recurrenceFrequency = nil
                 }
             }
+            .onChange(of: scheduledDate) { _, newDate in
+                guard schedulingMode == .arrivalWindow,
+                      arrivalWindowEnd <= newDate else { return }
+                arrivalWindowEnd = Calendar.current.date(
+                    byAdding: .hour,
+                    value: 2,
+                    to: newDate
+                ) ?? newDate
+            }
             .sheet(isPresented: $showingRecurrencePicker) {
                 JobRecurrencePickerView(selection: $recurrenceFrequency)
             }
@@ -325,6 +367,7 @@ struct JobNewView: View {
                     }
                     .disabled(
                         selectedCustomerNumber.isEmpty ||
+                        !hasValidScheduling ||
                         (isRecurring && recurrenceFrequency == nil)
                     )
                 }
@@ -376,7 +419,15 @@ struct JobNewView: View {
             total: totalValue,
             primaryTechnicianID: primaryTechnicianID,
             secondaryTechnicianID: secondaryTechnicianID,
-            scheduledDate: QuarterHourDatePicker.normalized(scheduledDate),
+            scheduledDate: operationalJobDate,
+            assignmentSchedulingMode: schedulingMode,
+            arrivalWindowEnd: schedulingMode == .arrivalWindow
+                ? QuarterHourDatePicker.normalized(arrivalWindowEnd)
+                : nil,
+            completionDeadline: schedulingMode == .deadline
+                ? QuarterHourDatePicker.normalized(completionDeadline)
+                : nil,
+            assignmentPriority: assignmentPriority,
             completedDate: status == .completed ? Date() : nil,
             status: status,
             workNotes: workNotes,
@@ -402,10 +453,61 @@ struct JobNewView: View {
         primaryTechnicianID = nil
         secondaryTechnicianID = nil
         scheduledDate = Date()
+        schedulingMode = .fixedTime
+        assignmentPriority = .normal
         status = .toBeScheduled
         workNotes = ""
         isRecurring = false
         recurrenceFrequency = nil
+    }
+
+    @ViewBuilder
+    private var schedulingControls: some View {
+        switch schedulingMode {
+        case .fixedTime:
+            QuarterHourDatePicker(
+                selection: $scheduledDate,
+                dateLabel: "Service Date",
+                timeLabel: "Fixed Start"
+            )
+
+        case .arrivalWindow:
+            QuarterHourDatePicker(
+                selection: $scheduledDate,
+                dateLabel: "Service Date",
+                timeLabel: "Earliest Arrival"
+            )
+            QuarterHourDatePicker(
+                selection: $arrivalWindowEnd,
+                dateLabel: "Window End Date",
+                timeLabel: "Latest Arrival"
+            )
+
+        case .flexibleDay:
+            DatePicker(
+                "Service Date",
+                selection: $scheduledDate,
+                displayedComponents: .date
+            )
+
+        case .deadline:
+            QuarterHourDatePicker(
+                selection: $completionDeadline,
+                dateLabel: "Deadline Date",
+                timeLabel: "Complete By"
+            )
+        }
+    }
+
+    private var hasValidScheduling: Bool {
+        switch schedulingMode {
+        case .fixedTime, .flexibleDay:
+            return true
+        case .arrivalWindow:
+            return arrivalWindowEnd > scheduledDate
+        case .deadline:
+            return true
+        }
     }
     @ViewBuilder
     private func employeeCapacitySummary(

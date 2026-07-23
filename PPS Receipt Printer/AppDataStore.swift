@@ -368,7 +368,7 @@ final class AppDataStore: ObservableObject {
 
         for job in jobs where isAssignmentEligible(job) {
             if let existingAssignment = assignment(forJobID: job.id) {
-                synchronizeRecurringSchedule(
+                synchronizeAssignmentPlanning(
                     from: job,
                     to: existingAssignment
                 )
@@ -401,33 +401,44 @@ final class AppDataStore: ObservableObject {
     /// Assignment already exists in persisted data. Keep the unstarted
     /// recurring Assignment aligned so the Dispatch Queue and My Day use the
     /// corrected business-day date instead of restoring the old weekend date.
-    private func synchronizeRecurringSchedule(
+    private func synchronizeAssignmentPlanning(
         from job: JobRecord,
         to assignment: Assignment
     ) {
-        guard job.isRecurring,
-              assignment.creationSource == .recurringWork,
-              assignment.scheduling.mode == .fixedTime,
-              assignment.status == .scheduled || assignment.status == .dispatched,
-              assignment.scheduling.operationalDate != job.scheduledDate else {
+        guard assignment.status == .scheduled || assignment.status == .dispatched else {
             return
         }
 
-        var scheduling = assignment.scheduling
-        scheduling.serviceDate = job.scheduledDate
-        scheduling.fixedStartDate = job.scheduledDate
+        let scheduling = assignmentScheduling(for: job)
 
-        do {
-            _ = try assignmentEngine.reschedule(
-                assignmentID: assignment.id,
-                scheduling: scheduling,
-                note: "Recurring occurrence moved to the nearest PFSS business day."
-            )
-        } catch {
-            print(
-                "Failed to align recurring assignment \(assignment.assignmentNumber): " +
-                error.localizedDescription
-            )
+        if assignment.scheduling != scheduling {
+            do {
+                _ = try assignmentEngine.reschedule(
+                    assignmentID: assignment.id,
+                    scheduling: scheduling,
+                    note: "Assignment planning synchronized from Job \(job.jobNumber)."
+                )
+            } catch {
+                print(
+                    "Failed to align assignment \(assignment.assignmentNumber): " +
+                    error.localizedDescription
+                )
+            }
+        }
+
+        if assignment.priority != job.assignmentPriority {
+            do {
+                _ = try assignmentEngine.updatePriority(
+                    assignmentID: assignment.id,
+                    priority: job.assignmentPriority,
+                    note: "Priority synchronized from Job \(job.jobNumber)."
+                )
+            } catch {
+                print(
+                    "Failed to align priority for \(assignment.assignmentNumber): " +
+                    error.localizedDescription
+                )
+            }
         }
     }
 
@@ -508,6 +519,11 @@ final class AppDataStore: ObservableObject {
                 job.scheduledDate = operationalDate
             }
 
+            job.assignmentSchedulingMode = assignment.scheduling.mode
+            job.arrivalWindowEnd = assignment.scheduling.arrivalWindowEnd
+            job.completionDeadline = assignment.scheduling.completionDeadline
+            job.assignmentPriority = assignment.priority
+
             switch assignment.status {
             case .scheduled:
                 job.status = assignment.primaryTechnicianID == nil
@@ -568,24 +584,63 @@ final class AppDataStore: ObservableObject {
     }
 
     private func assignmentScheduling(for job: JobRecord) -> AssignmentScheduling {
-        AssignmentScheduling(
-            mode: .fixedTime,
-            serviceDate: job.scheduledDate,
-            fixedStartDate: job.scheduledDate,
-            estimatedDurationMinutes: max(
-                SchedulingEngine.scheduledMinutes(for: job),
-                15
-            ),
+        let duration = max(
+            SchedulingEngine.scheduledMinutes(for: job),
+            15
+        )
+
+        let serviceDate: Date?
+        let fixedStart: Date?
+        let windowStart: Date?
+        let windowEnd: Date?
+        let deadline: Date?
+
+        switch job.assignmentSchedulingMode {
+        case .fixedTime:
+            serviceDate = job.scheduledDate
+            fixedStart = job.scheduledDate
+            windowStart = nil
+            windowEnd = nil
+            deadline = nil
+        case .arrivalWindow:
+            serviceDate = job.scheduledDate
+            fixedStart = nil
+            windowStart = job.scheduledDate
+            windowEnd = job.arrivalWindowEnd ?? Calendar.current.date(
+                byAdding: .hour,
+                value: 2,
+                to: job.scheduledDate
+            )
+            deadline = nil
+        case .flexibleDay:
+            serviceDate = job.scheduledDate
+            fixedStart = nil
+            windowStart = nil
+            windowEnd = nil
+            deadline = nil
+        case .deadline:
+            serviceDate = nil
+            fixedStart = nil
+            windowStart = nil
+            windowEnd = nil
+            deadline = job.completionDeadline ?? job.scheduledDate
+        }
+
+        return AssignmentScheduling(
+            mode: job.assignmentSchedulingMode,
+            serviceDate: serviceDate,
+            fixedStartDate: fixedStart,
+            arrivalWindowStart: windowStart,
+            arrivalWindowEnd: windowEnd,
+            completionDeadline: deadline,
+            estimatedDurationMinutes: duration,
             isCustomerConfirmed: true,
             schedulingNotes: "Imported from Job \(job.jobNumber)."
         )
     }
 
     private func assignmentPriority(for job: JobRecord) -> AssignmentPriority {
-        let today = Calendar.current.startOfDay(for: Date())
-        if job.scheduledDate < today { return .emergency }
-        if Calendar.current.isDateInToday(job.scheduledDate) { return .high }
-        return .normal
+        job.assignmentPriority
     }
 
     private func removeUnstartedFutureOccurrences(after job: JobRecord) {
@@ -636,6 +691,14 @@ final class AppDataStore: ObservableObject {
             }
             jobs[existingIndex].recurrenceFrequency = frequency
             jobs[existingIndex].scheduledDate = nextDate
+            jobs[existingIndex].arrivalWindowEnd = shiftedPlanningDate(
+                job.arrivalWindowEnd,
+                toDayContaining: nextDate
+            )
+            jobs[existingIndex].completionDeadline = shiftedPlanningDate(
+                job.completionDeadline,
+                toDayContaining: nextDate
+            )
             return
         }
 
@@ -645,6 +708,14 @@ final class AppDataStore: ObservableObject {
         nextJob.primaryTechnicianID = nil
         nextJob.secondaryTechnicianID = nil
         nextJob.scheduledDate = nextDate
+        nextJob.arrivalWindowEnd = shiftedPlanningDate(
+            job.arrivalWindowEnd,
+            toDayContaining: nextDate
+        )
+        nextJob.completionDeadline = shiftedPlanningDate(
+            job.completionDeadline,
+            toDayContaining: nextDate
+        )
         nextJob.setupStartDate = nil
         nextJob.completedDate = nil
         nextJob.status = .toBeScheduled
@@ -655,6 +726,24 @@ final class AppDataStore: ObservableObject {
         nextJob.recurrenceSeriesID = seriesID
         nextJob.recurrenceSequence = nextSequence
         jobs.append(nextJob)
+    }
+
+    private func shiftedPlanningDate(
+        _ source: Date?,
+        toDayContaining target: Date
+    ) -> Date? {
+        guard let source else { return nil }
+        let calendar = Calendar.current
+        let time = calendar.dateComponents(
+            [.hour, .minute, .second],
+            from: source
+        )
+        return calendar.date(
+            bySettingHour: time.hour ?? 0,
+            minute: time.minute ?? 0,
+            second: time.second ?? 0,
+            of: target
+        )
     }
 
     private func prepareRecurrenceIdentity(for job: inout JobRecord) {

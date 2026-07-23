@@ -169,6 +169,11 @@ struct EditableLineItemView: View {
             }
         }
 
+        // Close the complete add-item flow when the caller supplied a finish
+        // handler (for example New Job -> Choose Service -> New Line Item).
+        // This returns the user to the work order instead of exposing the
+        // catalog picker again after every saved item.
+        onFinished?()
         dismiss()
     }
 }

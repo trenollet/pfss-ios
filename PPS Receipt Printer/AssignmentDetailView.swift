@@ -19,6 +19,8 @@ struct AssignmentDetailView: View {
     @State private var showingScheduleEditor = false
     @State private var showingCancellation = false
     @State private var cancellationReason = ""
+    @State private var showingUnassign = false
+    @State private var unassignReason = ""
     @State private var errorMessage = ""
     @State private var showingError = false
 
@@ -60,6 +62,12 @@ struct AssignmentDetailView: View {
                         Menu {
                             Button("Edit Crew", systemImage: "person.2.fill") {
                                 showingCrewEditor = true
+                            }
+
+                            if canUnassign(assignment) {
+                                Button("Unassign and Return to Queue", systemImage: "person.crop.circle.badge.minus") {
+                                    showingUnassign = true
+                                }
                             }
 
                             if canCancel(assignment) {
@@ -114,6 +122,17 @@ struct AssignmentDetailView: View {
             }
         } message: {
             Text("A reason is required and will be added to assignment history.")
+        }
+        .alert("Return to Dispatch Queue", isPresented: $showingUnassign) {
+            TextField("Reason", text: $unassignReason)
+            Button("Unassign", role: .destructive) {
+                unassignAssignment()
+            }
+            Button("Keep Assignment", role: .cancel) {
+                unassignReason = ""
+            }
+        } message: {
+            Text("The primary and supporting technicians will be removed and the work will return to the Dispatch Queue. A reason is required.")
         }
     }
 
@@ -378,6 +397,11 @@ struct AssignmentDetailView: View {
         assignment.status.isTerminal == false && assignment.status != .invoiceReady
     }
 
+    private func canUnassign(_ assignment: Assignment) -> Bool {
+        assignment.primaryTechnicianID != nil &&
+        (assignment.status == .scheduled || assignment.status == .dispatched)
+    }
+
     private func nextAction(for assignment: Assignment) -> AssignmentPrimaryAction? {
         switch assignment.status {
         case .scheduled: return .dispatch
@@ -437,6 +461,17 @@ struct AssignmentDetailView: View {
                 reason: cancellationReason
             )
             cancellationReason = ""
+        }
+    }
+
+    private func unassignAssignment() {
+        perform {
+            _ = try engine.unassignCrew(
+                assignmentID: assignmentID,
+                actorEmployeeID: actorEmployeeID,
+                reason: unassignReason
+            )
+            unassignReason = ""
         }
     }
 

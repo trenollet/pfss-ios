@@ -16,21 +16,47 @@ struct DispatchTechnicianOption: Identifiable, Hashable {
     let proposedStart: Date
     let isRecommended: Bool
     let hasConflictFreeOpening: Bool
+    let rank: Int?
+    let eligibility: OperationalRecommendationEligibility
+    let evidence: [OperationalRecommendationEvidence]
+
+    init(
+        id: UUID,
+        name: String,
+        confidence: Double,
+        proposedStart: Date,
+        isRecommended: Bool,
+        hasConflictFreeOpening: Bool,
+        rank: Int? = nil,
+        eligibility: OperationalRecommendationEligibility = .eligible,
+        evidence: [OperationalRecommendationEvidence] = []
+    ) {
+        self.id = id
+        self.name = name
+        self.confidence = min(max(confidence, 0), 1)
+        self.proposedStart = proposedStart
+        self.isRecommended = isRecommended
+        self.hasConflictFreeOpening = hasConflictFreeOpening
+        self.rank = rank
+        self.eligibility = eligibility
+        self.evidence = evidence
+    }
 }
 
 struct DispatchQueueCard: View {
     let item: DispatchQueueItem
     let technicianOptions: [DispatchTechnicianOption]
 
-    var onAssign: ((UUID) -> Void)? = nil
+    var onAssign: ((UUID, String) -> Void)? = nil
     var onViewDetails: (() -> Void)? = nil
 
     @State private var selectedTechnicianID: UUID?
+    @State private var overrideReason = ""
 
     init(
         item: DispatchQueueItem,
         technicianOptions: [DispatchTechnicianOption] = [],
-        onAssign: ((UUID) -> Void)? = nil,
+        onAssign: ((UUID, String) -> Void)? = nil,
         onViewDetails: (() -> Void)? = nil
     ) {
         self.item = item
@@ -66,6 +92,9 @@ struct DispatchQueueCard: View {
             self.selectedTechnicianID = recommendedOption?.id
                 ?? technicianOptions.first?.id
         }
+        .onChange(of: selectedTechnicianID) {
+            overrideReason = ""
+        }
     }
 
     private var recommendedOption: DispatchTechnicianOption? {
@@ -77,11 +106,24 @@ struct DispatchQueueCard: View {
         return technicianOptions.first { $0.id == selectedTechnicianID }
     }
 
+    private var isOverrideSelection: Bool {
+        guard let selectedTechnicianID else {
+            return false
+        }
+        guard let recommendedID = recommendedOption?.id else {
+            return true
+        }
+        return selectedTechnicianID != recommendedID
+    }
+
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.customerName)
                     .font(.headline)
+                    .foregroundStyle(
+                        item.priority == .emergency ? Color.red : Color.primary
+                    )
 
                 Text(item.address)
                     .font(.subheadline)
@@ -91,13 +133,18 @@ struct DispatchQueueCard: View {
 
             Spacer(minLength: 12)
 
-            Text(priorityTitle)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(priorityColor)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(priorityColor.opacity(0.12))
-                .clipShape(Capsule())
+            Label(
+                priorityTitle,
+                systemImage: item.priority == .emergency
+                    ? "flag.fill"
+                    : "flag"
+            )
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(priorityColor)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(priorityColor.opacity(0.12))
+            .clipShape(Capsule())
         }
     }
 
@@ -134,6 +181,15 @@ struct DispatchQueueCard: View {
                         Text("\(confidenceText(recommendedOption.confidence)) confidence")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+
+                        if let reason = recommendedOption.evidence.first(where: {
+                            $0.impact == .supporting
+                        }) {
+                            Text(reason.detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
             } else {
@@ -153,20 +209,37 @@ struct DispatchQueueCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if let selectedOption {
-                HStack(spacing: 6) {
-                    Image(
-                        systemName: selectedOption.hasConflictFreeOpening
-                            ? "checkmark.circle.fill"
-                            : "exclamationmark.triangle.fill"
-                    )
-                    Text(selectionDetail(selectedOption))
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: selectionSymbol(selectedOption))
+                        Text(selectionDetail(selectedOption))
+                    }
+                    .foregroundStyle(selectionColor(selectedOption))
+
+                    if let evidence = selectedOption.evidence.first(where: {
+                        $0.impact == .blocking || $0.impact == .warning
+                    }) {
+                        Text(evidence.detail)
+                            .font(.caption)
+                            .foregroundStyle(
+                                evidence.impact == .blocking
+                                    ? Color.red
+                                    : Color.orange
+                            )
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if isOverrideSelection {
+                        TextField(
+                            "Reason for choosing another technician",
+                            text: $overrideReason,
+                            axis: .vertical
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(2...4)
+                    }
                 }
                 .font(.caption)
-                .foregroundStyle(
-                    selectedOption.hasConflictFreeOpening
-                        ? Color.secondary
-                        : Color.orange
-                )
             }
         }
     }
@@ -184,13 +257,16 @@ struct DispatchQueueCard: View {
             if let onAssign {
                 Button {
                     guard let selectedTechnicianID else { return }
-                    onAssign(selectedTechnicianID)
+                    onAssign(selectedTechnicianID, overrideReason)
                 } label: {
                     Label("Assign", systemImage: "person.badge.plus")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(selectedTechnicianID == nil)
+                .disabled(
+                    selectedTechnicianID == nil ||
+                    (isOverrideSelection && normalizedOverrideReason.isEmpty)
+                )
             }
         }
     }
@@ -233,10 +309,39 @@ struct DispatchQueueCard: View {
     }
 
     private func selectionDetail(_ option: DispatchTechnicianOption) -> String {
-        if option.hasConflictFreeOpening {
-            return "Proposed start: \(option.proposedStart.formatted(date: .abbreviated, time: .shortened))"
+        let rankText = option.rank.map { "Rank #\($0) · " } ?? ""
+        let confidence = confidenceText(option.confidence)
+
+        if option.hasConflictFreeOpening && option.eligibility != .ineligible {
+            return "\(rankText)\(confidence) · Proposed \(option.proposedStart.formatted(date: .abbreviated, time: .shortened))"
         }
-        return "Manual override selected; review this technician's schedule."
+        return "\(rankText)\(confidence) · Manual override; review warnings."
+    }
+
+    private var normalizedOverrideReason: String {
+        overrideReason.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func selectionSymbol(_ option: DispatchTechnicianOption) -> String {
+        switch option.eligibility {
+        case .eligible:
+            return "checkmark.circle.fill"
+        case .eligibleWithWarnings:
+            return "exclamationmark.triangle.fill"
+        case .ineligible:
+            return "xmark.octagon.fill"
+        }
+    }
+
+    private func selectionColor(_ option: DispatchTechnicianOption) -> Color {
+        switch option.eligibility {
+        case .eligible:
+            return .secondary
+        case .eligibleWithWarnings:
+            return .orange
+        case .ineligible:
+            return .red
+        }
     }
 
     private func detailItem(
@@ -289,7 +394,7 @@ struct DispatchQueueCard: View {
                 hasConflictFreeOpening: true
             )
         ],
-        onAssign: { _ in }
+        onAssign: { _, _ in }
     )
     .padding()
 }

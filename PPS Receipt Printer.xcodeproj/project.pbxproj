@@ -48,6 +48,7 @@
 			membershipExceptions = (
 				DailyPlannerEngineTests.swift,
 				DispatchEngineTests.swift,
+				OperationalRecommendationEngineTests.swift,
 				RouteEngineTests.swift,
 				WorkforceIntelligenceEngineTests.swift,
 			);
@@ -58,6 +59,7 @@
 			membershipExceptions = (
 				DailyPlannerEngineTests.swift,
 				DispatchEngineTests.swift,
+				OperationalRecommendationEngineTests.swift,
 				RouteEngineTests.swift,
 				WorkforceIntelligenceEngineTests.swift,
 			);

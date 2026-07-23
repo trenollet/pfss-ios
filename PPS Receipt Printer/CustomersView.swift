@@ -33,7 +33,6 @@ struct CustomersView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(customer.businessName.isEmpty ? customer.contactName : customer.businessName).font(.headline)
                             Text("Contact: \(customer.contactName)").font(.caption)
-                            Text("Customer #: \(customer.customerNumber)").font(.caption)
                             Text("Status: \(customer.estimateStatus.rawValue)").font(.caption)
                             if customer.lifecycleStatus == .archived {
                                 Text("Archived").foregroundStyle(.red).font(.caption)

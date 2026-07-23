@@ -3,7 +3,8 @@
 //  PFSS
 //
 //  Live Operations workspace powered by AppDataStore,
-//  SchedulingEngine, and DispatchDecisionEngine.
+//  SchedulingEngine, Workforce Intelligence, and the Phase 14.6
+//  Operational Recommendation Engine.
 //
 
 import SwiftUI
@@ -199,21 +200,25 @@ struct OperationsView: View {
 
     private var recommendationItems: [RecommendationItem] {
         dispatchJobs.compactMap { job in
-            guard let decision = bestDecision(for: job) else {
+            guard let result = recommendation(for: job),
+                  let candidate = result.bestCandidate else {
                 return RecommendationItem(
                     title: "Dispatch Review Needed",
-                    detail: "\(customerDisplayName(for: job)) has no conflict-free technician recommendation yet.",
+                    detail: "\(customerDisplayName(for: job)) has no eligible technician recommendation yet.",
                     priority: .high
                 )
             }
 
             return RecommendationItem(
-                title: "Assign \(decision.employee.displayName)",
-                detail: "\(customerDisplayName(for: job)) can be scheduled \(formattedOpening(decision.opening.start)) with \(decision.confidencePercentage)% confidence.",
+                title: "Assign \(candidate.employeeName)",
+                detail: recommendationDetail(
+                    candidate,
+                    customerName: customerDisplayName(for: job)
+                ),
                 priority: recommendationPriority(
                     for: job,
                     confidencePercentage:
-                        decision.confidencePercentage
+                        candidate.scorePercentage
                 )
             )
         }
@@ -485,10 +490,11 @@ struct OperationsView: View {
                         technicianOptions: technicianOptions(
                             for: item.jobID
                         ),
-                        onAssign: { technicianID in
+                        onAssign: { technicianID, overrideReason in
                             assignTechnician(
                                 technicianID,
-                                to: item.jobID
+                                to: item.jobID,
+                                overrideReason: overrideReason
                             )
                         },
                         onViewDetails: {
@@ -592,7 +598,7 @@ struct OperationsView: View {
                 ) { job, recommendation in
                     RecommendationCard(
                         item: recommendation,
-                        action: bestDecision(for: job) == nil
+                        action: bestRecommendationCandidate(for: job) == nil
                             ? nil
                             : {
                                 assignRecommendedTechnician(
@@ -635,13 +641,13 @@ struct OperationsView: View {
             }
 
         let confidence = dispatchJobs.compactMap {
-            bestDecision(for: $0)
+            bestRecommendationCandidate(for: $0)
         }
         .first {
-            $0.employee.id == employee.id
+            $0.employeeID == employee.id
         }
         .map {
-            Double($0.confidencePercentage) / 100
+            Double($0.scorePercentage) / 100
         }
 
         return TechnicianStatusModel(
@@ -664,7 +670,7 @@ struct OperationsView: View {
     private func makeDispatchQueueItem(
         _ job: JobRecord
     ) -> DispatchQueueItem {
-        let decision = bestDecision(for: job)
+        let candidate = bestRecommendationCandidate(for: job)
 
         return DispatchQueueItem(
             id: job.id,
@@ -676,39 +682,30 @@ struct OperationsView: View {
             ),
             priority: dispatchPriority(for: job),
             recommendedTechnician:
-                decision?.employee.displayName,
+                candidate?.employeeName,
             confidence: Double(
-                decision?.confidencePercentage ?? 0
+                candidate?.scorePercentage ?? 0
             ) / 100
         )
     }
 
     // MARK: - Dispatch Actions
 
-    private func bestDecision(
+    private func recommendation(
         for job: JobRecord
-    ) -> DispatchDecision? {
-        DispatchDecisionEngine.bestDecision(
+    ) -> OperationalRecommendationResult? {
+        store.operationalRecommendation(
             for: job,
-            employees: activeTechnicians,
-            jobs: activeJobs,
-            policy: .balancedWorkload,
+            policy: dispatchRecommendationPolicy(for: job),
             onOrAfter: max(job.scheduledDate, now),
             calendar: calendar
         )
     }
 
-    private func rankedDecisions(
+    private func bestRecommendationCandidate(
         for job: JobRecord
-    ) -> [DispatchDecision] {
-        DispatchDecisionEngine.rankedDecisions(
-            for: job,
-            employees: activeTechnicians,
-            jobs: activeJobs,
-            policy: .balancedWorkload,
-            onOrAfter: max(job.scheduledDate, now),
-            calendar: calendar
-        )
+    ) -> OperationalRecommendationCandidate? {
+        recommendation(for: job)?.bestCandidate
     }
 
     /// Builds a complete picker list. Conflict-free candidates retain the
@@ -722,36 +719,34 @@ struct OperationsView: View {
             return []
         }
 
-        let decisions = rankedDecisions(for: job)
-        let decisionByEmployeeID = Dictionary(
-            uniqueKeysWithValues: decisions.map {
-                ($0.employee.id, $0)
-            }
-        )
-        let recommendedID = decisions.first?.employee.id
+        guard let recommendation = recommendation(for: job) else {
+            return []
+        }
+        let recommendedID = recommendation.bestCandidate?.employeeID
 
-        return activeTechnicians
-            .map { technician in
-                let decision = decisionByEmployeeID[technician.id]
-
-                return DispatchTechnicianOption(
-                    id: technician.id,
-                    name: technician.displayName,
-                    confidence: Double(
-                        decision?.confidencePercentage ?? 0
-                    ) / 100,
-                    proposedStart: decision?.opening.start
+        return recommendation.candidates
+            .map { candidate in
+                DispatchTechnicianOption(
+                    id: candidate.employeeID,
+                    name: candidate.employeeName,
+                    confidence: Double(candidate.scorePercentage) / 100,
+                    proposedStart: candidate.proposedStartDate
                         ?? job.scheduledDate,
-                    isRecommended: technician.id == recommendedID,
-                    hasConflictFreeOpening: decision != nil
+                    isRecommended: candidate.employeeID == recommendedID,
+                    hasConflictFreeOpening:
+                        candidate.proposedStartDate != nil,
+                    rank: candidate.rank,
+                    eligibility: candidate.eligibility,
+                    evidence: candidate.evidence
                 )
             }
             .sorted { first, second in
                 if first.isRecommended != second.isRecommended {
                     return first.isRecommended
                 }
-                if first.hasConflictFreeOpening != second.hasConflictFreeOpening {
-                    return first.hasConflictFreeOpening
+                if first.rank != second.rank {
+                    return (first.rank ?? Int.max) <
+                        (second.rank ?? Int.max)
                 }
                 if first.confidence != second.confidence {
                     return first.confidence > second.confidence
@@ -770,52 +765,69 @@ struct OperationsView: View {
             let job = activeJobs.first(where: {
                 $0.id == jobID
             }),
-            let decision = bestDecision(for: job)
+            let recommendation = recommendation(for: job),
+            let candidate = recommendation.bestCandidate
         else {
             return
         }
 
         do {
-            _ = try store.assignTechnician(
-                decision.employee.id,
+            _ = try store.assignTechnicianUsingRecommendation(
+                candidate.employeeID,
                 toJobID: jobID,
-                scheduledStart: decision.opening.start,
-                isHumanOverride: false
+                recommendation: recommendation,
+                overrideReason: ""
             )
         } catch {
             presentOperationError(error)
         }
     }
 
-    /// Assigns the technician selected by the dispatcher. When that technician
-    /// has a conflict-free recommendation, PFSS adopts the proposed opening.
-    /// A manual override keeps the job's existing scheduled date so the human
-    /// decision is never silently moved to another time.
+    /// Assigns the technician selected by the dispatcher. PFSS uses that
+    /// candidate's proposed opening when one exists and records a reason when
+    /// the human chooses someone other than the top recommendation.
     private func assignTechnician(
         _ technicianID: UUID,
-        to jobID: UUID?
+        to jobID: UUID?,
+        overrideReason: String
     ) {
         guard let jobID,
               let job = activeJobs.first(where: { $0.id == jobID }),
-              activeTechnicians.contains(where: { $0.id == technicianID }) else {
+              activeTechnicians.contains(where: { $0.id == technicianID }),
+              let recommendation = recommendation(for: job) else {
             return
         }
 
-        let selectedDecision = rankedDecisions(for: job).first {
-            $0.employee.id == technicianID
-        }
-        let recommendedTechnicianID = bestDecision(for: job)?.employee.id
-
         do {
-            _ = try store.assignTechnician(
+            _ = try store.assignTechnicianUsingRecommendation(
                 technicianID,
                 toJobID: jobID,
-                scheduledStart: selectedDecision?.opening.start,
-                isHumanOverride: technicianID != recommendedTechnicianID
+                recommendation: recommendation,
+                overrideReason: overrideReason
             )
         } catch {
             presentOperationError(error)
         }
+    }
+
+    private func dispatchRecommendationPolicy(
+        for job: JobRecord
+    ) -> OperationalRecommendationPolicy {
+        dispatchPriority(for: job) == .emergency
+            ? .emergency
+            : .balanced
+    }
+
+    private func recommendationDetail(
+        _ candidate: OperationalRecommendationCandidate,
+        customerName: String
+    ) -> String {
+        let opening = candidate.proposedStartDate.map(formattedOpening)
+            ?? "after schedule review"
+        let warningText = candidate.warnings.isEmpty
+            ? ""
+            : " Review \(candidate.warnings.count) warning\(candidate.warnings.count == 1 ? "" : "s")."
+        return "\(customerName) can be assigned \(opening) with \(candidate.scorePercentage)% confidence.\(warningText)"
     }
 
     private func presentOperationError(_ error: Error) {
@@ -993,30 +1005,12 @@ struct OperationsView: View {
     private func dispatchPriority(
         for job: JobRecord
     ) -> DispatchPriority {
-        if job.scheduledDate < startOfToday {
-            return .emergency
+        switch job.assignmentPriority {
+        case .low: return .low
+        case .normal: return .normal
+        case .high: return .high
+        case .emergency: return .emergency
         }
-
-        if calendar.isDate(
-            job.scheduledDate,
-            inSameDayAs: now
-        ) {
-            return .high
-        }
-
-        guard let threeDaysFromNow = calendar.date(
-            byAdding: .day,
-            value: 3,
-            to: startOfToday
-        ) else {
-            return .normal
-        }
-
-        if job.scheduledDate < threeDaysFromNow {
-            return .normal
-        }
-
-        return .low
     }
 
     private func priorityRank(

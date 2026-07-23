@@ -15,6 +15,13 @@ struct CustomerNewView: View {
     @State private var isCreatingInitialSite = false
     @FocusState private var isInputFocused: Bool
 
+    private var assignableEmployees: [EmployeeRecord] {
+        store.activeEmployees.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
+                == .orderedAscending
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -56,8 +63,13 @@ struct CustomerNewView: View {
                                     Text($0.rawValue).tag($0)
                                 }
                             }
-                            TextField("Assigned Employee", text: $assignedEmployee)
-                                .focused($isInputFocused)
+                            Picker("Assigned Employee", selection: $assignedEmployee) {
+                                Text("Unassigned").tag("")
+                                ForEach(assignableEmployees) { employee in
+                                    Text(employee.displayName)
+                                        .tag(employee.displayName)
+                                }
+                            }
                             DatePicker(
                                 "Follow-Up Date",
                                 selection: $followUpDate,
