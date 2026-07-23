@@ -130,6 +130,37 @@ struct DispatchBoardView: View {
                 }
                 .buttonStyle(.plain)
 
+                NavigationLink {
+                    OperationsLiveMapView(date: selectedDate)
+                        .environmentObject(store)
+                } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: "map.fill")
+                            .font(.title2)
+                            .foregroundStyle(.green)
+                            .frame(width: 42, height: 42)
+                            .background(Color.green.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Open Live Operations Map")
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                            Text("See service locations, route order, technician reporting state, destinations, and ETAs on one synchronized map.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.leading)
+                        }
+
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding()
+                    .dispatchBoardSurface(borderColor: .green)
+                }
+                .buttonStyle(.plain)
+
                 Label(
                     "Choose a tile to work with that part of the day. All changes remain synchronized through PFSS Operations APIs.",
                     systemImage: "rectangle.grid.2x2.fill"
