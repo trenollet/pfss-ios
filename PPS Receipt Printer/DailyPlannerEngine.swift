@@ -12,8 +12,8 @@ import Foundation
 ///
 /// Planning order is intentionally stable:
 /// 1. Preserve fixed commitments.
-/// 2. Place lunch around fixed work.
-/// 3. Place arrival-window and deadline work by earliest constraint.
+/// 2. Place arrival-window and deadline work by earliest constraint.
+/// 3. Place lunch in the nearest available 30-minute opening from 11 AM–2 PM.
 /// 4. Fill remaining capacity with flexible-day work.
 ///
 /// Route geography and traffic are intentionally deferred to Step 4.
@@ -117,13 +117,6 @@ struct DailyPlannerEngine {
             )
         }
 
-        placeLunch(
-            for: technician,
-            workdayStart: workdayStart,
-            workdayEnd: workdayEnd,
-            state: &state
-        )
-
         let constrainedAssignments = validAssignments
             .filter {
                 $0.scheduling.mode == .arrivalWindow ||
@@ -141,6 +134,17 @@ struct DailyPlannerEngine {
                 state: &state
             )
         }
+
+        // Lunch follows fixed and time-constrained work so it adapts to the
+        // actual schedule instead of incorrectly blocking a valid arrival
+        // window. Flexible-day work is placed afterward and therefore cannot
+        // consume the protected lunch opening.
+        placeLunch(
+            for: technician,
+            workdayStart: workdayStart,
+            workdayEnd: workdayEnd,
+            state: &state
+        )
 
         let flexibleAssignments = validAssignments
             .filter { $0.scheduling.mode == .flexibleDay }
@@ -332,7 +336,7 @@ struct DailyPlannerEngine {
                 occupiedStart: start,
                 occupiedEnd: end,
                 isFixedCommitment: false,
-                explanation: "Placed near the preferred lunch time without moving fixed work."
+                explanation: "Placed in the nearest available lunch opening after honoring fixed and time-constrained work."
             )
             state.items.append(item)
             state.busy.append(interval)
@@ -417,6 +421,7 @@ struct DailyPlannerEngine {
             workdayStart: workdayStart,
             workdayEnd: workdayEnd,
             explanation: explanation,
+            protectDailyReserve: false,
             state: state
         ) else {
             markUnplaced(
@@ -455,6 +460,7 @@ struct DailyPlannerEngine {
             workdayStart: workdayStart,
             workdayEnd: workdayEnd,
             explanation: "Filled the earliest open capacity on the flexible service day.",
+            protectDailyReserve: true,
             state: state
         ) else {
             markUnplaced(
@@ -486,6 +492,7 @@ struct DailyPlannerEngine {
         workdayStart: Date,
         workdayEnd: Date,
         explanation: String,
+        protectDailyReserve: Bool,
         state: PlanningState
     ) -> DailyPlanItem? {
         let preBuffer = assignment.scheduling.preServiceBufferMinutes
@@ -511,15 +518,17 @@ struct DailyPlannerEngine {
                 explanation: explanation
             )
 
+            let preservesReserve = !protectDailyReserve || fitsCapacityBudget(
+                adding: item,
+                workdayStart: workdayStart,
+                workdayEnd: workdayEnd,
+                state: state
+            )
+
             guard item.occupiedStart >= workdayStart,
                   item.occupiedEnd <= workdayEnd,
                   firstOverlap(with: item, in: state.busy) == nil,
-                  fitsCapacityBudget(
-                    adding: item,
-                    workdayStart: workdayStart,
-                    workdayEnd: workdayEnd,
-                    state: state
-                  ) else {
+                  preservesReserve else {
                 continue
             }
 
@@ -649,8 +658,11 @@ struct DailyPlannerEngine {
         let occupiedMinutes = state.items.reduce(0) {
             $0 + $1.occupiedMinutes
         }
-        let requiredMinutes = occupiedMinutes +
-            configuration.effectiveDailyReserveMinutes
+        // The daily reserve is planning slack, not booked work. Flexible-day
+        // placement protects it in `earliestAvailableItem`, but customer time
+        // commitments are allowed to consume it. Only actual occupied time can
+        // make a proposed day over capacity.
+        let requiredMinutes = occupiedMinutes
 
         guard requiredMinutes > workdayMinutes else { return }
 

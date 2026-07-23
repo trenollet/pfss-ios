@@ -99,6 +99,37 @@ struct DispatchBoardView: View {
                     .buttonStyle(.plain)
                 }
 
+                NavigationLink {
+                    OperationsTimelineView(date: selectedDate)
+                        .environmentObject(store)
+                } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: "calendar.day.timeline.leading")
+                            .font(.title2)
+                            .foregroundStyle(.indigo)
+                            .frame(width: 42, height: 42)
+                            .background(Color.indigo.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Open Operations Timeline")
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                            Text("Review technician schedules, constraints, travel, gaps, actual progress, and unused capacity chronologically.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.leading)
+                        }
+
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding()
+                    .dispatchBoardSurface(borderColor: .indigo)
+                }
+                .buttonStyle(.plain)
+
                 Label(
                     "Choose a tile to work with that part of the day. All changes remain synchronized through PFSS Operations APIs.",
                     systemImage: "rectangle.grid.2x2.fill"

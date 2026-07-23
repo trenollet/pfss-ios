@@ -19,14 +19,18 @@ struct QuarterHourDatePicker: View {
                 displayedComponents: .date
             )
 
-            LabeledContent(timeLabel) {
-                HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(timeLabel)
+
+                HStack(spacing: 12) {
                     Picker("Hour", selection: hourBinding) {
                         ForEach(0..<24, id: \.self) { hour in
                             Text(hourLabel(hour)).tag(hour)
                         }
                     }
                     .labelsHidden()
+                    .accessibilityLabel(timeLabel + " hour")
+                    .frame(minWidth: 105, alignment: .leading)
 
                     Picker("Minute", selection: minuteBinding) {
                         ForEach(minuteChoices, id: \.self) { minute in
@@ -34,6 +38,10 @@ struct QuarterHourDatePicker: View {
                         }
                     }
                     .labelsHidden()
+                    .accessibilityLabel(timeLabel + " minute")
+                    .frame(minWidth: 90, alignment: .leading)
+
+                    Spacer(minLength: 0)
                 }
                 .pickerStyle(.menu)
             }

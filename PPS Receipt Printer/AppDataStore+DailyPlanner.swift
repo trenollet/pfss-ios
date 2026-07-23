@@ -10,14 +10,14 @@ import Foundation
 @MainActor
 extension AppDataStore {
     /// Builds a non-mutating proposal for one technician and day using the
-    /// current Assignment constraints, the Job's effective scheduled duration,
-    /// and Business Operations buffers.
+    /// current Assignment constraints and Business Operations buffers.
     ///
-    /// My Day and the Scheduling Engine already treat a positive
-    /// `scheduledDurationOverrideMinutes` value as authoritative. Assignment
-    /// records can predate a later Job edit, so the planning snapshot refreshes
-    /// only `estimatedDurationMinutes` from that shared calculation. The stored
-    /// Assignment is never changed by generating a preview.
+    /// Assignment synchronization already copies the Job's effective duration
+    /// into the operational record whenever a Job is created or edited. The
+    /// planner must therefore consume the Assignment unchanged. Re-reading the
+    /// Job here created two competing duration sources: the Timeline displayed
+    /// the Assignment duration while the planner silently evaluated a different
+    /// Job duration, producing false arrival-window conflicts.
     func dailyPlan(
         for technician: EmployeeRecord,
         on date: Date,
@@ -33,7 +33,7 @@ extension AppDataStore {
         return planner.plan(
             for: technician,
             on: date,
-            assignments: dailyPlannerAssignmentSnapshot()
+            assignments: assignmentEngine.assignments
         )
     }
 
@@ -58,34 +58,4 @@ extension AppDataStore {
             }
     }
 
-    /// Returns temporary Assignment copies with durations resolved from the
-    /// related Job. All other Assignment-owned operational constraints remain
-    /// unchanged, including scheduling mode, windows, deadlines, buffers,
-    /// crew, priority, lifecycle state, and history.
-    private func dailyPlannerAssignmentSnapshot() -> [Assignment] {
-        let jobsByID = Dictionary(
-            uniqueKeysWithValues: activeJobs.map { ($0.id, $0) }
-        )
-
-        return assignmentEngine.assignments.map { storedAssignment in
-            guard let job = jobsByID[storedAssignment.jobID] else {
-                return storedAssignment
-            }
-
-            let effectiveScheduledMinutes = max(
-                SchedulingEngine.scheduledMinutes(for: job),
-                15
-            )
-
-            guard storedAssignment.scheduling.estimatedDurationMinutes !=
-                    effectiveScheduledMinutes else {
-                return storedAssignment
-            }
-
-            var planningAssignment = storedAssignment
-            planningAssignment.scheduling.estimatedDurationMinutes =
-                effectiveScheduledMinutes
-            return planningAssignment
-        }
-    }
 }
