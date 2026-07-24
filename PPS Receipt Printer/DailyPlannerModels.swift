@@ -18,6 +18,7 @@ import Foundation
 struct DailyPlannerConfiguration: Codable, Hashable {
     var slotIntervalMinutes: Int
     var transitionBufferMinutes: Int
+    var transitionTravelMinutesOverride: Int?
     var dailyReserveMinutes: Int
     var preferredLunchStartMinutes: Int
     var lunchWindowStartMinutes: Int
@@ -27,6 +28,7 @@ struct DailyPlannerConfiguration: Codable, Hashable {
     init(
         slotIntervalMinutes: Int = 15,
         transitionBufferMinutes: Int = 0,
+        transitionTravelMinutesOverride: Int? = nil,
         dailyReserveMinutes: Int = 0,
         preferredLunchStartMinutes: Int = 12 * 60,
         lunchWindowStartMinutes: Int = 11 * 60,
@@ -35,6 +37,9 @@ struct DailyPlannerConfiguration: Codable, Hashable {
     ) {
         self.slotIntervalMinutes = max(slotIntervalMinutes, 1)
         self.transitionBufferMinutes = max(transitionBufferMinutes, 0)
+        self.transitionTravelMinutesOverride = transitionTravelMinutesOverride.map {
+            max($0, 0)
+        }
         self.dailyReserveMinutes = max(dailyReserveMinutes, 0)
         self.preferredLunchStartMinutes = min(
             max(preferredLunchStartMinutes, 0),
@@ -54,6 +59,7 @@ struct DailyPlannerConfiguration: Codable, Hashable {
     init(
         operations: BusinessOperationsSettings,
         slotIntervalMinutes: Int = 15,
+        transitionTravelMinutesOverride: Int? = nil,
         preferredLunchStartMinutes: Int = 12 * 60,
         lunchWindowStartMinutes: Int = 11 * 60,
         lunchWindowEndMinutes: Int = 14 * 60
@@ -61,6 +67,7 @@ struct DailyPlannerConfiguration: Codable, Hashable {
         self.init(
             slotIntervalMinutes: slotIntervalMinutes,
             transitionBufferMinutes: operations.perStopBufferMinutes,
+            transitionTravelMinutesOverride: transitionTravelMinutesOverride,
             dailyReserveMinutes: operations.dailyRouteBufferMinutes,
             preferredLunchStartMinutes: preferredLunchStartMinutes,
             lunchWindowStartMinutes: lunchWindowStartMinutes,
@@ -70,7 +77,8 @@ struct DailyPlannerConfiguration: Codable, Hashable {
     }
 
     var effectiveTransitionBufferMinutes: Int {
-        includeBusinessBuffers ? transitionBufferMinutes : 0
+        guard includeBusinessBuffers else { return 0 }
+        return transitionTravelMinutesOverride ?? transitionBufferMinutes
     }
 
     var effectiveDailyReserveMinutes: Int {

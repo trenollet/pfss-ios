@@ -46,7 +46,6 @@
 		A224FF1B30112CC200F25972 /* Exceptions for "PPS Receipt Printer" folder in "PPS Receipt Printer" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				DailyPlannerEngineTests.swift,
 				DispatchEngineTests.swift,
 				OperationalRecommendationEngineTests.swift,
 				RouteEngineTests.swift,
@@ -57,7 +56,6 @@
 		A224FF1D30112CD200F25972 /* Exceptions for "PPS Receipt Printer" folder in "PPS Receipt PrinterTests" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				DailyPlannerEngineTests.swift,
 				DispatchEngineTests.swift,
 				OperationalRecommendationEngineTests.swift,
 				RouteEngineTests.swift,

@@ -1,0 +1,300 @@
+//
+//  FieldOperationsEngineTests.swift
+//  PPS Receipt PrinterTests
+//
+//  Phase 15 – Step 1: Field Operations Engine Foundation
+//
+
+import Foundation
+import XCTest
+@testable import PPS_Receipt_Printer
+
+@MainActor
+final class FieldOperationsEngineTests: XCTestCase {
+    private let calendar = Calendar(identifier: .gregorian)
+    private let jobID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+    private let technicianID = UUID(uuidString: "20000000-0000-0000-0000-000000000001")!
+    private let siteID = UUID(uuidString: "30000000-0000-0000-0000-000000000001")!
+
+    func testInitialContextBeginsWithTravelAction() {
+        let job = makeJob()
+
+        let context = FieldOperationsEngine().context(for: job)
+
+        XCTAssertEqual(context.currentState, .notStarted)
+        XCTAssertEqual(context.nextAction, .startTravel)
+        XCTAssertEqual(context.progressPercentage, 0)
+        XCTAssertFalse(context.canCreateInvoice)
+        XCTAssertFalse(context.canCollectPayment)
+        XCTAssertFalse(context.canCompleteJob)
+        XCTAssertFalse(context.isTerminal)
+    }
+
+    func testTimelineIsSortedInsideContext() {
+        var job = makeJob()
+        job.timelineEvents = [
+            JobTimelineEvent(
+                type: .workCompleted,
+                title: "Job Completed",
+                timestamp: date(hour: 11, minute: 30)
+            ),
+            JobTimelineEvent(
+                type: .travelStarted,
+                title: "Travel Started",
+                timestamp: date(hour: 8, minute: 5)
+            ),
+            JobTimelineEvent(
+                type: .arrived,
+                title: "Arrived On Site",
+                timestamp: date(hour: 8, minute: 45)
+            )
+        ]
+
+        let context = FieldOperationsEngine().context(for: job)
+
+        XCTAssertEqual(
+            context.timeline.map(\.title),
+            [
+                "Travel Started",
+                "Arrived On Site",
+                "Job Completed"
+            ]
+        )
+    }
+
+    func testTransitionSequenceCoversTravelWorkInvoiceAndCloseout() throws {
+        let engine = FieldOperationsEngine()
+        var job = makeJob()
+        let start = date(hour: 8)
+
+        job = try XCTUnwrap(
+            engine.transition(
+                job: job,
+                action: .startTravel,
+                employeeID: technicianID,
+                at: start
+            )
+        )
+        XCTAssertEqual(job.workflowState, .traveling)
+        XCTAssertEqual(job.status, .inProgress)
+
+        job = try XCTUnwrap(
+            engine.transition(
+                job: job,
+                action: .markArrived,
+                employeeID: technicianID,
+                at: date(hour: 8, minute: 15)
+            )
+        )
+        XCTAssertEqual(job.workflowState, .arrived)
+
+        job = try XCTUnwrap(
+            engine.transition(
+                job: job,
+                action: .startSetup,
+                employeeID: technicianID,
+                at: date(hour: 8, minute: 20)
+            )
+        )
+        XCTAssertEqual(job.workflowState, .settingUp)
+        XCTAssertEqual(job.setupStartDate, date(hour: 8, minute: 20))
+
+        job = try XCTUnwrap(
+            engine.transition(
+                job: job,
+                action: .startWork,
+                employeeID: technicianID,
+                at: date(hour: 8, minute: 35)
+            )
+        )
+        XCTAssertEqual(job.workflowState, .working)
+
+        job = try XCTUnwrap(
+            engine.transition(
+                job: job,
+                action: .startPackUp,
+                employeeID: technicianID,
+                at: date(hour: 10, minute: 30)
+            )
+        )
+        XCTAssertEqual(job.workflowState, .packingUp)
+
+        job = try XCTUnwrap(
+            engine.transition(
+                job: job,
+                action: .finishWork,
+                employeeID: technicianID,
+                at: date(hour: 10, minute: 45)
+            )
+        )
+        XCTAssertEqual(job.workflowState, .workComplete)
+        XCTAssertEqual(job.status, .inProgress)
+        XCTAssertEqual(job.completedDate, date(hour: 10, minute: 45))
+
+        job = try XCTUnwrap(
+            engine.transition(
+                job: job,
+                action: .createInvoice,
+                employeeID: technicianID,
+                at: date(hour: 11)
+            )
+        )
+        XCTAssertEqual(job.workflowState, .invoiceCreated)
+        XCTAssertEqual(job.status, .inProgress)
+
+        job = try XCTUnwrap(
+            engine.transition(
+                job: job,
+                action: .recordPayment,
+                employeeID: technicianID,
+                at: date(hour: 11, minute: 15)
+            )
+        )
+        XCTAssertEqual(job.workflowState, .paymentReceived)
+        XCTAssertEqual(job.status, .inProgress)
+
+        job = try XCTUnwrap(
+            engine.transition(
+                job: job,
+                action: .completeJob,
+                employeeID: technicianID,
+                at: date(hour: 11, minute: 30)
+            )
+        )
+        XCTAssertEqual(job.workflowState, .completed)
+        XCTAssertEqual(job.status, .completed)
+
+        XCTAssertEqual(
+            job.timelineEvents.map(\.title),
+            [
+                "Travel Started",
+                "Arrived On Site",
+                "Setup Started",
+                "Job Started",
+                "Pack-up Started",
+                "Job Completed",
+                "Invoice Created",
+                "Payment Received",
+                "Job Completed"
+            ]
+        )
+
+        let finalContext = engine.context(
+            for: job,
+            invoice: makeInvoice(status: .paid)
+        )
+        XCTAssertEqual(finalContext.currentState, .paymentReceived)
+        XCTAssertEqual(finalContext.nextAction, .completeJob)
+        XCTAssertTrue(finalContext.canCompleteJob)
+        XCTAssertTrue(finalContext.isTerminal == false)
+    }
+
+    func testInvoiceHandoffAndPaymentFlagsAreExposed() {
+        let engine = FieldOperationsEngine()
+        let workCompleteJob = makeJob(workflowState: .workComplete, status: .inProgress)
+        let sentInvoice = makeInvoice(status: .sent)
+        let paidInvoice = makeInvoice(status: .paid)
+
+        let invoiceContext = engine.context(
+            for: workCompleteJob,
+            invoice: sentInvoice
+        )
+        XCTAssertEqual(invoiceContext.currentState, .invoiceCreated)
+        XCTAssertTrue(invoiceContext.canCollectPayment)
+        XCTAssertFalse(invoiceContext.canCompleteJob)
+
+        let paidContext = engine.context(
+            for: workCompleteJob,
+            invoice: paidInvoice
+        )
+        XCTAssertEqual(paidContext.currentState, .paymentReceived)
+        XCTAssertEqual(paidContext.nextAction, .completeJob)
+        XCTAssertTrue(paidContext.canCompleteJob)
+    }
+
+    func testRecordNoteAppendsTimelineEvent() {
+        let engine = FieldOperationsEngine()
+        let job = engine.recordNote(
+            for: makeJob(),
+            note: "Customer asked to add screens.",
+            employeeID: technicianID,
+            at: date(hour: 9, minute: 5)
+        )
+
+        XCTAssertEqual(job.timelineEvents.count, 1)
+        XCTAssertEqual(job.timelineEvents.first?.type, .note)
+        XCTAssertEqual(job.timelineEvents.first?.note, "Customer asked to add screens.")
+    }
+
+    func testCancelledWorkReturnsDetailsActionAndTerminalState() {
+        var job = makeJob()
+        job.status = .cancelled
+        job.workflowState = .cancelled
+
+        let context = FieldOperationsEngine().context(for: job)
+
+        XCTAssertEqual(context.currentState, .cancelled)
+        XCTAssertEqual(context.nextAction, .viewDetails)
+        XCTAssertTrue(context.isTerminal)
+        XCTAssertEqual(context.progressPercentage, 0)
+    }
+
+    // MARK: - Fixtures
+
+    private func makeJob(
+        workflowState: JobWorkflowState = .notStarted,
+        status: JobStatus = .scheduled
+    ) -> JobRecord {
+        JobRecord(
+            jobNumber: "JOB-1001",
+            customerNumber: "PPS-000123",
+            siteID: siteID,
+            estimateNumber: "EST-2001",
+            serviceType: .windowCleaning,
+            otherService: "",
+            subtotal: 120,
+            discount: 0,
+            total: 120,
+            primaryTechnicianID: technicianID,
+            secondaryTechnicianID: nil,
+            scheduledDate: date(hour: 8),
+            status: status,
+            workflowState: workflowState,
+            workNotes: "",
+            isRecurring: false,
+            createdDate: date(hour: 7)
+        )
+    }
+
+    private func makeInvoice(status: InvoiceStatus) -> InvoiceRecord {
+        InvoiceRecord(
+            invoiceNumber: "INV-2001",
+            customerNumber: "PPS-000123",
+            siteID: siteID,
+            jobNumber: "JOB-1001",
+            subtotal: 120,
+            discount: 0,
+            total: 120,
+            amountPaid: status == .paid ? 120 : 0,
+            balanceDue: status == .paid ? 0 : 120,
+            status: status,
+            issueDate: date(hour: 11),
+            dueDate: date(hour: 12),
+            paidDate: status == .paid ? date(hour: 11, minute: 15) : nil,
+            notes: ""
+        )
+    }
+
+    private func date(hour: Int, minute: Int = 0) -> Date {
+        calendar.date(
+            from: DateComponents(
+                year: 2026,
+                month: 7,
+                day: 24,
+                hour: hour,
+                minute: minute,
+                second: 0
+            )
+        )!
+    }
+}

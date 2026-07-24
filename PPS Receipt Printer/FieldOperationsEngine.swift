@@ -2,12 +2,18 @@
 //  FieldOperationsEngine.swift
 //  PPS Receipt Printer
 //
-//  Brick 7: Field Operations Engine
+//  Phase 15 – Step 1: Field Operations Engine Foundation
 //
 
 import Foundation
 
-enum JobWorkflowAction: String, Identifiable {
+/// The technician-facing lifecycle action set used by the consolidated
+/// field operations engine.
+///
+/// This keeps the app's primary field workflow in one place so My Day,
+/// Assignment Detail, Dispatch, and Timeline can all ask the same engine
+/// what comes next.
+enum JobWorkflowAction: String, Identifiable, CaseIterable {
     case startTravel
     case markArrived
     case startSetup
@@ -23,35 +29,59 @@ enum JobWorkflowAction: String, Identifiable {
 
     var title: String {
         switch self {
-        case .startTravel: return "Start Travel"
-        case .markArrived: return "Arrived"
-        case .startSetup: return "Start Setup"
-        case .startWork: return "Start Job"
-        case .startPackUp: return "Start Pack-up"
-        case .finishWork: return "Complete Job"
-        case .createInvoice: return "Create Invoice"
-        case .recordPayment: return "Record Payment"
-        case .completeJob: return "Close Job"
-        case .viewDetails: return "Details"
+        case .startTravel:
+            return "Start Travel"
+        case .markArrived:
+            return "Arrived"
+        case .startSetup:
+            return "Start Setup"
+        case .startWork:
+            return "Start Job"
+        case .startPackUp:
+            return "Start Pack-up"
+        case .finishWork:
+            return "Complete Job"
+        case .createInvoice:
+            return "Create Invoice"
+        case .recordPayment:
+            return "Record Payment"
+        case .completeJob:
+            return "Close Job"
+        case .viewDetails:
+            return "Details"
         }
     }
 
     var systemImage: String {
         switch self {
-        case .startTravel: return "car.fill"
-        case .markArrived: return "mappin.circle.fill"
-        case .startSetup: return "wrench.and.screwdriver.fill"
-        case .startWork: return "play.fill"
-        case .startPackUp: return "shippingbox.fill"
-        case .finishWork: return "checkmark.circle.fill"
-        case .createInvoice: return "doc.text.fill"
-        case .recordPayment: return "creditcard.fill"
-        case .completeJob: return "flag.checkered"
-        case .viewDetails: return "doc.text.magnifyingglass"
+        case .startTravel:
+            return "car.fill"
+        case .markArrived:
+            return "mappin.circle.fill"
+        case .startSetup:
+            return "wrench.and.screwdriver.fill"
+        case .startWork:
+            return "play.fill"
+        case .startPackUp:
+            return "shippingbox.fill"
+        case .finishWork:
+            return "checkmark.circle.fill"
+        case .createInvoice:
+            return "doc.text.fill"
+        case .recordPayment:
+            return "creditcard.fill"
+        case .completeJob:
+            return "flag.checkered"
+        case .viewDetails:
+            return "doc.text.magnifyingglass"
         }
     }
 }
 
+/// Shared workflow snapshot for the live field operation currently in progress.
+///
+/// The snapshot is intentionally small and reusable so that multiple screens
+/// can present the same state without duplicating workflow rules.
 struct JobWorkflowContext {
     let currentState: JobWorkflowState
     let timeline: [JobTimelineEvent]
@@ -63,44 +93,64 @@ struct JobWorkflowContext {
     let isTerminal: Bool
 }
 
+/// Foundation engine for the consolidated field workflow.
+///
+/// The engine is intentionally stateless. It accepts a job, calculates the
+/// current operational snapshot, and returns updated job copies when lifecycle
+/// actions are applied.
 struct FieldOperationsEngine {
     func context(
         for job: JobRecord,
         invoice: InvoiceRecord? = nil
     ) -> JobWorkflowContext {
-        let state = synchronizedState(
+        let currentState = synchronizedState(
             for: job,
             invoice: invoice
         )
 
+        let orderedTimeline = job.timelineEvents.sorted {
+            $0.timestamp < $1.timestamp
+        }
+
         return JobWorkflowContext(
-            currentState: state,
-            timeline: job.timelineEvents.sorted {
-                $0.timestamp < $1.timestamp
-            },
+            currentState: currentState,
+            timeline: orderedTimeline,
             nextAction: nextAction(
-                for: state,
+                for: currentState,
                 invoice: invoice
             ),
-            progressPercentage: progress(
-                for: state
-            ),
-            canCreateInvoice: state == .workComplete,
+            progressPercentage: progress(for: currentState),
+            canCreateInvoice: currentState == .workComplete,
             canCollectPayment:
-                state == .invoiceCreated &&
+                currentState == .invoiceCreated &&
                 invoice?.status != .paid,
             canCompleteJob:
-                state == .paymentReceived ||
+                currentState == .paymentReceived ||
                 (
-                    state == .invoiceCreated &&
+                    currentState == .invoiceCreated &&
                     invoice?.status == .paid
                 ),
             isTerminal:
-                state == .completed ||
-                state == .cancelled
+                currentState == .completed ||
+                currentState == .cancelled
         )
     }
 
+    func nextAction(
+        for job: JobRecord,
+        invoice: InvoiceRecord? = nil
+    ) -> JobWorkflowAction {
+        context(for: job, invoice: invoice).nextAction
+    }
+
+    func workflowState(
+        for job: JobRecord,
+        invoice: InvoiceRecord? = nil
+    ) -> JobWorkflowState {
+        context(for: job, invoice: invoice).currentState
+    }
+
+    @discardableResult
     func transition(
         job: JobRecord,
         action: JobWorkflowAction,
@@ -115,15 +165,18 @@ struct FieldOperationsEngine {
         }
 
         var updated = job
-        let transition = transitionDetails(
-            for: action
-        )
+        let transition = transitionDetails(for: action)
 
         updated.workflowState = transition.state
 
         if action == .startSetup,
            updated.setupStartDate == nil {
             updated.setupStartDate = timestamp
+        }
+
+        if action == .finishWork,
+           updated.completedDate == nil {
+            updated.completedDate = timestamp
         }
 
         updated.timelineEvents.append(
@@ -136,9 +189,14 @@ struct FieldOperationsEngine {
         )
 
         switch transition.state {
-        case .traveling, .arrived, .settingUp,
-             .working, .packingUp, .workComplete,
-             .invoiceCreated, .paymentReceived:
+        case .traveling,
+             .arrived,
+             .settingUp,
+             .working,
+             .packingUp,
+             .workComplete,
+             .invoiceCreated,
+             .paymentReceived:
             updated.status = .inProgress
 
         case .completed:
@@ -157,6 +215,27 @@ struct FieldOperationsEngine {
         return updated
     }
 
+    @discardableResult
+    func recordNote(
+        for job: JobRecord,
+        note: String,
+        employeeID: UUID? = nil,
+        at timestamp: Date = Date()
+    ) -> JobRecord {
+        var updated = job
+        updated.timelineEvents.append(
+            JobTimelineEvent(
+                type: .note,
+                title: "Note Added",
+                timestamp: timestamp,
+                employeeID: employeeID,
+                note: note
+            )
+        )
+        return updated
+    }
+
+    @discardableResult
     func recordInvoiceCreated(
         for job: JobRecord,
         employeeID: UUID? = nil,
@@ -185,6 +264,7 @@ struct FieldOperationsEngine {
         return updated
     }
 
+    @discardableResult
     func recordPaymentReceived(
         for job: JobRecord,
         employeeID: UUID? = nil,
@@ -212,13 +292,12 @@ struct FieldOperationsEngine {
         return updated
     }
 
+    // MARK: - State resolution
+
     private func synchronizedState(
         for job: JobRecord,
         invoice: InvoiceRecord?
     ) -> JobWorkflowState {
-        // JobStatus.completed means the field work is finished. It must not
-        // force the workflow to its terminal `.completed` state because the
-        // invoice step still follows `.workComplete`.
         if job.status == .cancelled ||
            job.workflowState == .cancelled {
             return .cancelled
@@ -232,15 +311,12 @@ struct FieldOperationsEngine {
             return .invoiceCreated
         }
 
-        // The workflow state is the source of truth for the guided action.
-        // This preserves `.workComplete` after Complete Job so the next action
-        // remains Create Invoice.
         if job.workflowState != .notStarted {
             return job.workflowState
         }
 
-        // Compatibility for historical records created before workflow state
-        // tracking was introduced.
+        // Historical compatibility for jobs created before the workflow state
+        // was tracked explicitly.
         if job.status == .completed {
             return .completed
         }
@@ -253,19 +329,28 @@ struct FieldOperationsEngine {
         invoice: InvoiceRecord?
     ) -> JobWorkflowAction {
         switch state {
-        case .notStarted: return .startTravel
-        case .traveling: return .markArrived
-        case .arrived: return .startSetup
-        case .settingUp: return .startWork
-        case .working: return .startPackUp
-        case .packingUp: return .finishWork
-        case .workComplete: return .createInvoice
+        case .notStarted:
+            return .startTravel
+        case .traveling:
+            return .markArrived
+        case .arrived:
+            return .startSetup
+        case .settingUp:
+            return .startWork
+        case .working:
+            return .startPackUp
+        case .packingUp:
+            return .finishWork
+        case .workComplete:
+            return .createInvoice
         case .invoiceCreated:
             return invoice?.status == .paid
                 ? .completeJob
                 : .recordPayment
-        case .paymentReceived: return .completeJob
-        case .completed, .cancelled: return .viewDetails
+        case .paymentReceived:
+            return .completeJob
+        case .completed, .cancelled:
+            return .viewDetails
         }
     }
 
@@ -273,17 +358,28 @@ struct FieldOperationsEngine {
         for state: JobWorkflowState
     ) -> Int {
         switch state {
-        case .notStarted: return 0
-        case .traveling: return 10
-        case .arrived: return 20
-        case .settingUp: return 30
-        case .working: return 50
-        case .packingUp: return 70
-        case .workComplete: return 80
-        case .invoiceCreated: return 90
-        case .paymentReceived: return 95
-        case .completed: return 100
-        case .cancelled: return 0
+        case .notStarted:
+            return 0
+        case .traveling:
+            return 10
+        case .arrived:
+            return 20
+        case .settingUp:
+            return 30
+        case .working:
+            return 50
+        case .packingUp:
+            return 70
+        case .workComplete:
+            return 80
+        case .invoiceCreated:
+            return 90
+        case .paymentReceived:
+            return 95
+        case .completed:
+            return 100
+        case .cancelled:
+            return 0
         }
     }
 

@@ -10,7 +10,7 @@ import Testing
 @testable import PPS_Receipt_Printer
 
 @MainActor
-struct DailyPlannerEngineTests {
+struct Phase15DailyPlannerEngineTests {
     private let technicianID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
 
     @Test func fixedCommitmentIsPreservedAndFlexibleWorkFillsFirstGap() throws {
@@ -203,6 +203,60 @@ struct DailyPlannerEngineTests {
 
         #expect(item.occupiedMinutes == 75)
         #expect(plan.dailyReserveMinutes == 20)
+    }
+
+    @Test func transitionTravelOverrideAdjustsOccupiedMinutes() throws {
+        let day = makeDate(hour: 0)
+        let assignment = makeAssignment(
+            number: "ASN-TRAVEL",
+            scheduling: AssignmentScheduling(
+                mode: .flexibleDay,
+                serviceDate: day,
+                estimatedDurationMinutes: 60
+            )
+        )
+        let engine = DailyPlannerEngine(
+            configuration: DailyPlannerConfiguration(
+                slotIntervalMinutes: 15,
+                transitionBufferMinutes: 3,
+                transitionTravelMinutesOverride: 8,
+                dailyReserveMinutes: 0,
+                includeBusinessBuffers: true
+            ),
+            calendar: testCalendar
+        )
+
+        let plan = engine.plan(
+            for: makeTechnician(lunchMinutes: 0),
+            on: day,
+            assignments: [assignment]
+        )
+        let item = try #require(plan.assignmentItems.first)
+
+        #expect(item.occupiedMinutes == 68)
+    }
+
+    @Test func conflictIdentifiersRemainUniqueAfterDeduplication() {
+        let day = makeDate(hour: 0)
+        let technician = makeTechnician(lunchMinutes: 30)
+        let fixed = makeAssignment(
+            number: "ASN-CONFLICT",
+            scheduling: AssignmentScheduling(
+                mode: .fixedTime,
+                serviceDate: day,
+                fixedStartDate: makeDate(hour: 12),
+                estimatedDurationMinutes: 180
+            )
+        )
+
+        let plan = makeEngine().plan(
+            for: technician,
+            on: day,
+            assignments: [fixed]
+        )
+
+        let ids = plan.conflicts.map(\.id)
+        #expect(Set(ids).count == ids.count)
     }
 
     @Test func identicalInputsProduceIdenticalPlan() {

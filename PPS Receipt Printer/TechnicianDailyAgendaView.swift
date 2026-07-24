@@ -33,6 +33,11 @@ struct TechnicianDailyAgendaView: View {
     @State private var routeSummary: DailyRouteOptimizer.RouteSummary?
     @State private var isRouteOptimized = false
 
+    @MainActor
+    private func workflowCoordinator() -> FieldOperationsWorkflowCoordinator {
+        FieldOperationsWorkflowCoordinator(store: store)
+    }
+
     private var agenda: TechnicianAgenda {
         SchedulingEngine.dailyAgenda(
             for: employee,
@@ -757,8 +762,7 @@ struct TechnicianDailyAgendaView: View {
     private func workflowContext(
         for job: JobRecord
     ) -> JobWorkflowContext {
-        store.workflowContext(for: job.id)
-        ?? FieldOperationsEngine().context(for: job)
+        workflowCoordinator().workflowContext(for: job)
     }
 
     private func performWorkflowAction(
@@ -771,7 +775,7 @@ struct TechnicianDailyAgendaView: View {
             return
         }
 
-        _ = store.performWorkflowAction(
+        _ = workflowCoordinator().performWorkflowAction(
             jobID: job.id,
             action: action,
             employeeID: employee.id

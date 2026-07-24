@@ -10,22 +10,17 @@ import Foundation
 @MainActor
 extension AppDataStore {
     /// Builds a non-mutating proposal for one technician and day using the
-    /// current Assignment constraints and Business Operations buffers.
-    ///
-    /// Assignment synchronization already copies the Job's effective duration
-    /// into the operational record whenever a Job is created or edited. The
-    /// planner must therefore consume the Assignment unchanged. Re-reading the
-    /// Job here created two competing duration sources: the Timeline displayed
-    /// the Assignment duration while the planner silently evaluated a different
-    /// Job duration, producing false arrival-window conflicts.
+    /// current Assignment source of truth and Business Operations buffers.
     func dailyPlan(
         for technician: EmployeeRecord,
         on date: Date,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        transitionTravelMinutesOverride: Int? = nil
     ) -> DailyPlan {
         let planner = DailyPlannerEngine(
             configuration: DailyPlannerConfiguration(
-                operations: businessProfile.operations
+                operations: businessProfile.operations,
+                transitionTravelMinutesOverride: transitionTravelMinutesOverride
             ),
             calendar: calendar
         )
@@ -41,7 +36,8 @@ extension AppDataStore {
     /// name ordering keeps Operations UI and tests deterministic.
     func dailyPlans(
         on date: Date,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        transitionTravelMinutesOverride: Int? = nil
     ) -> [DailyPlan] {
         activeEmployees
             .filter { $0.role == .technician }
@@ -53,9 +49,9 @@ extension AppDataStore {
                 dailyPlan(
                     for: $0,
                     on: date,
-                    calendar: calendar
+                    calendar: calendar,
+                    transitionTravelMinutesOverride: transitionTravelMinutesOverride
                 )
             }
     }
-
 }

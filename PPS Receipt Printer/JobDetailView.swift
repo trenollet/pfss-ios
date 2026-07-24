@@ -119,8 +119,7 @@ struct JobDetailView: View {
     }
 
     private var workflowContext: JobWorkflowContext {
-        store.workflowContext(for: job.id)
-        ?? FieldOperationsEngine().context(for: storedJob)
+        workflowCoordinator().workflowContext(for: storedJob)
     }
 
     private var jobLogEvents: [JobTimelineEvent] {
@@ -131,6 +130,11 @@ struct JobDetailView: View {
 
     private var selectedTechnicianID: UUID? {
         UUID(uuidString: selectedTechnicianIDString)
+    }
+
+    @MainActor
+    private func workflowCoordinator() -> FieldOperationsWorkflowCoordinator {
+        FieldOperationsWorkflowCoordinator(store: store)
     }
 
     private var linkedInvoice: InvoiceRecord? {
@@ -762,58 +766,25 @@ struct JobDetailView: View {
             return
         }
 
-        switch storedJob.status {
-        case .toBeScheduled, .scheduled, .assigned:
-            guard store.startSetup(
-                jobID: job.id,
-                employeeID: job.primaryTechnicianID
-            ) else {
-                return
-            }
-            refreshJobFromStore()
-
-        case .inProgress:
-            if storedJob.workflowState == .settingUp {
-                guard store.startJob(
-                    jobID: job.id,
-                    employeeID: job.primaryTechnicianID
-                ) else {
-                    return
-                }
-            } else {
-                guard store.completeJob(
-                    jobID: job.id,
-                    employeeID: job.primaryTechnicianID
-                ) else {
-                    return
-                }
-            }
-            refreshJobFromStore()
-
-        case .completed:
-            guard let invoice = store.createInvoiceFromJob(job) else {
-                presentedInvoice = store.invoice(forJobID: job.id)
-                return
-            }
-
-            presentedInvoice = invoice
-            refreshJobFromStore()
-
-        case .cancelled:
+        guard workflowCoordinator().performGuidedPrimaryAction(
+            for: storedJob,
+            employeeID: job.primaryTechnicianID
+        ) else {
             return
         }
+
+        if let invoice = store.invoice(forJobID: job.id),
+           storedJob.status == .completed {
+            presentedInvoice = invoice
+        }
+
+        refreshJobFromStore()
     }
 
     private func performPrimaryWorkflowAction() {
-        let action = workflowContext.nextAction
-
-        if action == .viewDetails {
-            return
-        }
-
-        _ = store.performWorkflowAction(
+        _ = workflowCoordinator().performWorkflowAction(
             jobID: job.id,
-            action: action,
+            action: workflowContext.nextAction,
             employeeID: job.primaryTechnicianID
         )
 
