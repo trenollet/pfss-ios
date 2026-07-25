@@ -18,6 +18,8 @@ enum JobWorkflowAction: String, Identifiable, CaseIterable {
     case markArrived
     case startSetup
     case startWork
+    case pauseWork
+    case resumeWork
     case startPackUp
     case finishWork
     case createInvoice
@@ -37,6 +39,10 @@ enum JobWorkflowAction: String, Identifiable, CaseIterable {
             return "Start Setup"
         case .startWork:
             return "Start Job"
+        case .pauseWork:
+            return "Pause Work"
+        case .resumeWork:
+            return "Resume Work"
         case .startPackUp:
             return "Start Pack-up"
         case .finishWork:
@@ -62,6 +68,10 @@ enum JobWorkflowAction: String, Identifiable, CaseIterable {
             return "wrench.and.screwdriver.fill"
         case .startWork:
             return "play.fill"
+        case .pauseWork:
+            return "pause.fill"
+        case .resumeWork:
+            return "play.fill"
         case .startPackUp:
             return "shippingbox.fill"
         case .finishWork:
@@ -86,11 +96,35 @@ struct JobWorkflowContext {
     let currentState: JobWorkflowState
     let timeline: [JobTimelineEvent]
     let nextAction: JobWorkflowAction
+    let availableActions: [JobWorkflowAction]
     let progressPercentage: Int
     let canCreateInvoice: Bool
     let canCollectPayment: Bool
     let canCompleteJob: Bool
     let isTerminal: Bool
+}
+
+enum WorkflowValidationLevel: String, Codable {
+    case ready
+    case warning
+    case invalid
+}
+
+struct WorkflowValidationIssue: Identifiable, Codable, Equatable {
+    let id: UUID
+    let message: String
+
+    init(id: UUID = UUID(), message: String) {
+        self.id = id
+        self.message = message
+    }
+}
+
+struct WorkflowValidationResult: Codable, Equatable {
+    let level: WorkflowValidationLevel
+    let issues: [WorkflowValidationIssue]
+
+    var canProceed: Bool { level != .invalid }
 }
 
 /// Foundation engine for the consolidated field workflow.
@@ -116,6 +150,10 @@ struct FieldOperationsEngine {
             currentState: currentState,
             timeline: orderedTimeline,
             nextAction: nextAction(
+                for: currentState,
+                invoice: invoice
+            ),
+            availableActions: availableActions(
                 for: currentState,
                 invoice: invoice
             ),
@@ -150,17 +188,70 @@ struct FieldOperationsEngine {
         context(for: job, invoice: invoice).currentState
     }
 
+    func availableActions(
+        for job: JobRecord,
+        invoice: InvoiceRecord? = nil
+    ) -> [JobWorkflowAction] {
+        let state = synchronizedState(for: job, invoice: invoice)
+        return availableActions(for: state, invoice: invoice)
+    }
+
+    func validate(
+        job: JobRecord,
+        action: JobWorkflowAction,
+        invoice: InvoiceRecord? = nil
+    ) -> WorkflowValidationResult {
+        let state = synchronizedState(for: job, invoice: invoice)
+        var issues: [WorkflowValidationIssue] = []
+
+        guard action != .viewDetails else {
+            return WorkflowValidationResult(level: .ready, issues: [])
+        }
+
+        guard availableActions(for: state, invoice: invoice).contains(action) else {
+            issues.append(
+                WorkflowValidationIssue(
+                    message: "\(action.title) is not available while the job is \(state.rawValue)."
+                )
+            )
+            return WorkflowValidationResult(level: .invalid, issues: issues)
+        }
+
+        if action == .startTravel && job.primaryTechnicianID == nil {
+            issues.append(
+                WorkflowValidationIssue(
+                    message: "No primary technician is assigned to this job."
+                )
+            )
+        }
+
+        if action == .recordPayment && invoice == nil {
+            issues.append(
+                WorkflowValidationIssue(
+                    message: "An invoice must exist before payment can be recorded."
+                )
+            )
+            return WorkflowValidationResult(level: .invalid, issues: issues)
+        }
+
+        return WorkflowValidationResult(
+            level: issues.isEmpty ? .ready : .warning,
+            issues: issues
+        )
+    }
+
     @discardableResult
     func transition(
         job: JobRecord,
         action: JobWorkflowAction,
         employeeID: UUID? = nil,
+        note: String? = nil,
+        invoice: InvoiceRecord? = nil,
         at timestamp: Date = Date()
     ) -> JobRecord? {
-        guard isValid(
-            action: action,
-            for: job.workflowState
-        ) else {
+        let validation = validate(job: job, action: action, invoice: invoice)
+        guard validation.canProceed,
+              isValid(action: action, for: job.workflowState) else {
             return nil
         }
 
@@ -184,7 +275,8 @@ struct FieldOperationsEngine {
                 type: transition.eventType,
                 title: transition.title,
                 timestamp: timestamp,
-                employeeID: employeeID
+                employeeID: employeeID,
+                note: normalizedNote(note)
             )
         )
 
@@ -193,6 +285,7 @@ struct FieldOperationsEngine {
              .arrived,
              .settingUp,
              .working,
+             .paused,
              .packingUp,
              .workComplete,
              .invoiceCreated,
@@ -223,13 +316,15 @@ struct FieldOperationsEngine {
         at timestamp: Date = Date()
     ) -> JobRecord {
         var updated = job
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return updated }
         updated.timelineEvents.append(
             JobTimelineEvent(
                 type: .note,
                 title: "Note Added",
                 timestamp: timestamp,
                 employeeID: employeeID,
-                note: note
+                note: trimmed
             )
         )
         return updated
@@ -339,6 +434,8 @@ struct FieldOperationsEngine {
             return .startWork
         case .working:
             return .startPackUp
+        case .paused:
+            return .resumeWork
         case .packingUp:
             return .finishWork
         case .workComplete:
@@ -368,6 +465,8 @@ struct FieldOperationsEngine {
             return 30
         case .working:
             return 50
+        case .paused:
+            return 50
         case .packingUp:
             return 70
         case .workComplete:
@@ -392,6 +491,8 @@ struct FieldOperationsEngine {
              (.traveling, .markArrived),
              (.arrived, .startSetup),
              (.settingUp, .startWork),
+             (.working, .pauseWork),
+             (.paused, .resumeWork),
              (.working, .startPackUp),
              (.packingUp, .finishWork),
              (.workComplete, .createInvoice),
@@ -421,6 +522,10 @@ struct FieldOperationsEngine {
             return (.settingUp, .setupStarted, "Setup Started")
         case .startWork:
             return (.working, .workStarted, "Job Started")
+        case .pauseWork:
+            return (.paused, .workPaused, "Work Paused")
+        case .resumeWork:
+            return (.working, .workResumed, "Work Resumed")
         case .startPackUp:
             return (.packingUp, .packUpStarted, "Pack-up Started")
         case .finishWork:
@@ -434,5 +539,31 @@ struct FieldOperationsEngine {
         case .viewDetails:
             return (.notStarted, .note, "Viewed Details")
         }
+    }
+
+    private func availableActions(
+        for state: JobWorkflowState,
+        invoice: InvoiceRecord?
+    ) -> [JobWorkflowAction] {
+        switch state {
+        case .notStarted: return [.startTravel]
+        case .traveling: return [.markArrived]
+        case .arrived: return [.startSetup]
+        case .settingUp: return [.startWork]
+        case .working: return [.pauseWork, .startPackUp]
+        case .paused: return [.resumeWork]
+        case .packingUp: return [.finishWork]
+        case .workComplete: return [.createInvoice]
+        case .invoiceCreated:
+            return invoice?.status == .paid ? [.completeJob] : [.recordPayment]
+        case .paymentReceived: return [.completeJob]
+        case .completed, .cancelled: return [.viewDetails]
+        }
+    }
+
+    private func normalizedNote(_ note: String?) -> String? {
+        guard let note else { return nil }
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

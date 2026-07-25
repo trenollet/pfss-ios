@@ -126,6 +126,7 @@ enum JobWorkflowState: String, CaseIterable, Identifiable, Codable {
     case arrived = "Arrived"
     case settingUp = "Setting Up"
     case working = "Working"
+    case paused = "Paused"
     case packingUp = "Packing Up"
     case workComplete = "Work Complete"
     case invoiceCreated = "Invoice Created"
@@ -142,6 +143,8 @@ enum JobTimelineEventType: String, Codable {
     case arrived
     case setupStarted
     case workStarted
+    case workPaused
+    case workResumed
     case packUpStarted
     case workCompleted
     case invoiceCreated

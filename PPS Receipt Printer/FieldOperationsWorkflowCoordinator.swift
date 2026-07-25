@@ -69,12 +69,14 @@ final class FieldOperationsWorkflowCoordinator: ObservableObject {
         jobID: UUID,
         action: JobWorkflowAction,
         employeeID: UUID? = nil,
+        note: String? = nil,
         at timestamp: Date = Date()
     ) -> Bool {
         let succeeded = store.performWorkflowAction(
             jobID: jobID,
             action: action,
             employeeID: employeeID,
+            note: note,
             at: timestamp
         )
 
@@ -116,38 +118,11 @@ final class FieldOperationsWorkflowCoordinator: ObservableObject {
         employeeID: UUID? = nil,
         at timestamp: Date = Date()
     ) -> Bool {
-        let actorID = employeeID ?? job.primaryTechnicianID
-
-        switch job.status {
-        case .toBeScheduled, .scheduled, .assigned:
-            return store.startSetup(
-                jobID: job.id,
-                employeeID: actorID,
-                startedAt: timestamp
-            )
-
-        case .inProgress:
-            if job.workflowState == .settingUp {
-                return store.startJob(
-                    jobID: job.id,
-                    employeeID: actorID,
-                    startedAt: timestamp
-                )
-            } else {
-                return store.completeJob(
-                    jobID: job.id,
-                    employeeID: actorID,
-                    completedAt: timestamp
-                )
-            }
-
-        case .completed:
-            return store.createInvoiceFromJob(job) != nil
-
-        case .cancelled:
-            lastErrorMessage = "Cancelled work cannot continue."
-            return false
-        }
+        performNextWorkflowAction(
+            for: job,
+            employeeID: employeeID ?? job.primaryTechnicianID,
+            at: timestamp
+        )
     }
 
     @discardableResult
@@ -169,6 +144,38 @@ final class FieldOperationsWorkflowCoordinator: ObservableObject {
     }
 
     // MARK: - Direct wrappers for the current workflow helpers
+
+    @discardableResult
+    func pauseWork(
+        jobID: UUID,
+        employeeID: UUID? = nil,
+        note: String? = nil,
+        at timestamp: Date = Date()
+    ) -> Bool {
+        performWorkflowAction(
+            jobID: jobID,
+            action: .pauseWork,
+            employeeID: employeeID,
+            note: note,
+            at: timestamp
+        )
+    }
+
+    @discardableResult
+    func resumeWork(
+        jobID: UUID,
+        employeeID: UUID? = nil,
+        note: String? = nil,
+        at timestamp: Date = Date()
+    ) -> Bool {
+        performWorkflowAction(
+            jobID: jobID,
+            action: .resumeWork,
+            employeeID: employeeID,
+            note: note,
+            at: timestamp
+        )
+    }
 
     @discardableResult
     func startSetup(

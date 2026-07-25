@@ -283,10 +283,14 @@ struct JobDetailView: View {
             if showWorkflow {
             Section("Field Workflow") {
                 JobWorkflowStatusCard(
-                    context: workflowContext
-                ) {
-                    performPrimaryWorkflowAction()
-                }
+                    context: workflowContext,
+                    action: {
+                        performPrimaryWorkflowAction()
+                    },
+                    performAction: { action in
+                        performWorkflowAction(action)
+                    }
+                )
             }
 
             }
@@ -584,7 +588,10 @@ struct JobDetailView: View {
         }
         .sheet(item: $presentedInvoice) { invoice in
             NavigationStack {
-                InvoiceDetailView(invoice: invoice)
+                InvoiceDetailView(
+                    invoice: invoice,
+                    showsDismissButton: true
+                )
                     .environmentObject(store)
             }
         }
@@ -782,9 +789,13 @@ struct JobDetailView: View {
     }
 
     private func performPrimaryWorkflowAction() {
+        performWorkflowAction(workflowContext.nextAction)
+    }
+
+    private func performWorkflowAction(_ action: JobWorkflowAction) {
         _ = workflowCoordinator().performWorkflowAction(
             jobID: job.id,
-            action: workflowContext.nextAction,
+            action: action,
             employeeID: job.primaryTechnicianID
         )
 
@@ -893,6 +904,10 @@ struct JobDetailView: View {
         case .setupStarted:
             return "wrench.and.screwdriver.fill"
         case .workStarted:
+            return "play.circle.fill"
+        case .workPaused:
+            return "pause.circle.fill"
+        case .workResumed:
             return "play.circle.fill"
         case .packUpStarted:
             return "shippingbox.fill"

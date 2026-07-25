@@ -14,6 +14,7 @@ struct InvoiceDetailView: View {
     @EnvironmentObject var printer: BluetoothPrinter
 
     @State var invoice: InvoiceRecord
+    var showsDismissButton = false
     @State private var sharedPDFURL: URL?
     @State private var pdfErrorMessage: String?
     @State private var isShowingPDFError = false
@@ -228,12 +229,14 @@ struct InvoiceDetailView: View {
         .navigationTitle("Invoice")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    isInputFocused = false
-                    dismiss()
-                } label: {
-                    Label("Back", systemImage: "chevron.left")
+            if showsDismissButton {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        isInputFocused = false
+                        dismiss()
+                    } label: {
+                        Label("Close", systemImage: "xmark")
+                    }
                 }
             }
 

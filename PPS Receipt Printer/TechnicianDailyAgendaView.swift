@@ -9,6 +9,10 @@ import SwiftUI
 import CoreLocation
 
 struct TechnicianDailyAgendaView: View {
+    private struct InvoiceDestination: Identifiable, Hashable {
+        let id: UUID
+    }
+
     @EnvironmentObject var store: AppDataStore
     
     @Environment(\.openURL)
@@ -23,6 +27,7 @@ struct TechnicianDailyAgendaView: View {
     
     @State private var selectedDate = Date()
     @State private var selectedJobID: UUID?
+    @State private var selectedInvoiceDestination: InvoiceDestination?
     @State private var showingDatePicker = false
 
     @StateObject private var locationManager = TechnicianLocationManager()
@@ -148,6 +153,24 @@ struct TechnicianDailyAgendaView: View {
                     systemImage: "briefcase",
                     description: Text(
                         "This job may have been removed or archived."
+                    )
+                )
+            }
+        }
+        .navigationDestination(
+            item: $selectedInvoiceDestination
+        ) { destination in
+            if let invoice = store.invoices.first(where: {
+                $0.id == destination.id
+            }) {
+                InvoiceDetailView(invoice: invoice)
+                    .environmentObject(store)
+            } else {
+                ContentUnavailableView(
+                    "Invoice Not Found",
+                    systemImage: "doc.text.magnifyingglass",
+                    description: Text(
+                        "The invoice may have been removed or archived."
                     )
                 )
             }
@@ -707,53 +730,54 @@ struct TechnicianDailyAgendaView: View {
     private func technicianActionRow(
         for job: JobRecord
     ) -> some View {
-        ActionTileRow(
-            actions: [
-                ActionTileItem(
-                    title: "Navigate",
-                    systemImage: "location.fill",
-                    isEnabled: hasUsableAddress(
-                        for: job
-                    )
-                ) {
-                    prepareNavigation(
-                        for: job
-                    )
-                },
+        let utilityActions = [
+            ActionTileItem(
+                title: "Navigate",
+                systemImage: "location.fill",
+                isEnabled: hasUsableAddress(for: job)
+            ) {
+                prepareNavigation(for: job)
+            },
 
-                ActionTileItem(
-                    title: "Call",
-                    systemImage: "phone.fill",
-                    isEnabled: hasUsablePhoneNumber(
-                        for: job
-                    )
-                ) {
-                    callCustomer(
-                        for: job
-                    )
-                },
+            ActionTileItem(
+                title: "Call",
+                systemImage: "phone.fill",
+                isEnabled: hasUsablePhoneNumber(for: job)
+            ) {
+                callCustomer(for: job)
+            }
+        ]
 
-                workflowAction(
-                    for: job
+        let context = workflowContext(for: job)
+        let workflowActions = context.availableActions.map {
+            workflowAction($0, for: job)
+        }
+
+        return VStack(spacing: 10) {
+            if workflowActions.count > 1 {
+                ActionTileRow(actions: utilityActions)
+                ActionTileRow(actions: workflowActions)
+            } else {
+                ActionTileRow(
+                    actions: utilityActions + workflowActions
                 )
-            ]
-        )
+            }
+        }
     }
 
     private func workflowAction(
+        _ action: JobWorkflowAction,
         for job: JobRecord
     ) -> ActionTileItem {
-        let context = workflowContext(for: job)
-
         return ActionTileItem(
-            title: context.nextAction.title,
-            systemImage: context.nextAction.systemImage,
+            title: action.title,
+            systemImage: action.systemImage,
             tint: workflowTint(
-                for: context.nextAction
+                for: action
             )
         ) {
             performWorkflowAction(
-                context.nextAction,
+                action,
                 for: job
             )
         }
@@ -769,8 +793,15 @@ struct TechnicianDailyAgendaView: View {
         _ action: JobWorkflowAction,
         for job: JobRecord
     ) {
-        if action == .viewDetails ||
-           action == .recordPayment {
+        if action == .recordPayment,
+           let invoice = store.invoice(forJobID: job.id) {
+            selectedInvoiceDestination = InvoiceDestination(
+                id: invoice.id
+            )
+            return
+        }
+
+        if action == .viewDetails {
             selectedJobID = job.id
             return
         }
@@ -792,6 +823,8 @@ struct TechnicianDailyAgendaView: View {
             return .blue
         case .recordPayment:
             return .purple
+        case .pauseWork, .resumeWork:
+            return .orange
         case .viewDetails:
             return .secondary
         default:

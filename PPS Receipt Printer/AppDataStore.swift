@@ -831,6 +831,7 @@ final class AppDataStore: ObservableObject {
         jobID: UUID,
         action: JobWorkflowAction,
         employeeID: UUID? = nil,
+        note: String? = nil,
         at timestamp: Date = Date()
     ) -> Bool {
         guard let index = jobs.firstIndex(where: {
@@ -839,7 +840,19 @@ final class AppDataStore: ObservableObject {
             return false
         }
 
+        let invoice = invoices.first {
+            $0.jobNumber == jobs[index].jobNumber
+        }
+
         if action == .createInvoice {
+            guard fieldOperationsEngine.validate(
+                job: jobs[index],
+                action: action,
+                invoice: invoice
+            ).canProceed else {
+                return false
+            }
+
             let created = createInvoiceFromJob(jobID: jobID) != nil
             if created {
                 synchronizeAssignmentWorkflow(
@@ -852,22 +865,13 @@ final class AppDataStore: ObservableObject {
             return created
         }
 
-        if action == .recordPayment {
-            jobs[index] =
-                fieldOperationsEngine.recordPaymentReceived(
-                    for: jobs[index],
-                    employeeID: employeeID,
-                    at: timestamp
-                )
-
-            return true
-        }
-
         guard let updated =
                 fieldOperationsEngine.transition(
                     job: jobs[index],
                     action: action,
                     employeeID: employeeID,
+                    note: note,
+                    invoice: invoice,
                     at: timestamp
                 )
         else {
@@ -950,7 +954,7 @@ final class AppDataStore: ObservableObject {
                     )
                 }
 
-            case .startSetup, .startWork, .startPackUp,
+            case .startSetup, .startWork, .pauseWork, .resumeWork, .startPackUp,
                  .recordPayment, .viewDetails:
                 break
             }
@@ -965,38 +969,12 @@ final class AppDataStore: ObservableObject {
         employeeID: UUID? = nil,
         startedAt: Date = Date()
     ) -> Bool {
-        guard let index = jobs.firstIndex(where: {
-            $0.id == jobID
-        }) else {
-            return false
-        }
-
-        guard jobs[index].status == .toBeScheduled ||
-              jobs[index].status == .scheduled ||
-              jobs[index].status == .assigned
-        else {
-            return false
-        }
-
-        var updated = jobs[index]
-        updated.status = .inProgress
-        updated.workflowState = .settingUp
-
-        if updated.setupStartDate == nil {
-            updated.setupStartDate = startedAt
-        }
-
-        updated.timelineEvents.append(
-            JobTimelineEvent(
-                type: .setupStarted,
-                title: "Setup Started",
-                timestamp: startedAt,
-                employeeID: employeeID
-            )
+        performWorkflowAction(
+            jobID: jobID,
+            action: .startSetup,
+            employeeID: employeeID,
+            at: startedAt
         )
-
-        jobs[index] = updated
-        return true
     }
 
     @discardableResult
@@ -1005,31 +983,12 @@ final class AppDataStore: ObservableObject {
         employeeID: UUID? = nil,
         startedAt: Date = Date()
     ) -> Bool {
-        guard let index = jobs.firstIndex(where: {
-            $0.id == jobID
-        }) else {
-            return false
-        }
-
-        guard jobs[index].status == .inProgress,
-              jobs[index].workflowState == .settingUp
-        else {
-            return false
-        }
-
-        var updated = jobs[index]
-        updated.workflowState = .working
-        updated.timelineEvents.append(
-            JobTimelineEvent(
-                type: .workStarted,
-                title: "Job Started",
-                timestamp: startedAt,
-                employeeID: employeeID
-            )
+        performWorkflowAction(
+            jobID: jobID,
+            action: .startWork,
+            employeeID: employeeID,
+            at: startedAt
         )
-
-        jobs[index] = updated
-        return true
     }
 
     @discardableResult
@@ -1038,39 +997,27 @@ final class AppDataStore: ObservableObject {
         employeeID: UUID? = nil,
         completedAt: Date = Date()
     ) -> Bool {
-        guard let index = jobs.firstIndex(where: {
-            $0.id == jobID
-        }) else {
+        guard let job = jobs.first(where: { $0.id == jobID }) else {
             return false
         }
 
-        guard jobs[index].status == .inProgress,
-              jobs[index].workflowState == .working
-        else {
-            return false
+        if job.workflowState == .working {
+            guard performWorkflowAction(
+                jobID: jobID,
+                action: .startPackUp,
+                employeeID: employeeID,
+                at: completedAt
+            ) else {
+                return false
+            }
         }
 
-        var updated = jobs[index]
-        // Field work is complete, but the overall workflow is not closed yet.
-        // Keep the job reportable as completed while leaving the workflow at
-        // workComplete so Create Invoice remains the next valid action.
-        updated.workflowState = .workComplete
-        updated.status = .completed
-
-        if updated.completedDate == nil {
-            updated.completedDate = completedAt
-        }
-
-        updated.timelineEvents.append(
-            JobTimelineEvent(
-                type: .jobCompleted,
-                title: "Job Completed",
-                timestamp: completedAt,
-                employeeID: employeeID
-            )
+        return performWorkflowAction(
+            jobID: jobID,
+            action: .finishWork,
+            employeeID: employeeID,
+            at: completedAt
         )
-        jobs[index] = updated
-        return true
     }
 
     func archiveJob(_ job: JobRecord) {

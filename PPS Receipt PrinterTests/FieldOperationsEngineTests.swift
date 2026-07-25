@@ -147,6 +147,7 @@ final class FieldOperationsEngineTests: XCTestCase {
                 job: job,
                 action: .recordPayment,
                 employeeID: technicianID,
+                invoice: makeInvoice(status: .sent),
                 at: date(hour: 11, minute: 15)
             )
         )
@@ -224,6 +225,105 @@ final class FieldOperationsEngineTests: XCTestCase {
         XCTAssertEqual(job.timelineEvents.count, 1)
         XCTAssertEqual(job.timelineEvents.first?.type, .note)
         XCTAssertEqual(job.timelineEvents.first?.note, "Customer asked to add screens.")
+    }
+
+    func testPauseAndResumePreserveWorkProgressAndAuditDetails() throws {
+        let engine = FieldOperationsEngine()
+        var job = makeJob(workflowState: .working, status: .inProgress)
+
+        job = try XCTUnwrap(
+            engine.transition(
+                job: job,
+                action: .pauseWork,
+                employeeID: technicianID,
+                note: "Waiting for the customer to move a vehicle.",
+                at: date(hour: 9, minute: 15)
+            )
+        )
+
+        XCTAssertEqual(job.workflowState, .paused)
+        XCTAssertEqual(job.status, .inProgress)
+        XCTAssertEqual(job.timelineEvents.last?.type, .workPaused)
+        XCTAssertEqual(job.timelineEvents.last?.employeeID, technicianID)
+        XCTAssertEqual(
+            job.timelineEvents.last?.note,
+            "Waiting for the customer to move a vehicle."
+        )
+
+        job = try XCTUnwrap(
+            engine.transition(
+                job: job,
+                action: .resumeWork,
+                employeeID: technicianID,
+                at: date(hour: 9, minute: 30)
+            )
+        )
+
+        XCTAssertEqual(job.workflowState, .working)
+        XCTAssertEqual(job.timelineEvents.last?.type, .workResumed)
+        XCTAssertEqual(job.timelineEvents.count, 2)
+    }
+
+    func testWorkingContextKeepsPackUpPrimaryAndExposesPause() {
+        let context = FieldOperationsEngine().context(
+            for: makeJob(workflowState: .working, status: .inProgress)
+        )
+
+        XCTAssertEqual(context.nextAction, .startPackUp)
+        XCTAssertEqual(context.availableActions, [.pauseWork, .startPackUp])
+    }
+
+    func testIllegalTransitionIsRejectedWithoutAuditEvent() {
+        let engine = FieldOperationsEngine()
+        let job = makeJob()
+
+        let validation = engine.validate(job: job, action: .startWork)
+        let updated = engine.transition(
+            job: job,
+            action: .startWork,
+            employeeID: technicianID,
+            at: date(hour: 8)
+        )
+
+        XCTAssertEqual(validation.level, .invalid)
+        XCTAssertFalse(validation.canProceed)
+        XCTAssertNil(updated)
+        XCTAssertTrue(job.timelineEvents.isEmpty)
+    }
+
+    func testMissingTechnicianProducesWarningButAllowsTravel() {
+        var job = makeJob()
+        job.primaryTechnicianID = nil
+
+        let validation = FieldOperationsEngine().validate(
+            job: job,
+            action: .startTravel
+        )
+
+        XCTAssertEqual(validation.level, .warning)
+        XCTAssertTrue(validation.canProceed)
+        XCTAssertEqual(validation.issues.count, 1)
+    }
+
+    func testPaymentWithoutInvoiceIsInvalid() {
+        let validation = FieldOperationsEngine().validate(
+            job: makeJob(workflowState: .invoiceCreated, status: .inProgress),
+            action: .recordPayment
+        )
+
+        XCTAssertEqual(validation.level, .invalid)
+        XCTAssertFalse(validation.canProceed)
+    }
+
+    func testBlankNoteDoesNotCreateAuditNoise() {
+        let job = FieldOperationsEngine().recordNote(
+            for: makeJob(),
+            note: "   \n ",
+            employeeID: technicianID,
+            at: date(hour: 9)
+        )
+
+        XCTAssertTrue(job.timelineEvents.isEmpty)
     }
 
     func testCancelledWorkReturnsDetailsActionAndTerminalState() {

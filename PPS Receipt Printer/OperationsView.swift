@@ -911,6 +911,7 @@ struct OperationsView: View {
         case .arrived,
              .settingUp,
              .working,
+             .paused,
              .packingUp:
             return .working
 

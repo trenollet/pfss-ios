@@ -10,6 +10,7 @@ import SwiftUI
 struct JobWorkflowStatusCard: View {
     let context: JobWorkflowContext
     let action: () -> Void
+    var performAction: ((JobWorkflowAction) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -68,6 +69,21 @@ struct JobWorkflowStatusCard: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(actionColor)
+
+            if let secondaryAction,
+               let performAction {
+                Button {
+                    performAction(secondaryAction)
+                } label: {
+                    Label(
+                        secondaryAction.title,
+                        systemImage: secondaryAction.systemImage
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.orange)
+            }
         }
         .padding(.vertical, 4)
     }
@@ -94,6 +110,7 @@ struct JobWorkflowStatusCard: View {
         case .settingUp:
             return "wrench.and.screwdriver.fill"
         case .working: return "hammer.fill"
+        case .paused: return "pause.circle.fill"
         case .packingUp: return "shippingbox.fill"
         case .workComplete:
             return "checkmark.circle.fill"
@@ -113,7 +130,7 @@ struct JobWorkflowStatusCard: View {
             return .red
         case .traveling, .arrived:
             return .blue
-        case .settingUp, .working, .packingUp:
+        case .settingUp, .working, .paused, .packingUp:
             return .orange
         case .workComplete, .invoiceCreated:
             return .purple
@@ -130,10 +147,18 @@ struct JobWorkflowStatusCard: View {
             return .purple
         case .createInvoice:
             return .blue
+        case .pauseWork, .resumeWork:
+            return .orange
         case .viewDetails:
             return .secondary
         default:
             return .orange
+        }
+    }
+
+    private var secondaryAction: JobWorkflowAction? {
+        context.availableActions.first {
+            $0 != context.nextAction && $0 != .viewDetails
         }
     }
 }
