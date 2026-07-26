@@ -9,7 +9,8 @@ import SwiftUI
 
 struct AdminView: View {
     var body: some View {
-        List {
+        NavigationStack {
+            List {
                 Section("Business") {
                     NavigationLink {
                         BusinessProfileView()
@@ -59,15 +60,22 @@ struct AdminView: View {
                         )
                     }
                 }
+
+                Section("Catalog & Printing") {
+                    NavigationLink {
+                        ServiceCatalogView()
+                    } label: {
+                        Label("Catalog Items", systemImage: "square.grid.2x2")
+                    }
+
+                    NavigationLink {
+                        PrintView()
+                    } label: {
+                        Label("Print", systemImage: "printer")
+                    }
+                }
+
                 Section("Coming Soon") {
-                    
-
-                    Label(
-                        "Printer Settings",
-                        systemImage: "printer"
-                    )
-                    .foregroundStyle(.secondary)
-
                     Label(
                         "Data Management",
                         systemImage: "externaldrive"
@@ -75,6 +83,8 @@ struct AdminView: View {
                     .foregroundStyle(.secondary)
                 }
             }
-        .navigationTitle("Admin")
+            .navigationTitle("Admin")
+            .navigationBarTitleDisplayMode(.large)
+        }
     }
 }

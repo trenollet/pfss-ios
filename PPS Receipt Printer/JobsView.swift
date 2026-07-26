@@ -1,13 +1,28 @@
 import SwiftUI
 
-struct JobsView: View {
+struct JobRecordsListView: View {
     @EnvironmentObject private var store: AppDataStore
+    let statuses: Set<JobStatus>?
+    let title: String
     @State private var showArchived = false
     @State private var showingNewJob = false
-    @State private var searchText = ""
+    @State private var searchText: String
+
+    init(
+        statuses: Set<JobStatus>? = nil,
+        title: String = "All Jobs",
+        initialSearchText: String = ""
+    ) {
+        self.statuses = statuses
+        self.title = title
+        _searchText = State(initialValue: initialSearchText)
+    }
 
     private var filteredJobs: [JobRecord] {
-        let source = showArchived ? store.archivedJobs : store.activeJobs
+        let lifecycleSource = showArchived ? store.archivedJobs : store.activeJobs
+        let source = statuses.map { accepted in
+            lifecycleSource.filter { accepted.contains($0.status) }
+        } ?? lifecycleSource
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return source }
 
@@ -49,7 +64,8 @@ struct JobsView: View {
                 }
             }
         }
-        .navigationTitle("Jobs")
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Search jobs")
         .sheet(isPresented: $showingNewJob) {
             NavigationStack {

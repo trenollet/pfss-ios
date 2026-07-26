@@ -1,13 +1,28 @@
 import SwiftUI
 
-struct CustomersView: View {
+struct CustomerRecordsListView: View {
     @EnvironmentObject private var store: AppDataStore
+    let statuses: Set<EstimateStatus>?
+    let title: String
     @State private var showArchived = false
     @State private var showingNewCustomer = false
-    @State private var searchText = ""
+    @State private var searchText: String
+
+    init(
+        statuses: Set<EstimateStatus>? = nil,
+        title: String = "All Customers",
+        initialSearchText: String = ""
+    ) {
+        self.statuses = statuses
+        self.title = title
+        _searchText = State(initialValue: initialSearchText)
+    }
 
     private var filteredCustomers: [Customer] {
-        let source = showArchived ? store.archivedCustomers : store.activeCustomers
+        let lifecycleSource = showArchived ? store.archivedCustomers : store.activeCustomers
+        let source = statuses.map { accepted in
+            lifecycleSource.filter { accepted.contains($0.estimateStatus) }
+        } ?? lifecycleSource
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return source }
 
@@ -42,7 +57,8 @@ struct CustomersView: View {
                 }
             }
         }
-        .navigationTitle("Customers")
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Search customers")
         .sheet(isPresented: $showingNewCustomer) {
             CustomerNewView().environmentObject(store)

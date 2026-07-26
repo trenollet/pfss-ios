@@ -364,22 +364,95 @@ without removing high-value business summaries.
 # Step 4.6 – Dashboard UI and Workflow Optimization
 
 ## Status
-Planned; begins after Step 4.5 acceptance.
+Complete and accepted.
 
 ## Objective
 Redesign the main Dashboard using the validated Operations tile language so the
 application's primary entry screen has clearer information hierarchy, faster
 workflow access, and consistent navigation.
 
-### Planned Outcomes
-- Dashboard adopts the same reusable tile-based look and interaction model.
-- High-value business data remains visible without turning the page into a long
-  list of records.
-- Primary business workflows become easier to reach and test.
-- Dashboard and Operations feel like two coordinated hubs rather than unrelated
-  interfaces.
-- Exact Dashboard content and ordering will be finalized after Step 4.5 field
-  feedback establishes the successful tile behavior.
+### Accepted Information Architecture
+- The Dashboard is the primary application hub and uses the reusable Operations
+  tile language.
+- The first row contains Sales and Service.
+- My Day is centered in the second row.
+- Operations and Admin occupy the final row.
+- The top-level tab order is Dashboard, Sales, My Day, Service, Operations,
+  Admin.
+- Leads and Estimates live under the Sales hub.
+- Jobs, Invoices, and Customers live under the Service hub.
+- Catalog Items and Print live under Admin.
+
+### Implementation Record
+- Replaced the former record-heavy Dashboard with five focused navigation tiles.
+- Added a Sales hub containing Leads and Estimates tiles.
+- Added a Service hub containing Jobs, Invoices, and Customers tiles.
+- Reduced the top-level application navigation to the six accepted business
+  areas in the approved order.
+- Dashboard tiles switch directly to their matching top-level tab, avoiding
+  nested navigation stacks and duplicate Back buttons.
+- Added an Admin navigation stack and moved Catalog Items and Print into a
+  dedicated Catalog & Printing section.
+- Removed the redundant inner navigation stack from Leads so it behaves like the
+  other hub destinations.
+- Extended the tile-based navigation pattern to Invoices, Jobs, Customers,
+  Leads, and Estimates.
+- Added filtered record destinations for invoice status, job status, customer
+  sales status, lead follow-up status, and estimate workflow status.
+- Preserved pull-down search on every record hub; a live Search Results tile
+  opens the complete matching record list.
+- Preserved each existing All-record list, archive toggle, record detail flow,
+  and create-record workflow.
+
+### Files Created
+- `PPS Receipt Printer/BusinessHubViews.swift`
+- `PPS Receipt Printer/RecordHubViews.swift`
+
+### Files Modified
+- `PPS Receipt Printer/ContentView.swift`
+- `PPS Receipt Printer/DashboardView.swift`
+- `PPS Receipt Printer/AdminView.swift`
+- `PPS Receipt Printer/LeadsView.swift`
+- `PPS Receipt Printer/InvoicesView.swift`
+- `PPS Receipt Printer/JobsView.swift`
+- `PPS Receipt Printer/CustomersView.swift`
+- `PPS Receipt Printer/EstimatesView.swift`
+- `Documentation/Phase Development/Phase_15_Project_Workbook.md`
+
+### Validation Checklist
+- [x] Project builds cleanly in Xcode.
+- [x] Top-level tabs appear in the accepted order.
+- [x] Dashboard tiles open Sales, Service, My Day, Operations, and Admin.
+- [x] Sales tiles open Leads and Estimates with one Back button.
+- [x] Service tiles open Jobs, Invoices, and Customers with one Back button.
+- [x] Admin opens Catalog Items and Print successfully.
+- [x] Existing add, search, edit, archive, and detail actions remain available.
+- [x] Invoice Sent, Paid, Past Due, Draft, and All filters return correct records.
+- [x] Job Active, Completed, and All filters return correct records.
+- [x] Customer New Lead and Follow Up filters return correct records.
+- [x] Lead and Estimate Follow Up filters use their accepted combined statuses.
+- [x] Dashboard and hub tiles render correctly in light and dark mode.
+
+### Completion Criteria
+- [x] Dashboard tile hierarchy implemented.
+- [x] Sales and Service hubs implemented.
+- [x] Top-level navigation simplified and reordered.
+- [x] Catalog and printing navigation moved under Admin.
+- [x] Xcode build completed by product owner.
+- [x] Navigation and workflow validation accepted.
+
+### Acceptance Result
+Product-owner testing confirmed that the redesigned Dashboard, Sales, Service,
+My Day, Operations, and Admin navigation works successfully. The Invoice, Job,
+Customer, Lead, and Estimate hubs present the accepted status tiles, retain
+pull-down search, and preserve the existing create, detail, archive, and All
+record workflows. Step 4.6 is accepted as the application-wide UI pattern for
+future workflow pages.
+
+### Resume Point
+Begin Step 5 – Offline-Safe Workflow Handling by auditing the existing local
+persistence, mutation, and synchronization paths before designing the offline
+action queue.
 
 ---
 

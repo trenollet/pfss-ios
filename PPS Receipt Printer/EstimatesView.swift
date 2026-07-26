@@ -1,13 +1,28 @@
 import SwiftUI
 
-struct EstimatesView: View {
+struct EstimateRecordsListView: View {
     @EnvironmentObject private var store: AppDataStore
+    let statuses: Set<EstimateRecordStatus>?
+    let title: String
     @State private var showArchived = false
     @State private var showingNewEstimate = false
-    @State private var searchText = ""
+    @State private var searchText: String
+
+    init(
+        statuses: Set<EstimateRecordStatus>? = nil,
+        title: String = "All Estimates",
+        initialSearchText: String = ""
+    ) {
+        self.statuses = statuses
+        self.title = title
+        _searchText = State(initialValue: initialSearchText)
+    }
 
     private var filteredEstimates: [EstimateRecord] {
-        let source = showArchived ? store.archivedEstimates : store.activeEstimates
+        let lifecycleSource = showArchived ? store.archivedEstimates : store.activeEstimates
+        let source = statuses.map { accepted in
+            lifecycleSource.filter { accepted.contains($0.status) }
+        } ?? lifecycleSource
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return source }
 
@@ -49,7 +64,8 @@ struct EstimatesView: View {
                 }
             }
         }
-        .navigationTitle("Estimates")
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Search estimates")
         .sheet(isPresented: $showingNewEstimate) {
             NavigationStack {

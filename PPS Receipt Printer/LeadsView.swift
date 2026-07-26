@@ -1,13 +1,28 @@
 import SwiftUI
 
-struct LeadsView: View {
+struct LeadRecordsListView: View {
     @EnvironmentObject private var store: AppDataStore
+    let statuses: Set<LeadStatus>?
+    let title: String
     @State private var showArchived = false
     @State private var showingNewLead = false
-    @State private var searchText = ""
+    @State private var searchText: String
+
+    init(
+        statuses: Set<LeadStatus>? = nil,
+        title: String = "All Leads",
+        initialSearchText: String = ""
+    ) {
+        self.statuses = statuses
+        self.title = title
+        _searchText = State(initialValue: initialSearchText)
+    }
 
     private var filteredLeads: [Lead] {
-        let source = showArchived ? store.archivedLeads : store.activeLeads
+        let lifecycleSource = showArchived ? store.archivedLeads : store.activeLeads
+        let source = statuses.map { accepted in
+            lifecycleSource.filter { accepted.contains($0.status) }
+        } ?? lifecycleSource
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return source }
 
@@ -23,8 +38,7 @@ struct LeadsView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
+        List {
                 Section {
                     Button("Add New Lead") { showingNewLead = true }
                     Toggle("Show Archived", isOn: $showArchived)
@@ -45,12 +59,12 @@ struct LeadsView: View {
                         }
                     }
                 }
-            }
-            .navigationTitle("Leads")
-            .searchable(text: $searchText, prompt: "Search leads")
-            .sheet(isPresented: $showingNewLead) {
-                LeadNewView().environmentObject(store)
-            }
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "Search leads")
+        .sheet(isPresented: $showingNewLead) {
+            LeadNewView().environmentObject(store)
         }
     }
 

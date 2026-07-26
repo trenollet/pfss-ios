@@ -7,16 +7,31 @@
 
 import SwiftUI
 
-struct InvoicesView: View {
+struct InvoiceRecordsListView: View {
     @EnvironmentObject var store: AppDataStore
 
+    let statuses: Set<InvoiceStatus>?
+    let title: String
     @State private var showArchived = false
-    @State private var searchText = ""
+    @State private var searchText: String
+
+    init(
+        statuses: Set<InvoiceStatus>? = nil,
+        title: String = "All Invoices",
+        initialSearchText: String = ""
+    ) {
+        self.statuses = statuses
+        self.title = title
+        _searchText = State(initialValue: initialSearchText)
+    }
 
     private var filteredInvoices: [InvoiceRecord] {
-        let source = showArchived
+        let lifecycleSource = showArchived
             ? store.archivedInvoices
             : store.activeInvoices
+        let source = statuses.map { accepted in
+            lifecycleSource.filter { accepted.contains($0.status) }
+        } ?? lifecycleSource
 
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let matchingInvoices: [InvoiceRecord]
@@ -113,7 +128,8 @@ struct InvoicesView: View {
                     }
                 }
             }
-        .navigationTitle("Invoices")
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Search invoices")
     }
 
