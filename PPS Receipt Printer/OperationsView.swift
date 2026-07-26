@@ -17,14 +17,9 @@ struct OperationsView: View {
     @State private var showingOperationError = false
 
     private let calendar = Calendar.current
-    private let forecastDayCount = 4
 
     private var now: Date {
         Date()
-    }
-
-    private var startOfToday: Date {
-        calendar.startOfDay(for: now)
     }
 
     private var activeTechnicians: [EmployeeRecord] {
@@ -89,47 +84,6 @@ struct OperationsView: View {
 
     private var dispatchQueueItems: [DispatchQueueItem] {
         dispatchJobs.map(makeDispatchQueueItem)
-    }
-
-    private var capacityForecasts: [CapacityForecast] {
-        (0..<forecastDayCount).compactMap { dayOffset in
-            guard let date = calendar.date(
-                byAdding: .day,
-                value: dayOffset,
-                to: startOfToday
-            ) else {
-                return nil
-            }
-
-            let summaries = activeTechnicians.map {
-                SchedulingEngine.capacitySummary(
-                    for: $0,
-                    on: date,
-                    from: activeJobs,
-                    calendar: calendar
-                )
-            }
-
-            let workingSummaries = summaries.filter(\.isWorkingDay)
-
-            let utilization: Double
-
-            if workingSummaries.isEmpty {
-                utilization = 0
-            } else {
-                utilization = workingSummaries.reduce(0.0) {
-                    $0 + min(max($1.utilizationFraction, 0), 1)
-                } / Double(workingSummaries.count)
-            }
-
-            return CapacityForecast(
-                day: forecastDayName(
-                    for: date,
-                    dayOffset: dayOffset
-                ),
-                utilization: utilization
-            )
-        }
     }
 
     private var revenueSummary: RevenueSummary {
@@ -252,15 +206,6 @@ struct OperationsView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
                     summaryGrid
-                    dispatchBoardSection
-                    dailyPlannerSection
-                    technicianSection
-                    workforceIntelligenceSection
-                    dispatchSection
-                    activeAssignmentsSection
-                    capacitySection
-                    revenueSection
-                    recommendationsSection
                 }
                 .padding()
             }
@@ -287,104 +232,6 @@ struct OperationsView: View {
         }
     }
 
-    // MARK: - Technician Dispatch Board
-
-    private var dispatchBoardSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            sectionHeader(
-                title: "Dispatch Board",
-                systemImage: "rectangle.3.group.fill"
-            )
-
-            NavigationLink {
-                DispatchBoardView()
-            } label: {
-                HStack(spacing: 14) {
-                    Image(systemName: "rectangle.3.group.fill")
-                        .font(.title2)
-                        .foregroundStyle(.indigo)
-                        .frame(width: 42, height: 42)
-                        .background(Color.indigo.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Open Technician Dispatch Board")
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-
-                        Text("Review technician lanes, current and next work, route order, workload, conflicts, and the unassigned queue.")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.leading)
-                    }
-
-                    Spacer(minLength: 8)
-
-                    Image(systemName: "chevron.right")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .padding()
-                .background(Color(.secondarySystemGroupedBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 18))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 18)
-                        .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
-                }
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    // MARK: - Daily Planner
-
-    private var dailyPlannerSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            sectionHeader(
-                title: "Daily Planner",
-                systemImage: "calendar.badge.clock"
-            )
-
-            NavigationLink {
-                DailyPlanPreviewView()
-            } label: {
-                HStack(spacing: 14) {
-                    Image(systemName: "calendar.badge.clock")
-                        .font(.title2)
-                        .foregroundStyle(.blue)
-                        .frame(width: 42, height: 42)
-                        .background(Color.blue.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Build Daily Plan")
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-
-                        Text("Preview fixed work, flexible openings, lunch, buffers, and conflicts.")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.leading)
-                    }
-
-                    Spacer(minLength: 8)
-
-                    Image(systemName: "chevron.right")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .padding()
-                .background(Color(.secondarySystemGroupedBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 18))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 18)
-                        .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
-                }
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
     // MARK: - Summary
 
     private var summaryGrid: some View {
@@ -395,268 +242,113 @@ struct OperationsView: View {
             ],
             spacing: 16
         ) {
-            DashboardStatCard(
+            operationsTile(
                 title: "Today's Jobs",
                 value: "\(todayJobs.count)",
                 icon: "calendar",
                 subtitle: todayJobsSubtitle,
-                accentColor: .blue,
-                trend: .neutral
-            )
+                color: .blue
+            ) {
+                OperationsActiveAssignmentsView()
+            }
 
-            DashboardStatCard(
+            operationsTile(
                 title: "Technicians",
                 value: "\(activeTechnicians.count)",
                 icon: "person.3.fill",
                 subtitle: "\(availableTechnicianCount) available",
-                accentColor: .green,
-                trend: .neutral
-            )
+                color: .green
+            ) {
+                OperationsTechniciansView()
+            }
 
-            DashboardStatCard(
+            operationsTile(
                 title: "Dispatch Queue",
                 value: "\(dispatchQueueItems.count)",
                 icon: "list.bullet.clipboard",
                 subtitle: "\(highPriorityDispatchCount) high priority",
-                accentColor: .orange,
-                trend: highPriorityDispatchCount > 0
-                    ? .up
-                    : .neutral
-            )
+                color: .orange
+            ) {
+                OperationsDispatchQueueView()
+            }
 
-            DashboardStatCard(
+            operationsTile(
+                title: "Dispatch Board",
+                value: "Open",
+                icon: "rectangle.3.group.fill",
+                subtitle: "Technician lanes",
+                color: .indigo
+            ) {
+                DispatchBoardView()
+            }
+
+            operationsTile(
+                title: "Daily Planner",
+                value: "Plan",
+                icon: "calendar.badge.clock",
+                subtitle: "Build the workday",
+                color: .cyan
+            ) {
+                DailyPlanPreviewView()
+            }
+
+            operationsTile(
+                title: "Workforce Intelligence",
+                value: "Review",
+                icon: "person.text.rectangle.fill",
+                subtitle: workforceCredentialAlertCount > 0
+                    ? "\(workforceCredentialAlertCount) credential alerts"
+                    : "Skills and readiness",
+                color: .purple
+            ) {
+                WorkforceIntelligenceDashboardView()
+            }
+
+            operationsTile(
                 title: "Capacity",
                 value: averageUtilization.formatted(
                     .percent.precision(.fractionLength(0))
                 ),
                 icon: "gauge.with.dots.needle.67percent",
                 subtitle: capacitySubtitle,
-                accentColor: capacityColor,
-                trend: averageUtilization >= 0.85
-                    ? .up
-                    : .neutral
-            )
-        }
-    }
-
-    // MARK: - Technician Status
-
-    private var technicianSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            sectionHeader(
-                title: "Technician Status",
-                systemImage: "person.2.fill"
-            )
-
-            if technicianModels.isEmpty {
-                emptyCard(
-                    title: "No active technicians",
-                    message: "Add active technician employees to begin tracking daily capacity."
-                )
-            } else {
-                ForEach(technicianModels) { technician in
-                    TechnicianStatusCard(model: technician)
-                }
+                color: capacityColor
+            ) {
+                WorkforceCapacityDashboardView()
             }
-        }
-    }
 
-    // MARK: - Workforce Intelligence
-
-    private var workforceIntelligenceSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            sectionHeader(
-                title: "Workforce Intelligence",
-                systemImage: "person.text.rectangle.fill"
-            )
-
-            NavigationLink {
-                WorkforceIntelligenceDashboardView()
-            } label: {
-                HStack(spacing: 14) {
-                    Image(systemName: "person.text.rectangle.fill")
-                        .font(.title2)
-                        .foregroundStyle(.purple)
-                        .frame(width: 42, height: 42)
-                        .background(Color.purple.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Review Workforce Readiness")
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-
-                        Text("Review technician skills, credentials, resources, availability, and current workload.")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.leading)
-
-                        if workforceCredentialAlertCount > 0 {
-                            Label(
-                                "\(workforceCredentialAlertCount) credential alert\(workforceCredentialAlertCount == 1 ? "" : "s")",
-                                systemImage: "exclamationmark.shield.fill"
-                            )
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.orange)
-                        }
-                    }
-
-                    Spacer(minLength: 8)
-
-                    Image(systemName: "chevron.right")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .padding()
-                .background(Color(.secondarySystemGroupedBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 18))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 18)
-                        .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
-                }
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    // MARK: - Dispatch Queue
-
-    private var dispatchSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            sectionHeader(
-                title: "Dispatch Queue",
-                systemImage: "list.bullet.clipboard.fill"
-            )
-
-            if dispatchQueueItems.isEmpty {
-                emptyCard(
-                    title: "Dispatch queue is clear",
-                    message: "All active jobs currently have a primary technician assignment."
-                )
-            } else {
-                ForEach(dispatchQueueItems) { item in
-                    DispatchQueueCard(
-                        item: item,
-                        technicianOptions: technicianOptions(
-                            for: item.jobID
-                        ),
-                        onAssign: { technicianID, overrideReason in
-                            assignTechnician(
-                                technicianID,
-                                to: item.jobID,
-                                overrideReason: overrideReason
-                            )
-                        },
-                        onViewDetails: {
-                            guard let jobID = item.jobID else { return }
-                            selectedAssignmentID = store.assignment(forJobID: jobID)?.id
-                        }
-                    )
-                }
-            }
-        }
-    }
-
-    // MARK: - Active Assignments
-
-    private var activeAssignmentsSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            sectionHeader(
-                title: "Active Assignments",
-                systemImage: "person.text.rectangle.fill"
-            )
-
-            if activeAssignments.isEmpty {
-                emptyCard(
-                    title: "No active assignments",
-                    message: "Eligible jobs will appear here as operational assignments."
-                )
-            } else {
-                ForEach(activeAssignments) { assignment in
-                    Button {
-                        selectedAssignmentID = assignment.id
-                    } label: {
-                        AssignmentCard(
-                            assignment: assignment,
-                            employees: store.activeEmployees,
-                            customers: store.customers,
-                            sites: store.sites
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityHint("Opens assignment details")
-                }
-            }
-        }
-    }
-
-    // MARK: - Capacity
-
-    private var capacitySection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            sectionHeader(
-                title: "Capacity",
-                systemImage: "chart.bar.fill"
-            )
-
-            CapacityForecastCard(
-                forecasts: capacityForecasts,
-                subtitle: "Next \(forecastDayCount) operating days"
-            )
-        }
-    }
-
-    // MARK: - Revenue
-
-    private var revenueSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            sectionHeader(
+            operationsTile(
                 title: "Revenue",
-                systemImage: "dollarsign.circle.fill"
-            )
+                value: revenueSummary.collected.formatted(
+                    .currency(code: "USD").precision(.fractionLength(0))
+                ),
+                icon: "dollarsign.circle.fill",
+                subtitle: "Collected today",
+                color: .green
+            ) {
+                OperationsRevenueView(summary: revenueSummary)
+            }
 
-            RevenueSummaryCard(
-                summary: revenueSummary,
-                subtitle: "Today"
-            )
-        }
-    }
-
-    // MARK: - Recommendations
-
-    private var recommendationsSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            sectionHeader(
+            operationsTile(
                 title: "Recommendations",
-                systemImage: "sparkles"
-            )
-
-            if recommendationItems.isEmpty {
-                emptyCard(
-                    title: "No recommendations",
-                    message: "New recommendations will appear when a job needs dispatch attention."
-                )
-            } else {
-                ForEach(
-                    Array(
-                        zip(
-                            dispatchJobs,
-                            recommendationItems
-                        )
+                value: "\(recommendationItems.count)",
+                icon: "sparkles",
+                subtitle: recommendationItems.isEmpty
+                    ? "No recommendations"
+                    : "Dispatch opportunities",
+                color: .yellow
+            ) {
+                OperationsRecommendationsView(
+                    jobs: dispatchJobs,
+                    items: recommendationItems,
+                    recommendedJobIDs: Set(
+                        dispatchJobs.compactMap { job in
+                            bestRecommendationCandidate(for: job) == nil
+                                ? nil
+                                : job.id
+                        }
                     ),
-                    id: \.0.id
-                ) { job, recommendation in
-                    RecommendationCard(
-                        item: recommendation,
-                        action: bestRecommendationCandidate(for: job) == nil
-                            ? nil
-                            : {
-                                assignRecommendedTechnician(
-                                    to: job.id
-                                )
-                            }
-                    )
-                }
+                    onAssignRecommended: assignRecommendedTechnician
+                )
             }
         }
     }
@@ -1140,24 +832,6 @@ struct OperationsView: View {
         }
     }
 
-    private func forecastDayName(
-        for date: Date,
-        dayOffset: Int
-    ) -> String {
-        switch dayOffset {
-        case 0:
-            return "Today"
-
-        case 1:
-            return "Tomorrow"
-
-        default:
-            return date.formatted(
-                .dateTime.weekday(.wide)
-            )
-        }
-    }
-
     private func formattedOpening(
         _ date: Date
     ) -> String {
@@ -1188,34 +862,27 @@ struct OperationsView: View {
         ) ?? day
     }
 
-    private func sectionHeader(
+    private func operationsTile<Destination: View>(
         title: String,
-        systemImage: String
+        value: String,
+        icon: String,
+        subtitle: String,
+        color: Color,
+        @ViewBuilder destination: () -> Destination
     ) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.title2.bold())
-    }
-
-    private func emptyCard(
-        title: String,
-        message: String
-    ) -> some View {
-        VStack(spacing: 10) {
-            Image(systemName: "tray")
-                .font(.title2)
-                .foregroundStyle(.secondary)
-
-            Text(title)
-                .font(.headline)
-
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+        NavigationLink(destination: destination) {
+            DashboardStatCard(
+                title: title,
+                value: value,
+                icon: icon,
+                subtitle: subtitle,
+                accentColor: color,
+                trend: .neutral,
+                navigationIndicator: true
+            )
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 12)
-        .dashboardCardStyle()
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens \(title)")
     }
 
     private func objectWillChangeRefresh() async {

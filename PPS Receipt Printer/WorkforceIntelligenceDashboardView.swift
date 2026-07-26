@@ -87,7 +87,7 @@ struct WorkforceIntelligenceDashboardView: View {
             .padding()
         }
         .navigationTitle("Workforce Intelligence")
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private var dateCard: some View {

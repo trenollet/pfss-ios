@@ -256,10 +256,130 @@ Synchronize routing, scheduling, and real-world progress.
   grouped below all remaining stops without a route number.
 
 ### Resume Point
-Begin Step 5 – Offline-Safe Workflow Handling. Review the current persistence
-and synchronization boundaries, then define the offline command queue,
-recovery behavior, conflict policy, and technician-facing connection state
-before implementing mutations.
+Begin Step 4.6 – Dashboard UI and Workflow Optimization using the accepted
+Operations tile hub as the visual and navigation reference.
+
+---
+
+# Step 4.5 – Operations UI Cleanup
+
+## Status
+Complete and field-validated.
+
+### Completion Date
+July 25, 2026
+
+### Commit
+`Complete Phase 15 Step 4.5 Operations UI cleanup`
+
+## Objective
+Convert Operations from a long mixed dashboard into a compact operational
+navigation hub that makes dispatch work and testing faster.
+
+### Expected Outcomes
+- Every summary tile is a clear, tappable entry point.
+- Active Assignments, Technicians, and Dispatch Queue move to dedicated pages.
+- The three extracted pages support search comparable to Customers, Jobs, and
+  Estimates.
+- Dispatch Board, Daily Planner, and Workforce Intelligence use the same tile
+  presentation and continue opening their existing screens.
+- Capacity remains an actionable tile linked to the existing capacity dashboard.
+- Revenue and Recommendations move to dedicated destinations so Operations
+  contains navigation choices rather than embedded reports or record lists.
+- Capacity Forecast becomes the first section of Capacity Dashboard.
+- The resulting tile language becomes the reference design for Step 4.6.
+
+### Implementation Record
+- Replaced the noninteractive Operations summary cards with nine linked tiles:
+  Today's Jobs, Technicians, Dispatch Queue, Dispatch Board, Daily Planner,
+  Workforce Intelligence, Capacity, Revenue, and Recommendations.
+- Added a searchable Active Assignments page. Searches cover assignment and Job
+  numbers, customer and site information, technician names, and lifecycle state.
+- Added a searchable Operations Technicians page linked to existing Employee
+  Detail records and backed by current-day workload summaries.
+- Added a searchable Dispatch Queue page while preserving recommendation,
+  technician selection, human override, assignment, and detail actions.
+- Removed full Active Assignment, Technician Status, Dispatch Queue, Dispatch
+  Board, Daily Planner, and Workforce Intelligence sections from the main
+  Operations scroll.
+- Added dedicated Revenue and Recommendations pages and removed both embedded
+  sections from Operations.
+- Moved Capacity Forecast to the top of Capacity Dashboard and based the forecast
+  on the dashboard's selected date.
+- Standardized Capacity Dashboard and Workforce Intelligence on the compact
+  inline navigation-title style used by the other Operations destinations.
+
+### Files Added
+- `PPS Receipt Printer/OperationsHubDestinationViews.swift`
+
+### Files Modified
+- `PPS Receipt Printer/DashboardStatCard.swift`
+- `PPS Receipt Printer/OperationsView.swift`
+- `PPS Receipt Printer/WorkforceCapacityDashboardView.swift`
+- `PPS Receipt Printer/WorkforceIntelligenceDashboardView.swift`
+- `Documentation/Phase Development/Phase_15_Project_Workbook.md`
+
+### Test Checklist
+- Confirm Operations opens as a compact tile hub without the former long Active
+  Assignments, Technician Status, or Dispatch Queue lists.
+- Tap Today's Jobs and confirm Active Assignments opens; search by customer,
+  site/address, Job number, Assignment number, technician, and status.
+- Open an Assignment from search results and confirm Assignment Detail works.
+- Tap Technicians, search by name/email/phone, and open Employee Detail.
+- Tap Dispatch Queue, search its records, view details, assign the recommended
+  technician, and exercise a human override when appropriate.
+- Confirm Dispatch Board, Daily Planner, Workforce Intelligence, and Capacity
+  tiles open their existing destinations.
+- Confirm Revenue and Recommendations open dedicated pages and no longer render
+  full sections beneath the Operations tiles.
+- Confirm Capacity Forecast is the first Capacity Dashboard section and changes
+  with the dashboard date.
+- Confirm Capacity Dashboard and Workforce Intelligence titles use the same
+  compact centered style as the other Operations destinations without truncation.
+- Confirm all tile counts, capacity, credential-alert text, revenue, and
+  recommendations update from live AppDataStore state.
+- Confirm light/dark mode, large text, Back navigation, and pull-to-refresh do
+  not introduce clipping or duplicate navigation controls.
+
+### Completion Criteria
+- [x] Tile-based Operations hub implemented.
+- [x] Dedicated searchable destination pages implemented.
+- [x] Existing operational action boundaries preserved.
+- [x] Xcode build completed by product owner.
+- [x] Navigation and search field validation accepted.
+
+### Acceptance Result
+Product-owner testing confirmed that all nine Operations tiles open their
+intended destinations, extracted lists remain searchable and actionable,
+Capacity Forecast is correctly embedded in Capacity Dashboard, and the compact
+navigation titles render consistently without truncation.
+
+### Resume Point
+Begin Step 4.6 – Dashboard UI and Workflow Optimization. Review the existing
+Dashboard information hierarchy and convert it to the accepted tile-based hub
+without removing high-value business summaries.
+
+---
+
+# Step 4.6 – Dashboard UI and Workflow Optimization
+
+## Status
+Planned; begins after Step 4.5 acceptance.
+
+## Objective
+Redesign the main Dashboard using the validated Operations tile language so the
+application's primary entry screen has clearer information hierarchy, faster
+workflow access, and consistent navigation.
+
+### Planned Outcomes
+- Dashboard adopts the same reusable tile-based look and interaction model.
+- High-value business data remains visible without turning the page into a long
+  list of records.
+- Primary business workflows become easier to reach and test.
+- Dashboard and Operations feel like two coordinated hubs rather than unrelated
+  interfaces.
+- Exact Dashboard content and ordering will be finalized after Step 4.5 field
+  feedback establishes the successful tile behavior.
 
 ---
 
