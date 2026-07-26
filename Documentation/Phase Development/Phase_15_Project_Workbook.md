@@ -853,8 +853,499 @@ duplicate actions, inconsistent terminology, and unnecessary technician taps.
 
 # Step 6 – Workflow Cleanup and UI Simplification
 
+## Status
+Complete and validated.
+
 ## Objective
 Remove redundant workflows and simplify navigation.
+
+## Part 1 – Workflow Surface Audit
+
+### Status
+Complete.
+
+### Objective
+Inventory every operational surface before changing behavior, identify where
+the same action or state is presented more than once, and establish the single
+ownership boundary for the remaining Step 6 cleanup.
+
+### Surfaces Reviewed
+
+| Surface | Current workflow source | Actions or controls exposed | Audit result |
+| --- | --- | --- | --- |
+| Technician My Day | `FieldOperationsEngine` through `AppDataStore` and `FieldOperationsWorkflowCoordinator` | Navigate, Call, the next field action, pause/resume when available, invoice handoff, and a noninteractive Complete state | This is the accepted technician execution surface and should remain the primary field workflow. |
+| Job Detail | Shared workflow context plus older Job-status branching | Shared Field Workflow card, technician notes, Job Log, Job Timeline, and a second Next Step button | Contains duplicate action presentation and duplicate timeline presentation. The older status-based Next Step path can disagree with the shared engine. |
+| Assignment Detail | `AssignmentEngine` and `DispatchEngine` | Dispatch, Start Travel, Mark Arrived, Complete Work, Mark Invoice Ready, Close Assignment, scheduling, crew, cancel, and unassign | Dispatch, scheduling, crew, cancel, and unassign belong here. Travel-through-close duplicates the technician lifecycle and creates a second operational authority. |
+| Dispatch Board queues | Dispatch Board snapshot and Assignment Detail/Manage destinations | Details and Manage | The queues do not mutate field state directly, but Details currently opens the parallel Assignment lifecycle while Manage exposes the correct dispatcher tools. |
+| Operations Timeline | Timeline snapshot with Assignment Detail/Manage destinations | Details, Manage, alert review, and accepted plan visibility | The timeline is an operational review surface. It should not become another field-action owner. Details and Manage need clearly separated responsibilities. |
+| Daily Planner | Daily Planner, Route, and Assignment planning services | Generate/refresh proposal, inspect capacity/conflicts, review and apply route | Correctly behaves as a preview-and-commit planning surface and does not directly execute technician lifecycle actions. |
+| Live Map | Live Map snapshot with Assignment Detail or Employee Detail destinations | View assignment or technician details | Correctly acts as a situational-awareness surface, but Assignment Detail currently exposes the duplicated lifecycle after navigation. |
+| Invoice Detail | Invoice record workflow through `AppDataStore` | Change invoice status, record payment information, share, print, archive, and restore | Invoice-domain actions belong here. Invoice Sent/Paid technician completion must be represented consistently by the shared field-workflow context. |
+
+### Current Workflow Ownership
+
+The intended operational path already exists:
+
+```text
+SwiftUI Surface
+      ↓
+FieldOperationsWorkflowCoordinator
+      ↓
+AppDataStore.performWorkflowAction
+      ↓
+FieldOperationsEngine
+      ↓
+Job + Assignment synchronization + offline queue
+```
+
+The audit found a competing path in `AssignmentDetailView`:
+
+```text
+Assignment Detail
+      ↓
+AssignmentEngine / DispatchEngine
+      ↓
+Assignment lifecycle only
+```
+
+`AppDataStore.performWorkflowAction` already synchronizes accepted Job workflow
+milestones into the related Assignment and writes the offline operation intent.
+Therefore, field actions must enter through the first path. Direct Assignment
+field actions can bypass Job workflow state, technician timeline behavior, and
+the Step 5 offline synchronization boundary.
+
+### Duplicate and Inconsistent Behavior Found
+
+1. **Parallel lifecycle controls** – Assignment Detail independently offers
+   Start Travel, Mark Arrived, Complete Work, Mark Invoice Ready, and Close
+   Assignment even though those milestones are already owned by the shared Job
+   workflow.
+2. **Two Job Detail action systems** – Job Detail renders the shared Field
+   Workflow card and also renders a legacy `Next Step` button calculated from
+   `JobStatus`. The two systems use different rules and labels.
+3. **Duplicate history presentation** – Job Detail displays the same technician
+   events in both Job Log and Job Timeline. The note composer is valuable, but
+   the event list only needs one presentation.
+4. **Vocabulary drift** – Equivalent actions currently appear as Arrived versus
+   Mark Arrived, Start Job versus Start Work, Complete Job versus Complete Work,
+   and Close Job/Close Assignment versus the accepted technician status
+   Complete.
+5. **Repeated presentation mappings** – My Day and `JobWorkflowComponents`
+   separately map workflow actions and states to colors and icons. These can
+   drift even when both screens consume the same engine context.
+6. **Coordinator recreation** – My Day and Job Detail create a new workflow
+   coordinator for individual reads and actions. This preserves the mutation
+   result but discards observable coordinator outcome/error state between calls.
+7. **Invoice completion mismatch** – My Day correctly treats Invoice Sent and
+   Payment Received as technician-complete, while the core workflow still
+   presents Invoice Created/Record Payment until payment is received. This
+   accepted business rule needs one reusable presentation decision.
+8. **Details/Manage overlap** – Dispatch Board and Timeline correctly provide
+   Details and Manage destinations, but Assignment Detail duplicates several
+   Manage responsibilities and also exposes technician actions. The destination
+   contracts need to be made explicit.
+
+### Action Ownership Decisions
+
+#### Shared Field Workflow — one source of truth
+- Start Travel
+- Arrived
+- Start Setup
+- Start Work
+- Pause Work
+- Resume Work
+- Start Pack-up
+- Complete Work
+- Create Invoice
+- Record Payment or open the corresponding invoice
+- Complete technician status
+
+These actions must be validated and executed by the shared Field Operations
+path so Job state, Assignment state, history, UI, and the offline queue remain
+synchronized.
+
+#### Dispatch and Assignment Management — remains separate
+- Create and dispatch an Assignment.
+- Assign, reassign, add, or remove crew.
+- Schedule, reschedule, and apply planning constraints.
+- Insert emergency work and apply route overrides.
+- Cancel or unassign work with an audited reason.
+
+These are office/dispatcher controls and remain owned by the Assignment and
+Dispatch engines.
+
+#### Record and Utility Actions — remain in their domains
+- Invoice status, payment details, sharing, printing, archive, and restore remain
+  in Invoice Detail.
+- Technician notes use the shared Job timeline/audit path.
+- Navigate, Call, Details, search, and filtering remain utility controls and do
+  not change lifecycle state.
+
+### Canonical Vocabulary Proposed for Part 2
+
+| Milestone | Canonical technician label |
+| --- | --- |
+| Travel begins | Start Travel |
+| Technician reaches site | Arrived |
+| Setup begins | Start Setup |
+| Productive work begins | Start Work |
+| Work temporarily stops | Pause Work |
+| Paused work continues | Resume Work |
+| Pack-up begins | Start Pack-up |
+| Field work ends | Complete Work |
+| Invoice is created | Create Invoice |
+| Payment workflow opens | Record Payment |
+| Invoice sent or payment received | Complete |
+
+`Complete Work` is an action. `Complete` is the final technician-facing status
+after the invoice has been sent or payment has been received. The two must not
+be used interchangeably.
+
+### Prioritized Cleanup Backlog
+
+1. Lock the vocabulary and move titles, icons, colors, and completion
+   presentation into shared workflow presentation metadata.
+2. Remove the legacy Job Detail Next Step action path and retain one shared
+   Field Workflow control.
+3. Consolidate Job Log and Job Timeline while preserving the note composer.
+4. Remove technician lifecycle mutations from Assignment Detail; retain only
+   dispatch, scheduling, crew, cancel, unassign, and record-detail functions.
+5. Make Dispatch Board, Timeline, and Live Map detail destinations read from the
+   shared operational state and route mutations to the correct owner.
+6. Reuse one observable coordinator per workflow surface and surface failed
+   action feedback consistently.
+7. Add regression tests proving every entry surface produces the same action,
+   state, history, Assignment synchronization, and offline operation intent.
+
+### Files Reviewed
+- `PPS Receipt Printer/FieldOperationsEngine.swift`
+- `PPS Receipt Printer/FieldOperationsWorkflowCoordinator.swift`
+- `PPS Receipt Printer/AppDataStore.swift`
+- `PPS Receipt Printer/JobWorkflowComponents.swift`
+- `PPS Receipt Printer/TechnicianDailyAgendaView.swift`
+- `PPS Receipt Printer/JobDetailView.swift`
+- `PPS Receipt Printer/AssignmentDetailView.swift`
+- `PPS Receipt Printer/DispatchBoardView.swift`
+- `PPS Receipt Printer/DispatchBoardDestinationViews.swift`
+- `PPS Receipt Printer/OperationsTimelineView.swift`
+- `PPS Receipt Printer/DailyPlanPreviewView.swift`
+- `PPS Receipt Printer/OperationsLiveMapView.swift`
+- `PPS Receipt Printer/InvoiceDetailView.swift`
+
+### Part 1 Validation
+- [x] Technician workflow surfaces inventoried.
+- [x] Dispatcher and office workflow surfaces inventoried.
+- [x] Planning, timeline, map, and invoice handoff surfaces inventoried.
+- [x] Duplicate action owners identified.
+- [x] Inconsistent labels and completion semantics identified.
+- [x] Field, dispatch, record, and utility action boundaries documented.
+- [x] Cleanup order documented without changing production behavior.
+
+### Part 1 Acceptance Result
+The audit confirms that the Step 5 offline-safe mutation boundary is the correct
+foundation for Step 6. My Day and the shared Job workflow should remain the
+technician execution authority. Assignment Detail should retain assignment and
+dispatcher management but must no longer act as a parallel field workflow.
+Planning, Timeline, and Live Map remain review and navigation surfaces.
+
+### Files Modified
+- `Documentation/Phase Development/Phase_15_Project_Workbook.md`
+
+### Resume Point
+Begin Step 6 Part 2 – Action Vocabulary and Shared Presentation Metadata. Adopt
+the canonical labels above, centralize action/state titles, icons, colors, and
+technician-complete presentation, then add tests before removing redundant
+controls in Part 3.
+
+## Part 2 – Action Vocabulary and Shared Presentation Metadata
+
+### Status
+Complete and validated.
+
+### Objective
+Give every technician workflow surface one reusable source for action labels,
+symbols, colors, state labels, and technician-complete presentation without
+changing lifecycle rules or removing controls yet.
+
+### Implementation Record
+- Added `JobWorkflowActionPresentation` as the canonical action-presentation
+  record.
+- Added `JobWorkflowAccent` so presentation intent is testable without coupling
+  the field engine to SwiftUI.
+- Added `JobWorkflowPresentation` to every `JobWorkflowContext`.
+- Adopted the accepted canonical action vocabulary: Start Travel, Arrived,
+  Start Setup, Start Work, Pause Work, Resume Work, Start Pack-up, Complete
+  Work, Create Invoice, Record Payment, Complete, and Details.
+- Distinguished the `Complete Work` lifecycle action from the final
+  technician-facing `Complete` status.
+- Centralized state labels, symbols, and semantic accents for Not Started,
+  Traveling, Arrived, Setting Up, Working, Paused, Packing Up, Work Complete,
+  Invoice Created, Payment Received, Complete, and Cancelled.
+- Centralized the accepted invoice handoff rule: Sent or Overdue displays
+  Invoice Sent and Job Complete; Partially Paid or Paid displays Payment
+  Received and Job Complete.
+- Preserved invoice financial state independently from technician completion,
+  allowing a technician to finish the workday while an invoice remains unpaid.
+- Updated the reusable Job workflow card to consume shared presentation
+  metadata instead of maintaining its own icon, color, and action-tint switches.
+- Updated My Day to consume the same presentation metadata and removed its
+  duplicate invoice-state and workflow-color mappings.
+- Updated Job Detail status and its legacy action label/icon to read from the
+  shared context. The redundant legacy control remains scheduled for removal in
+  Part 3.
+
+### Files Modified
+- `PPS Receipt Printer/FieldOperationsEngine.swift`
+- `PPS Receipt Printer/JobWorkflowComponents.swift`
+- `PPS Receipt Printer/TechnicianDailyAgendaView.swift`
+- `PPS Receipt Printer/JobDetailView.swift`
+- `PPS Receipt PrinterTests/FieldOperationsEngineTests.swift`
+- `Documentation/Phase Development/Phase_15_Project_Workbook.md`
+
+### Regression Coverage Added
+- Canonical title and accent coverage for every `JobWorkflowAction`.
+- Nonempty shared symbol coverage for every action.
+- Invoice Sent presentation coverage without changing the underlying unpaid
+  financial state.
+- Paid invoice coverage for Payment Received and Job Complete presentation.
+
+### Part 2 Validation
+- [x] A single canonical action vocabulary is defined.
+- [x] Action labels, symbols, and accents share one source.
+- [x] State labels, symbols, and accents share one source.
+- [x] My Day consumes shared presentation metadata.
+- [x] Job Detail and the reusable workflow card consume shared metadata.
+- [x] Invoice Sent and Payment Received completion semantics are centralized.
+- [x] Modified Swift files pass syntax parsing.
+- [x] No Swift compiler error was reported during the command-line source build.
+- [x] Project builds cleanly in the product owner's Xcode environment.
+- [x] Complete regression suite passes.
+- [x] Product owner accepts the visible vocabulary and status presentation.
+
+### Validation Note
+The command-line build reached Swift compilation without reporting a source
+error. It could not complete asset-catalog processing because CoreSimulator
+runtimes were unavailable to the Codex process. Final Xcode build and test
+validation remains with the product owner.
+
+### Part 2 Acceptance Result
+Product-owner validation confirmed a clean Xcode build and accepted the shared
+workflow vocabulary and presentation. The final missing explicit SwiftUI return
+in My Day was corrected and the affected source passed parsing and diff checks.
+
+## Part 3 – Remove the Redundant Job Detail Action Path
+
+### Status
+Complete and validated.
+
+### Objective
+Make the shared Field Workflow card the only Job Detail lifecycle control and
+remove the older status-based Next Step path that could disagree with the Field
+Operations engine.
+
+### Implementation Record
+- Made the shared Field Workflow card visible as the single lifecycle control
+  on Job Detail.
+- Removed the separate Next Step section and its duplicate title, icon,
+  disabled-state, and guided-action calculations.
+- Removed the older `performGuidedPrimaryAction` entry point from Job Detail.
+- Preserved local Job edits before a workflow transition is submitted.
+- Kept every lifecycle mutation routed through
+  `FieldOperationsWorkflowCoordinator` and the Step 5 offline-safe store
+  boundary.
+- Preserved invoice handoff: Create Invoice opens the newly linked Invoice
+  Detail after the shared action succeeds, while Record Payment opens the
+  existing invoice so payment is recorded in its proper domain.
+- Kept dispatcher, scheduling, pricing, technician, archive, and work-order
+  editing behavior unchanged.
+- Corrected a test-isolation defect discovered during Part 3 validation. The
+  offline workflow tests now disable primary AppDataStore disk persistence
+  instead of writing fixtures into the hosted app's production JSON store.
+- Added a narrowly targeted startup cleanup for legacy fixtures whose exact
+  customer marker is `PPS-OFFLINE-TEST` and whose Job number begins with
+  `JOB-OFFLINE-` or equals `JOB-LOCAL-ONLY`. Related test invoices and
+  assignments are removed without touching business records.
+- Added editable Amount Paid entry to Invoice Detail so partial payments can be
+  recorded in the field and the remaining balance updates immediately.
+- Centralized invoice payment normalization in `AppDataStore`: partial amounts
+  become Partially Paid, full amounts become Paid, overpayments are clamped to
+  the invoice total, Balance Due is recalculated, and Paid Date is retained only
+  for fully paid invoices.
+
+### Files Modified
+- `PPS Receipt Printer/JobDetailView.swift`
+- `PPS Receipt Printer/AppDataStore.swift`
+- `PPS Receipt Printer/InvoiceDetailView.swift`
+- `PPS Receipt PrinterTests/OfflineWorkflowIntegrationTests.swift`
+- `Documentation/Phase Development/Phase_15_Project_Workbook.md`
+
+### Part 3 Validation
+- [x] Job Detail exposes only one lifecycle control in source.
+- [x] The remaining control consumes the shared `JobWorkflowContext`.
+- [x] Workflow mutations continue through the shared coordinator.
+- [x] Invoice creation and payment handoff remain connected to Invoice Detail.
+- [x] Offline workflow tests cannot load or save the production app snapshot.
+- [x] Previously leaked offline-test fixtures have a marker-specific cleanup.
+- [x] Partial payment amount, remaining balance, status, and queue intent have
+  focused regression coverage.
+- [x] Project builds cleanly in the product owner's Xcode environment.
+- [x] Start Travel through Complete remains functional from Job Detail.
+- [x] Create Invoice and Record Payment open the corresponding invoice.
+- [x] Complete regression suite passes.
+
+### Part 3 Acceptance Result
+Product-owner testing confirmed that the single Job Detail workflow control,
+invoice handoff, partial-payment entry, remaining-balance calculation, and
+invoice bucket behavior all work correctly. Partially paid invoices remain in
+Sent until an unpaid balance passes its due date, when they appear in Past Due.
+
+## Part 4 – Consolidate Job Activity History
+
+### Status
+Complete and validated.
+
+### Objective
+Replace the duplicate Job Log and Job Timeline presentations with one
+chronological Job Timeline while retaining technician note entry and author
+attribution.
+
+### Implementation Record
+- Replaced the separate Job Log event renderer with the reusable
+  `JobTimelineView` driven by the shared `JobWorkflowContext`.
+- Kept the technician note composer and Add Note action in the same Job
+  Timeline section.
+- Preserved chronological workflow events, timestamps, technician attribution,
+  and note text.
+- Removed the second hidden Job Timeline section.
+- Removed the duplicate Job Detail event-row and event-icon mappings.
+- Kept Field Workflow, technician assignment, scheduling, pricing, work-order,
+  and invoice behavior unchanged.
+
+### Files Modified
+- `PPS Receipt Printer/JobDetailView.swift`
+- `Documentation/Phase Development/Phase_15_Project_Workbook.md`
+
+### Part 4 Validation
+- [x] Job Detail contains one Job Timeline section in source.
+- [x] The timeline consumes the shared workflow context.
+- [x] Technician note entry remains available.
+- [x] Duplicate Job Log rendering and icon mappings are removed.
+- [x] Modified Swift sources pass syntax parsing.
+- [x] Repository diff passes whitespace validation.
+- [x] Project builds cleanly in the product owner's Xcode environment.
+- [x] Existing and newly added notes appear once in chronological order.
+- [x] Complete regression suite passes.
+
+### Part 4 Acceptance Result
+Product-owner testing confirmed a clean build and clean regression suite. Job
+Detail now presents one chronological activity history, and technician notes
+remain available without duplicating timeline events.
+
+## Part 5 – Separate Assignment Management from Field Execution
+
+### Status
+Complete and validated.
+
+### Objective
+Keep Assignment Detail focused on dispatcher and assignment-management work and
+remove its parallel technician lifecycle path.
+
+### Implementation Record
+- Retained Dispatch Assignment as the sole primary transition on Assignment
+  Detail because dispatch remains an office/dispatcher responsibility.
+- Removed Start Travel, Mark Arrived, Complete Work, Mark Invoice Ready, and
+  Close Assignment controls from Assignment Detail.
+- Removed the private action enum and direct Assignment-engine calls that
+  powered those duplicate technician transitions.
+- Preserved schedule editing, priority, crew management, unassignment,
+  cancellation, notes, history, and Assignment record details.
+- Preserved both `DispatchEngine` dispatch and the existing Assignment-engine
+  fallback for contexts where a Dispatch engine is not supplied.
+- Left technician lifecycle execution owned by My Day and the shared Job Field
+  Workflow path, which also preserves Job state, audit history, Assignment
+  synchronization, and offline operation intent.
+
+### Files Modified
+- `PPS Receipt Printer/AssignmentDetailView.swift`
+- `Documentation/Phase Development/Phase_15_Project_Workbook.md`
+
+### Part 5 Validation
+- [x] Assignment Detail exposes Dispatch Assignment only for scheduled work.
+- [x] Technician travel-through-completion controls are absent from Assignment
+  Detail source.
+- [x] Scheduling, priority, crew, unassign, cancel, notes, and history remain.
+- [x] Modified Swift source passes syntax parsing.
+- [x] Repository diff passes whitespace validation.
+- [x] Project builds cleanly in the product owner's Xcode environment.
+- [x] Dispatch Assignment remains functional.
+- [x] Assignment management controls remain functional for their valid states.
+- [x] Complete regression suite passes.
+
+### Part 5 Acceptance Result
+Product-owner testing confirmed a clean build and working Assignment behavior.
+Technician lifecycle execution remains owned by My Day and Job Detail, while
+dispatcher assignment responsibilities remain available through the Operations
+management flow.
+
+## Part 6 – Align Operational Destinations
+
+### Status
+Complete and validated.
+
+### Objective
+Make Dispatch Board, Operations Timeline, Live Map, and Operations hub links
+consume the same Assignment state while giving Details and Manage distinct,
+predictable responsibilities.
+
+### Implementation Record
+- Audited Assignment destinations across Dispatch Board, Operations Timeline,
+  Live Map, Active Assignments, Dispatch Queue, and Operations hub surfaces.
+- Confirmed these destinations resolve current Assignment records through the
+  shared `AppDataStore` Assignment engine rather than maintaining independent
+  copies of operational state.
+- Kept Details routed to `AssignmentDetailView` and dispatcher actions routed
+  to `DispatchBoardAssignmentActionsView` where a Manage action is presented.
+- Made Assignment Detail read-only by default: priority, scheduling, crew,
+  status, notes, and history remain visible without exposing mutation controls.
+- Retained an explicit `allowsManagement` entry point for contexts that
+  intentionally need an editable Assignment detail in the future.
+- Preserved scheduling, ownership, route insertion, crew, reassignment, and
+  dispatch controls in the dedicated Manage Assignment surface.
+- Added installed-app Version and Build values to Admin for physical-device
+  build verification.
+- Incremented the application build from 1 to 2; this build displays as
+  Version 1.0, Build 2.
+
+### Files Modified
+- `PPS Receipt Printer/AssignmentDetailView.swift`
+- `PPS Receipt Printer/AdminView.swift`
+- `PPS Receipt Printer.xcodeproj/project.pbxproj`
+- `Documentation/Phase Development/Phase_15_Project_Workbook.md`
+
+### Part 6 Validation
+- [x] Operations destinations resolve current Assignment data from the shared
+  store and engine.
+- [x] Details destinations are read-only by default.
+- [x] Manage destinations retain dispatcher-owned actions.
+- [x] Assignment Detail contains no technician lifecycle controls.
+- [x] Admin displays the installed Version and Build identifiers.
+- [x] Modified Swift sources pass syntax parsing.
+- [x] Project file passes property-list validation.
+- [x] Repository diff passes whitespace validation.
+- [x] Project builds cleanly in the product owner's Xcode environment.
+- [x] Dispatch Board, Timeline, and Live Map reflect the same status.
+- [x] Details and Manage routes behave correctly on a physical device.
+- [x] Complete regression suite passes.
+
+### Part 6 Acceptance Result
+Product-owner testing confirmed a clean build and complete regression suite.
+Operations destinations reflect shared Assignment state, Details remains
+read-only, Manage retains dispatcher-owned actions, and Admin correctly shows
+Version 1.0, Build 2 for device verification.
+
+### Resume Point
+Step 6 is complete. Proceed to Step 7 acceptance testing and polish using
+Version 1.0, Build 2 as the verified test baseline.
 
 ### Expected Outcomes
 - Cleaner navigation.

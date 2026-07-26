@@ -61,14 +61,21 @@ struct DashboardView: View {
                     .frame(maxWidth: 360)
 
                     LazyVGrid(columns: columns, spacing: 16) {
-                        dashboardTile(
-                            title: "Operations",
-                            value: "\(dispatchQueueCount)",
-                            icon: "person.3.sequence.fill",
-                            subtitle: "Awaiting dispatch",
-                            color: .purple,
-                            section: .operations
-                        )
+                        NavigationLink {
+                            OperationsView()
+                        } label: {
+                            DashboardStatCard(
+                                title: "Operations",
+                                value: "\(dispatchQueueCount)",
+                                icon: "person.3.sequence.fill",
+                                subtitle: "Awaiting dispatch",
+                                accentColor: .purple,
+                                trend: .neutral,
+                                navigationIndicator: true
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Opens Operations")
 
                         dashboardTile(
                             title: "Admin",

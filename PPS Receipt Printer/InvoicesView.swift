@@ -7,20 +7,68 @@
 
 import SwiftUI
 
+enum InvoiceRecordBucket {
+    case sent
+    case paid
+    case pastDue
+    case draft
+
+    func contains(
+        _ invoice: InvoiceRecord,
+        relativeTo date: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Bool {
+        switch self {
+        case .sent:
+            return [.sent, .partiallyPaid].contains(invoice.status)
+                && !invoice.isPastDue(relativeTo: date, calendar: calendar)
+        case .paid:
+            return invoice.status == .paid
+        case .pastDue:
+            return invoice.isPastDue(relativeTo: date, calendar: calendar)
+        case .draft:
+            return invoice.status == .draft
+        }
+    }
+}
+
+extension InvoiceRecord {
+    func isPastDue(
+        relativeTo date: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Bool {
+        guard balanceDue > 0 else { return false }
+
+        if status == .overdue {
+            return true
+        }
+
+        guard [.sent, .partiallyPaid].contains(status) else {
+            return false
+        }
+
+        return calendar.startOfDay(for: dueDate)
+            < calendar.startOfDay(for: date)
+    }
+}
+
 struct InvoiceRecordsListView: View {
     @EnvironmentObject var store: AppDataStore
 
     let statuses: Set<InvoiceStatus>?
+    let bucket: InvoiceRecordBucket?
     let title: String
     @State private var showArchived = false
     @State private var searchText: String
 
     init(
         statuses: Set<InvoiceStatus>? = nil,
+        bucket: InvoiceRecordBucket? = nil,
         title: String = "All Invoices",
         initialSearchText: String = ""
     ) {
         self.statuses = statuses
+        self.bucket = bucket
         self.title = title
         _searchText = State(initialValue: initialSearchText)
     }
@@ -29,9 +77,14 @@ struct InvoiceRecordsListView: View {
         let lifecycleSource = showArchived
             ? store.archivedInvoices
             : store.activeInvoices
-        let source = statuses.map { accepted in
-            lifecycleSource.filter { accepted.contains($0.status) }
-        } ?? lifecycleSource
+        let source: [InvoiceRecord]
+        if let bucket {
+            source = lifecycleSource.filter { bucket.contains($0) }
+        } else if let statuses {
+            source = lifecycleSource.filter { statuses.contains($0.status) }
+        } else {
+            source = lifecycleSource
+        }
 
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let matchingInvoices: [InvoiceRecord]

@@ -16,6 +16,57 @@ final class FieldOperationsEngineTests: XCTestCase {
     private let technicianID = UUID(uuidString: "20000000-0000-0000-0000-000000000001")!
     private let siteID = UUID(uuidString: "30000000-0000-0000-0000-000000000001")!
 
+    func testCanonicalWorkflowVocabularyAndPresentationMetadata() {
+        let expected: [(JobWorkflowAction, String, JobWorkflowAccent)] = [
+            (.startTravel, "Start Travel", .orange),
+            (.markArrived, "Arrived", .orange),
+            (.startSetup, "Start Setup", .orange),
+            (.startWork, "Start Work", .orange),
+            (.pauseWork, "Pause Work", .orange),
+            (.resumeWork, "Resume Work", .orange),
+            (.startPackUp, "Start Pack-up", .orange),
+            (.finishWork, "Complete Work", .orange),
+            (.createInvoice, "Create Invoice", .blue),
+            (.recordPayment, "Record Payment", .purple),
+            (.completeJob, "Complete", .green),
+            (.viewDetails, "Details", .secondary)
+        ]
+
+        for (action, title, accent) in expected {
+            XCTAssertEqual(action.presentation.title, title)
+            XCTAssertEqual(action.title, title)
+            XCTAssertEqual(action.presentation.accent, accent)
+            XCTAssertFalse(action.presentation.systemImage.isEmpty)
+        }
+    }
+
+    func testSentInvoiceUsesTechnicianCompletePresentationWithoutChangingFinancialState() {
+        let context = FieldOperationsEngine().context(
+            for: makeJob(workflowState: .invoiceCreated, status: .inProgress),
+            invoice: makeInvoice(status: .sent)
+        )
+
+        XCTAssertEqual(context.currentState, .invoiceCreated)
+        XCTAssertEqual(context.presentation.statusTitle, "Invoice Sent")
+        XCTAssertEqual(context.presentation.statusSystemImage, "paperplane.fill")
+        XCTAssertEqual(context.presentation.accent, .green)
+        XCTAssertEqual(context.presentation.completionTitle, "Job Complete")
+        XCTAssertTrue(context.presentation.isTechnicianComplete)
+    }
+
+    func testPaidInvoiceUsesSharedPaymentReceivedCompletionPresentation() {
+        let context = FieldOperationsEngine().context(
+            for: makeJob(workflowState: .invoiceCreated, status: .inProgress),
+            invoice: makeInvoice(status: .paid)
+        )
+
+        XCTAssertEqual(context.currentState, .paymentReceived)
+        XCTAssertEqual(context.presentation.statusTitle, "Payment Received")
+        XCTAssertEqual(context.presentation.accent, .green)
+        XCTAssertEqual(context.presentation.completionTitle, "Job Complete")
+        XCTAssertTrue(context.presentation.isTechnicianComplete)
+    }
+
     func testInitialContextBeginsWithTravelAction() {
         let job = makeJob()
 

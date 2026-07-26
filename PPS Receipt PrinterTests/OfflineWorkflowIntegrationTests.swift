@@ -18,7 +18,8 @@ final class OfflineWorkflowIntegrationTests: XCTestCase {
         let queue = OfflineOperationQueue(persistence: MemoryQueuePersistence())
         let store = AppDataStore(
             offlineOperationQueue: queue,
-            offlineSynchronizationMode: .queueRemoteOperations
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
         )
         let job = makeJob(number: "JOB-OFFLINE-WORKFLOW")
         store.addJob(job)
@@ -52,7 +53,8 @@ final class OfflineWorkflowIntegrationTests: XCTestCase {
         let queue = OfflineOperationQueue(persistence: MemoryQueuePersistence())
         let store = AppDataStore(
             offlineOperationQueue: queue,
-            offlineSynchronizationMode: .queueRemoteOperations
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
         )
         let job = makeJob(number: "JOB-OFFLINE-INVALID")
         store.addJob(job)
@@ -71,7 +73,8 @@ final class OfflineWorkflowIntegrationTests: XCTestCase {
         let queue = OfflineOperationQueue(persistence: MemoryQueuePersistence())
         let store = AppDataStore(
             offlineOperationQueue: queue,
-            offlineSynchronizationMode: .queueRemoteOperations
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
         )
         let job = makeJob(number: "JOB-OFFLINE-NOTE")
         store.addJob(job)
@@ -101,11 +104,11 @@ final class OfflineWorkflowIntegrationTests: XCTestCase {
         let queue = OfflineOperationQueue(persistence: MemoryQueuePersistence())
         let store = AppDataStore(
             offlineOperationQueue: queue,
-            offlineSynchronizationMode: .queueRemoteOperations
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
         )
-        // AppDataStore intentionally persists between launches. A unique Job
-        // number prevents a prior test run's linked invoice from changing the
-        // workflow state resolved for this new fixture.
+        // Keep the fixture identity unique so invoice lookup behavior is also
+        // independent within this in-memory test store.
         let job = makeJob(
             number: "JOB-OFFLINE-PAYMENT-\(UUID().uuidString)"
         )
@@ -153,11 +156,53 @@ final class OfflineWorkflowIntegrationTests: XCTestCase {
         }))
     }
 
+    func testPartialPaymentRecalculatesBalanceAndStatus() throws {
+        let queue = OfflineOperationQueue(persistence: MemoryQueuePersistence())
+        let store = AppDataStore(
+            offlineOperationQueue: queue,
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
+        )
+        var invoice = InvoiceRecord(
+            invoiceNumber: "INV-PARTIAL-PAYMENT",
+            customerNumber: "PPS-OFFLINE-TEST",
+            siteID: nil,
+            jobNumber: "",
+            lineItems: [],
+            subtotal: 60,
+            discount: 0,
+            total: 60,
+            amountPaid: 0,
+            balanceDue: 60,
+            status: .sent,
+            issueDate: Date(timeIntervalSince1970: 40_000),
+            dueDate: Date(timeIntervalSince1970: 50_000),
+            paidDate: nil,
+            notes: ""
+        )
+        store.addInvoice(invoice)
+
+        invoice.amountPaid = 20
+        store.updateInvoice(invoice)
+
+        let savedInvoice = try XCTUnwrap(
+            store.invoices.first(where: { $0.id == invoice.id })
+        )
+        XCTAssertEqual(savedInvoice.amountPaid, 20)
+        XCTAssertEqual(savedInvoice.balanceDue, 40)
+        XCTAssertEqual(savedInvoice.status, .partiallyPaid)
+        XCTAssertNil(savedInvoice.paidDate)
+        XCTAssertTrue(queue.operations.contains(where: {
+            $0.type == .paymentRecording && $0.entityID == invoice.id
+        }))
+    }
+
     func testLocalOnlyModeDoesNotCreateFalseRemoteBacklog() {
         let queue = OfflineOperationQueue(persistence: MemoryQueuePersistence())
         let store = AppDataStore(
             offlineOperationQueue: queue,
-            offlineSynchronizationMode: .localOnly
+            offlineSynchronizationMode: .localOnly,
+            persistenceEnabled: false
         )
         let job = makeJob(number: "JOB-LOCAL-ONLY")
         store.addJob(job)

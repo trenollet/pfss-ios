@@ -8,6 +8,18 @@
 import SwiftUI
 
 struct AdminView: View {
+    private var appVersion: String {
+        Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "Unknown"
+    }
+
+    private var buildNumber: String {
+        Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleVersion"
+        ) as? String ?? "Unknown"
+    }
+
     var body: some View {
         List {
                 Section("Business") {
@@ -80,6 +92,11 @@ struct AdminView: View {
                         systemImage: "externaldrive"
                     )
                     .foregroundStyle(.secondary)
+                }
+
+                Section("App Information") {
+                    LabeledContent("Version", value: appVersion)
+                    LabeledContent("Build", value: buildNumber)
                 }
         }
         .navigationTitle("Admin")

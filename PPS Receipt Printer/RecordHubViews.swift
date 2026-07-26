@@ -22,38 +22,46 @@ struct InvoicesView: View {
         RecordHubLayout(title: "Invoices", searchText: $searchText) {
             RecordHubTile(
                 title: "Sent",
-                count: store.activeInvoices.filter { $0.status == .sent }.count,
+                count: store.activeInvoices.filter {
+                    InvoiceRecordBucket.sent.contains($0)
+                }.count,
                 icon: "paperplane.fill",
                 color: .blue
             ) {
-                InvoiceRecordsListView(statuses: [.sent], title: "Sent Invoices")
+                InvoiceRecordsListView(bucket: .sent, title: "Sent Invoices")
             }
 
             RecordHubTile(
                 title: "Paid",
-                count: store.activeInvoices.filter { $0.status == .paid }.count,
+                count: store.activeInvoices.filter {
+                    InvoiceRecordBucket.paid.contains($0)
+                }.count,
                 icon: "checkmark.circle.fill",
                 color: .green
             ) {
-                InvoiceRecordsListView(statuses: [.paid], title: "Paid Invoices")
+                InvoiceRecordsListView(bucket: .paid, title: "Paid Invoices")
             }
 
             RecordHubTile(
                 title: "Past Due",
-                count: store.activeInvoices.filter { $0.status == .overdue }.count,
+                count: store.activeInvoices.filter {
+                    InvoiceRecordBucket.pastDue.contains($0)
+                }.count,
                 icon: "exclamationmark.triangle.fill",
                 color: .red
             ) {
-                InvoiceRecordsListView(statuses: [.overdue], title: "Past Due Invoices")
+                InvoiceRecordsListView(bucket: .pastDue, title: "Past Due Invoices")
             }
 
             RecordHubTile(
                 title: "Draft",
-                count: store.activeInvoices.filter { $0.status == .draft }.count,
+                count: store.activeInvoices.filter {
+                    InvoiceRecordBucket.draft.contains($0)
+                }.count,
                 icon: "doc.badge.ellipsis",
                 color: .orange
             ) {
-                InvoiceRecordsListView(statuses: [.draft], title: "Draft Invoices")
+                InvoiceRecordsListView(bucket: .draft, title: "Draft Invoices")
             }
 
             RecordHubTile(

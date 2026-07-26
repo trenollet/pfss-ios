@@ -414,7 +414,7 @@ struct TechnicianDailyAgendaView: View {
     }
 
     private var dailySummaryCard: some View {
-        VStack(
+        return VStack(
             alignment: .leading,
             spacing: 16
         ) {
@@ -682,7 +682,7 @@ struct TechnicianDailyAgendaView: View {
         _ job: JobRecord,
         stopNumber: Int?
     ) -> some View {
-        VStack(
+        return VStack(
             alignment: .leading,
             spacing: 14
         ) {
@@ -718,7 +718,9 @@ struct TechnicianDailyAgendaView: View {
         _ job: JobRecord,
         stopNumber: Int?
     ) -> some View {
-        VStack(
+        let presentation = workflowContext(for: job).presentation
+
+        return VStack(
             alignment: .leading,
             spacing: 14
         ) {
@@ -777,27 +779,19 @@ struct TechnicianDailyAgendaView: View {
             }
 
             VStack(spacing: 5) {
-                if let invoiceState = technicianInvoiceState(for: job) {
-                    Label(
-                        invoiceState.title,
-                        systemImage: invoiceState.systemImage
-                    )
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.green)
+                Label(
+                    presentation.statusTitle,
+                    systemImage: presentation.statusSystemImage
+                )
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(presentation.accent.color)
 
-                    Text("Job Complete")
+                if let completionTitle = presentation.completionTitle {
+                    Text(completionTitle)
                         .font(.subheadline)
                         .fontWeight(.bold)
-                        .foregroundStyle(.green)
-                } else {
-                    Label(
-                        workflowContext(for: job).currentState.rawValue,
-                        systemImage: workflowContext(for: job).nextAction.systemImage
-                    )
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(statusColor(for: job.status))
+                        .foregroundStyle(presentation.accent.color)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -889,9 +883,7 @@ struct TechnicianDailyAgendaView: View {
         return ActionTileItem(
             title: action.title,
             systemImage: action.systemImage,
-            tint: workflowTint(
-                for: action
-            )
+            tint: action.presentation.accent.color
         ) {
             performWorkflowAction(
                 action,
@@ -906,31 +898,8 @@ struct TechnicianDailyAgendaView: View {
         workflowCoordinator().workflowContext(for: job)
     }
 
-    private func technicianInvoiceState(
-        for job: JobRecord
-    ) -> (title: String, systemImage: String)? {
-        if let invoice = store.invoice(forJobID: job.id) {
-            switch invoice.status {
-            case .sent, .overdue:
-                return ("Invoice Sent", "paperplane.fill")
-            case .partiallyPaid, .paid:
-                return ("Payment Received", "flag.checkered")
-            case .draft, .void:
-                break
-            }
-        }
-
-        if job.workflowState == .paymentReceived {
-            return ("Payment Received", "flag.checkered")
-        }
-
-        return nil
-    }
-
     private func isTechnicianComplete(_ job: JobRecord) -> Bool {
-        technicianInvoiceState(for: job) != nil ||
-        job.workflowState == .paymentReceived ||
-        job.workflowState == .completed
+        workflowContext(for: job).presentation.isTechnicianComplete
     }
 
     private func isFinishedForAgenda(_ job: JobRecord) -> Bool {
@@ -981,25 +950,6 @@ struct TechnicianDailyAgendaView: View {
             action: action,
             employeeID: currentEmployee.id
         )
-    }
-
-    private func workflowTint(
-        for action: JobWorkflowAction
-    ) -> Color {
-        switch action {
-        case .completeJob:
-            return .green
-        case .createInvoice:
-            return .blue
-        case .recordPayment:
-            return .purple
-        case .pauseWork, .resumeWork:
-            return .orange
-        case .viewDetails:
-            return .secondary
-        default:
-            return .orange
-        }
     }
 
     private func summaryMetric(

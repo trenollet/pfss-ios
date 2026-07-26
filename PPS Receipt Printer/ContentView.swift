@@ -5,7 +5,6 @@ enum AppSection: Hashable {
     case sales
     case myDay
     case service
-    case operations
     case admin
 }
 
@@ -41,13 +40,9 @@ struct ContentView: View {
                 }
                 .tag(AppSection.service)
 
-            OperationsView()
-                .tabItem {
-                    Label("Operations", systemImage: "person.3.sequence")
-                }
-                .tag(AppSection.operations)
-
-            AdminView()
+            NavigationStack {
+                AdminView()
+            }
                 .tabItem {
                     Label("Admin", systemImage: "gear")
                 }

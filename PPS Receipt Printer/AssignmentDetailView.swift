@@ -14,6 +14,7 @@ struct AssignmentDetailView: View {
     let customers: [Customer]
     let sites: [CustomerSite]
     let actorEmployeeID: UUID?
+    let allowsManagement: Bool
 
     @State private var showingCrewEditor = false
     @State private var showingScheduleEditor = false
@@ -31,7 +32,8 @@ struct AssignmentDetailView: View {
         employees: [EmployeeRecord],
         customers: [Customer],
         sites: [CustomerSite],
-        actorEmployeeID: UUID? = nil
+        actorEmployeeID: UUID? = nil,
+        allowsManagement: Bool = false
     ) {
         self.engine = engine
         self.dispatchEngine = dispatchEngine
@@ -40,6 +42,7 @@ struct AssignmentDetailView: View {
         self.customers = customers
         self.sites = sites
         self.actorEmployeeID = actorEmployeeID
+        self.allowsManagement = allowsManagement
     }
 
     var body: some View {
@@ -50,7 +53,7 @@ struct AssignmentDetailView: View {
                     overviewSection(assignment)
                     schedulingSection(assignment)
                     crewSection(assignment)
-                    primaryActionSection(assignment)
+                    dispatchActionSection(assignment)
                     notesSection(assignment)
                     historySection(assignment)
                 }
@@ -58,25 +61,27 @@ struct AssignmentDetailView: View {
                 .navigationTitle("Assignment")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Menu {
-                            Button("Edit Crew", systemImage: "person.2.fill") {
-                                showingCrewEditor = true
-                            }
-
-                            if canUnassign(assignment) {
-                                Button("Unassign and Return to Queue", systemImage: "person.crop.circle.badge.minus") {
-                                    showingUnassign = true
+                    if allowsManagement {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Menu {
+                                Button("Edit Crew", systemImage: "person.2.fill") {
+                                    showingCrewEditor = true
                                 }
-                            }
 
-                            if canCancel(assignment) {
-                                Button("Cancel Assignment", systemImage: "xmark.circle", role: .destructive) {
-                                    showingCancellation = true
+                                if canUnassign(assignment) {
+                                    Button("Unassign and Return to Queue", systemImage: "person.crop.circle.badge.minus") {
+                                        showingUnassign = true
+                                    }
                                 }
+
+                                if canCancel(assignment) {
+                                    Button("Cancel Assignment", systemImage: "xmark.circle", role: .destructive) {
+                                        showingCancellation = true
+                                    }
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
                             }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
                         }
                     }
                 }
@@ -197,12 +202,16 @@ struct AssignmentDetailView: View {
 
                 Divider()
 
-                Picker("Priority", selection: priorityBinding(for: assignment)) {
-                    ForEach(AssignmentPriority.allCases) { priority in
-                        Text(priority.rawValue).tag(priority)
+                if allowsManagement {
+                    Picker("Priority", selection: priorityBinding(for: assignment)) {
+                        ForEach(AssignmentPriority.allCases) { priority in
+                            Text(priority.rawValue).tag(priority)
+                        }
                     }
+                    .pickerStyle(.menu)
+                } else {
+                    LabeledContent("Priority", value: assignment.priority.rawValue)
                 }
-                .pickerStyle(.menu)
             }
             .padding(assignment.priority == .emergency ? 10 : 0)
             .overlay {
@@ -218,13 +227,15 @@ struct AssignmentDetailView: View {
         Section("Scheduling") {
             LabeledContent("Mode", value: assignment.scheduling.mode.rawValue)
 
-            Button("Edit Schedule", systemImage: "calendar.badge.clock") {
-                showingScheduleEditor = true
+            if allowsManagement {
+                Button("Edit Schedule", systemImage: "calendar.badge.clock") {
+                    showingScheduleEditor = true
+                }
+                .disabled(
+                    assignment.status != .scheduled &&
+                    assignment.status != .dispatched
+                )
             }
-            .disabled(
-                assignment.status != .scheduled &&
-                assignment.status != .dispatched
-            )
 
             if assignment.scheduling.schedulingNotes.isEmpty == false {
                 VStack(alignment: .leading, spacing: 4) {
@@ -245,21 +256,26 @@ struct AssignmentDetailView: View {
                 LabeledContent("Supporting", value: employeeName(member.employeeID))
             }
 
-            Button("Manage Crew", systemImage: "person.2.fill") {
-                showingCrewEditor = true
+            if allowsManagement {
+                Button("Manage Crew", systemImage: "person.2.fill") {
+                    showingCrewEditor = true
+                }
+                .disabled(assignment.status != .scheduled && assignment.status != .dispatched)
             }
-            .disabled(assignment.status != .scheduled && assignment.status != .dispatched)
         }
     }
 
     @ViewBuilder
-    private func primaryActionSection(_ assignment: Assignment) -> some View {
-        if let action = nextAction(for: assignment) {
-            Section("Next Action") {
+    private func dispatchActionSection(_ assignment: Assignment) -> some View {
+        if allowsManagement && assignment.status == .scheduled {
+            Section("Dispatch") {
                 Button {
-                    performPrimaryAction(action)
+                    dispatchAssignment()
                 } label: {
-                    Label(action.title, systemImage: action.symbol)
+                    Label(
+                        "Dispatch Assignment",
+                        systemImage: "paperplane.fill"
+                    )
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -415,53 +431,28 @@ struct AssignmentDetailView: View {
         (assignment.status == .scheduled || assignment.status == .dispatched)
     }
 
-    private func nextAction(for assignment: Assignment) -> AssignmentPrimaryAction? {
-        switch assignment.status {
-        case .scheduled: return .dispatch
-        case .dispatched: return .beginTravel
-        case .enRoute: return .arrive
-        case .onSite: return .completeWork
-        case .workComplete: return .markInvoiceReady
-        case .invoiceReady: return .close
-        case .closed, .cancelled: return nil
-        }
-    }
-
-    private func performPrimaryAction(_ action: AssignmentPrimaryAction) {
+    private func dispatchAssignment() {
         perform {
-            switch action {
-            case .dispatch:
-                if let dispatchEngine {
-                    let actor: DispatchActor
-                    if let actorEmployeeID,
-                       let employee = employees.first(where: {
-                           $0.id == actorEmployeeID
-                       }) {
-                        actor = DispatchActor.employee(employee)
-                    } else {
-                        actor = .system
-                    }
-
-                    _ = try dispatchEngine.dispatch(
-                        assignmentID: assignmentID,
-                        actor: actor
-                    )
+            if let dispatchEngine {
+                let actor: DispatchActor
+                if let actorEmployeeID,
+                   let employee = employees.first(where: {
+                       $0.id == actorEmployeeID
+                   }) {
+                    actor = DispatchActor.employee(employee)
                 } else {
-                    _ = try engine.dispatch(
-                        assignmentID: assignmentID,
-                        actorEmployeeID: actorEmployeeID
-                    )
+                    actor = .system
                 }
-            case .beginTravel:
-                _ = try engine.beginTravel(assignmentID: assignmentID, actorEmployeeID: actorEmployeeID)
-            case .arrive:
-                _ = try engine.arrive(assignmentID: assignmentID, actorEmployeeID: actorEmployeeID)
-            case .completeWork:
-                _ = try engine.complete(assignmentID: assignmentID, actorEmployeeID: actorEmployeeID)
-            case .markInvoiceReady:
-                _ = try engine.markInvoiceReady(assignmentID: assignmentID, actorEmployeeID: actorEmployeeID)
-            case .close:
-                _ = try engine.close(assignmentID: assignmentID, actorEmployeeID: actorEmployeeID)
+
+                _ = try dispatchEngine.dispatch(
+                    assignmentID: assignmentID,
+                    actor: actor
+                )
+            } else {
+                _ = try engine.dispatch(
+                    assignmentID: assignmentID,
+                    actorEmployeeID: actorEmployeeID
+                )
             }
         }
     }
@@ -494,37 +485,6 @@ struct AssignmentDetailView: View {
         } catch {
             errorMessage = error.localizedDescription
             showingError = true
-        }
-    }
-}
-
-private enum AssignmentPrimaryAction {
-    case dispatch
-    case beginTravel
-    case arrive
-    case completeWork
-    case markInvoiceReady
-    case close
-
-    var title: String {
-        switch self {
-        case .dispatch: return "Dispatch Assignment"
-        case .beginTravel: return "Start Travel"
-        case .arrive: return "Mark Arrived"
-        case .completeWork: return "Complete Work"
-        case .markInvoiceReady: return "Mark Invoice Ready"
-        case .close: return "Close Assignment"
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .dispatch: return "paperplane.fill"
-        case .beginTravel: return "car.fill"
-        case .arrive: return "location.fill"
-        case .completeWork: return "checkmark.circle.fill"
-        case .markInvoiceReady: return "doc.text.fill"
-        case .close: return "checkmark.seal.fill"
         }
     }
 }

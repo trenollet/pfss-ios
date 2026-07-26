@@ -29,63 +29,65 @@ enum JobWorkflowAction: String, Identifiable, CaseIterable {
 
     var id: String { rawValue }
 
-    var title: String {
+    var presentation: JobWorkflowActionPresentation {
         switch self {
         case .startTravel:
-            return "Start Travel"
+            return .init(title: "Start Travel", systemImage: "car.fill", accent: .orange)
         case .markArrived:
-            return "Arrived"
+            return .init(title: "Arrived", systemImage: "mappin.circle.fill", accent: .orange)
         case .startSetup:
-            return "Start Setup"
+            return .init(title: "Start Setup", systemImage: "wrench.and.screwdriver.fill", accent: .orange)
         case .startWork:
-            return "Start Job"
+            return .init(title: "Start Work", systemImage: "play.fill", accent: .orange)
         case .pauseWork:
-            return "Pause Work"
+            return .init(title: "Pause Work", systemImage: "pause.fill", accent: .orange)
         case .resumeWork:
-            return "Resume Work"
+            return .init(title: "Resume Work", systemImage: "play.fill", accent: .orange)
         case .startPackUp:
-            return "Start Pack-up"
+            return .init(title: "Start Pack-up", systemImage: "shippingbox.fill", accent: .orange)
         case .finishWork:
-            return "Complete Job"
+            return .init(title: "Complete Work", systemImage: "checkmark.circle.fill", accent: .orange)
         case .createInvoice:
-            return "Create Invoice"
+            return .init(title: "Create Invoice", systemImage: "doc.text.fill", accent: .blue)
         case .recordPayment:
-            return "Record Payment"
+            return .init(title: "Record Payment", systemImage: "creditcard.fill", accent: .purple)
         case .completeJob:
-            return "Close Job"
+            return .init(title: "Complete", systemImage: "flag.checkered", accent: .green)
         case .viewDetails:
-            return "Details"
+            return .init(title: "Details", systemImage: "doc.text.magnifyingglass", accent: .secondary)
         }
     }
 
-    var systemImage: String {
-        switch self {
-        case .startTravel:
-            return "car.fill"
-        case .markArrived:
-            return "mappin.circle.fill"
-        case .startSetup:
-            return "wrench.and.screwdriver.fill"
-        case .startWork:
-            return "play.fill"
-        case .pauseWork:
-            return "pause.fill"
-        case .resumeWork:
-            return "play.fill"
-        case .startPackUp:
-            return "shippingbox.fill"
-        case .finishWork:
-            return "checkmark.circle.fill"
-        case .createInvoice:
-            return "doc.text.fill"
-        case .recordPayment:
-            return "creditcard.fill"
-        case .completeJob:
-            return "flag.checkered"
-        case .viewDetails:
-            return "doc.text.magnifyingglass"
-        }
+    var title: String {
+        presentation.title
     }
+
+    var systemImage: String {
+        presentation.systemImage
+    }
+}
+
+enum JobWorkflowAccent: String, Codable, Equatable {
+    case secondary
+    case blue
+    case orange
+    case purple
+    case green
+    case red
+}
+
+struct JobWorkflowActionPresentation: Equatable {
+    let title: String
+    let systemImage: String
+    let accent: JobWorkflowAccent
+}
+
+struct JobWorkflowPresentation: Equatable {
+    let statusTitle: String
+    let statusSystemImage: String
+    let accent: JobWorkflowAccent
+    let completionTitle: String?
+    let isTechnicianComplete: Bool
 }
 
 /// Shared workflow snapshot for the live field operation currently in progress.
@@ -102,6 +104,7 @@ struct JobWorkflowContext {
     let canCollectPayment: Bool
     let canCompleteJob: Bool
     let isTerminal: Bool
+    let presentation: JobWorkflowPresentation
 }
 
 enum WorkflowValidationLevel: String, Codable {
@@ -170,8 +173,75 @@ struct FieldOperationsEngine {
                 ),
             isTerminal:
                 currentState == .completed ||
-                currentState == .cancelled
+                currentState == .cancelled,
+            presentation: presentation(
+                for: currentState,
+                invoice: invoice
+            )
         )
+    }
+
+    private func presentation(
+        for state: JobWorkflowState,
+        invoice: InvoiceRecord?
+    ) -> JobWorkflowPresentation {
+        if let invoice {
+            switch invoice.status {
+            case .sent, .overdue:
+                return JobWorkflowPresentation(
+                    statusTitle: "Invoice Sent",
+                    statusSystemImage: "paperplane.fill",
+                    accent: .green,
+                    completionTitle: "Job Complete",
+                    isTechnicianComplete: true
+                )
+            case .partiallyPaid, .paid:
+                return JobWorkflowPresentation(
+                    statusTitle: "Payment Received",
+                    statusSystemImage: "flag.checkered",
+                    accent: .green,
+                    completionTitle: "Job Complete",
+                    isTechnicianComplete: true
+                )
+            case .draft, .void:
+                break
+            }
+        }
+
+        if state == .paymentReceived || state == .completed {
+            return JobWorkflowPresentation(
+                statusTitle: state == .completed ? "Complete" : "Payment Received",
+                statusSystemImage: "flag.checkered",
+                accent: .green,
+                completionTitle: "Job Complete",
+                isTechnicianComplete: true
+            )
+        }
+
+        switch state {
+        case .notStarted:
+            return .init(statusTitle: "Not Started", statusSystemImage: "clock", accent: .secondary, completionTitle: nil, isTechnicianComplete: false)
+        case .traveling:
+            return .init(statusTitle: "Traveling", statusSystemImage: "car.fill", accent: .blue, completionTitle: nil, isTechnicianComplete: false)
+        case .arrived:
+            return .init(statusTitle: "Arrived", statusSystemImage: "mappin.circle.fill", accent: .blue, completionTitle: nil, isTechnicianComplete: false)
+        case .settingUp:
+            return .init(statusTitle: "Setting Up", statusSystemImage: "wrench.and.screwdriver.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false)
+        case .working:
+            return .init(statusTitle: "Working", statusSystemImage: "hammer.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false)
+        case .paused:
+            return .init(statusTitle: "Paused", statusSystemImage: "pause.circle.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false)
+        case .packingUp:
+            return .init(statusTitle: "Packing Up", statusSystemImage: "shippingbox.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false)
+        case .workComplete:
+            return .init(statusTitle: "Work Complete", statusSystemImage: "checkmark.circle.fill", accent: .purple, completionTitle: nil, isTechnicianComplete: false)
+        case .invoiceCreated:
+            return .init(statusTitle: "Invoice Created", statusSystemImage: "doc.text.fill", accent: .purple, completionTitle: nil, isTechnicianComplete: false)
+        case .cancelled:
+            return .init(statusTitle: "Cancelled", statusSystemImage: "xmark.circle.fill", accent: .red, completionTitle: nil, isTechnicianComplete: false)
+        case .paymentReceived, .completed:
+            preconditionFailure("Technician-complete states are handled above.")
+        }
     }
 
     func nextAction(

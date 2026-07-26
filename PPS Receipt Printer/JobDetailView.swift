@@ -8,8 +8,7 @@
 import SwiftUI
 
 struct JobDetailView: View {
-    private let showWorkflow = false
-    private let showTimeline = false
+    private let showServiceDetails = false
     private let showCapacity = false
     // Field technicians may add requested work to the existing Job while on
     // site. The same work-order editor is reused so pricing and labor duration
@@ -146,12 +145,6 @@ struct JobDetailView: View {
         workflowCoordinator().workflowContext(for: storedJob)
     }
 
-    private var jobLogEvents: [JobTimelineEvent] {
-        job.timelineEvents.sorted {
-            $0.timestamp > $1.timestamp
-        }
-    }
-
     private var selectedTechnicianID: UUID? {
         UUID(uuidString: selectedTechnicianIDString)
     }
@@ -159,53 +152,6 @@ struct JobDetailView: View {
     @MainActor
     private func workflowCoordinator() -> FieldOperationsWorkflowCoordinator {
         FieldOperationsWorkflowCoordinator(store: store)
-    }
-
-    private var linkedInvoice: InvoiceRecord? {
-        store.invoice(for: storedJob)
-    }
-
-    private var primaryActionTitle: String {
-        if linkedInvoice != nil {
-            return "Invoice Complete"
-        }
-
-        switch storedJob.status {
-        case .toBeScheduled, .scheduled, .assigned:
-            return "Start Setup"
-        case .inProgress:
-            return storedJob.workflowState == .settingUp
-                ? "Start Job"
-                : "Complete Job"
-        case .completed:
-            return "Create Invoice"
-        case .cancelled:
-            return "Job Cancelled"
-        }
-    }
-
-    private var primaryActionSystemImage: String {
-        if linkedInvoice != nil {
-            return "doc.text.magnifyingglass"
-        }
-
-        switch storedJob.status {
-        case .toBeScheduled, .scheduled, .assigned:
-            return "wrench.and.screwdriver.fill"
-        case .inProgress:
-            return storedJob.workflowState == .settingUp
-                ? "play.fill"
-                : "checkmark.circle.fill"
-        case .completed:
-            return "doc.text.fill"
-        case .cancelled:
-            return "xmark.circle.fill"
-        }
-    }
-
-    private var isPrimaryActionDisabled: Bool {
-        storedJob.status == .cancelled ||
-        storedJob.lifecycleStatus == .archived
     }
 
     private var availableSites: [CustomerSite] {
@@ -236,18 +182,15 @@ struct JobDetailView: View {
                 
                 LabeledContent(
                     "Status",
-                    value: workflowContext.currentState.rawValue
+                    value: workflowContext.presentation.statusTitle
                 )
             }
 
-            Section("Job Log") {
-                if jobLogEvents.isEmpty {
-                    Text("No job activity has been recorded yet.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(jobLogEvents) { event in
-                        jobLogRow(event)
-                    }
+            Section("Job Timeline") {
+                JobTimelineView(
+                    events: workflowContext.timeline
+                ) { employeeID in
+                    employeeName(for: employeeID)
                 }
 
                 TextField(
@@ -304,7 +247,6 @@ struct JobDetailView: View {
                 .disabled(job.primaryTechnicianID == nil)
             }
 
-            if showWorkflow {
             Section("Field Workflow") {
                 JobWorkflowStatusCard(
                     context: workflowContext,
@@ -316,17 +258,7 @@ struct JobDetailView: View {
                     }
                 )
             }
-
-            }
-            if showTimeline {
-            Section("Job Timeline") {
-                JobTimelineView(
-                    events: workflowContext.timeline
-                ) { employeeID in
-                    employeeName(for: employeeID)
-                }
-            }
-            
+            if showServiceDetails {
             Section("Service") {
                 Picker("Service Type", selection: $job.serviceType) {
                     ForEach(ServiceType.allCases) { service in
@@ -531,20 +463,6 @@ struct JobDetailView: View {
             }
             
             
-            Section("Next Step") {
-                Button {
-                    performGuidedPrimaryAction()
-                } label: {
-                    Label(
-                        primaryActionTitle,
-                        systemImage: primaryActionSystemImage
-                    )
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isPrimaryActionDisabled)
-            }
-
             Section {
                 if job.lifecycleStatus == .archived {
                     Button("Restore Job") {
@@ -920,44 +838,34 @@ struct JobDetailView: View {
         job = refreshed
     }
 
-    private func performGuidedPrimaryAction() {
-        saveJobChanges(shouldDismiss: false)
-
-        if let invoice = store.invoice(forJobID: job.id) {
-            presentedInvoice = invoice
-            return
-        }
-
-        guard workflowCoordinator().performGuidedPrimaryAction(
-            for: storedJob,
-            employeeID: job.primaryTechnicianID
-        ) else {
-            return
-        }
-
-        if let invoice = store.invoice(forJobID: job.id),
-           storedJob.status == .completed {
-            presentedInvoice = invoice
-        }
-
-        refreshJobFromStore()
-    }
-
     private func performPrimaryWorkflowAction() {
         performWorkflowAction(workflowContext.nextAction)
     }
 
     private func performWorkflowAction(_ action: JobWorkflowAction) {
-        _ = workflowCoordinator().performWorkflowAction(
+        saveJobChanges(shouldDismiss: false)
+
+        if action == .recordPayment,
+           let invoice = store.invoice(forJobID: job.id) {
+            presentedInvoice = invoice
+            return
+        }
+
+        let succeeded = workflowCoordinator().performWorkflowAction(
             jobID: job.id,
             action: action,
             employeeID: job.primaryTechnicianID
         )
 
-        if let refreshed = store.jobs.first(where: {
-            $0.id == job.id
-        }) {
-            job = refreshed
+        guard succeeded else {
+            return
+        }
+
+        refreshJobFromStore()
+
+        if action == .createInvoice,
+           let invoice = store.invoice(forJobID: job.id) {
+            presentedInvoice = invoice
         }
     }
 
@@ -995,90 +903,6 @@ struct JobDetailView: View {
         job.timelineEvents.append(event)
         technicianNoteDraft = ""
         isInputFocused = false
-    }
-
-    @ViewBuilder
-    private func jobLogRow(
-        _ event: JobTimelineEvent
-    ) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: jobLogIcon(for: event.type))
-                .foregroundStyle(
-                    event.type == .note
-                        ? .blue
-                        : .secondary
-                )
-                .frame(width: 22)
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(event.title)
-                        .fontWeight(.semibold)
-
-                    Spacer()
-
-                    Text(
-                        event.timestamp.formatted(
-                            date: .abbreviated,
-                            time: .shortened
-                        )
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-
-                if let note = event.note,
-                   !note.isEmpty {
-                    Text(note)
-                }
-
-                if let author = employeeName(
-                    for: event.employeeID
-                ) {
-                    Text(author)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    private func jobLogIcon(
-        for type: JobTimelineEventType
-    ) -> String {
-        switch type {
-        case .note:
-            return "text.bubble.fill"
-        case .assigned:
-            return "person.crop.circle.badge.checkmark"
-        case .travelStarted:
-            return "car.fill"
-        case .arrived:
-            return "mappin.circle.fill"
-        case .setupStarted:
-            return "wrench.and.screwdriver.fill"
-        case .workStarted:
-            return "play.circle.fill"
-        case .workPaused:
-            return "pause.circle.fill"
-        case .workResumed:
-            return "play.circle.fill"
-        case .packUpStarted:
-            return "shippingbox.fill"
-        case .workCompleted:
-            return "checkmark.circle.fill"
-        case .invoiceCreated:
-            return "doc.text.fill"
-        case .invoiceSent:
-            return "paperplane.fill"
-        case .paymentReceived:
-            return "dollarsign.circle.fill"
-        case .jobCompleted:
-            return "checkmark.seal.fill"
-        case .cancelled:
-            return "xmark.circle.fill"
-        }
     }
 
     private func closestQuarterHour(

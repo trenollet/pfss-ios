@@ -38,6 +38,13 @@ struct InvoiceDetailView: View {
         return invoice.customerNumber
     }
 
+    private var displayedBalanceDue: Double {
+        max(
+            0,
+            invoice.total - max(invoice.amountPaid, 0)
+        )
+    }
+
     var body: some View {
         Form {
             Section("Invoice") {
@@ -151,15 +158,27 @@ struct InvoiceDetailView: View {
                 }
 
                 LabeledContent("Amount Paid") {
-                    Text(
-                        invoice.amountPaid,
-                        format: .currency(code: "USD")
-                    )
+                    HStack(spacing: 3) {
+                        Text("$")
+                            .foregroundStyle(.secondary)
+
+                        TextField(
+                            "0.00",
+                            value: $invoice.amountPaid,
+                            format: .number.precision(
+                                .fractionLength(2)
+                            )
+                        )
+                        .keyboardType(.decimalPad)
+                        .multilineTextAlignment(.trailing)
+                        .focused($isInputFocused)
+                    }
+                    .frame(maxWidth: 150)
                 }
 
                 LabeledContent("Balance Due") {
                     Text(
-                        invoice.balanceDue,
+                        displayedBalanceDue,
                         format: .currency(code: "USD")
                     )
                     .fontWeight(.bold)
@@ -302,21 +321,10 @@ struct InvoiceDetailView: View {
             discount: invoice.discount
         )
 
-        invoice.balanceDue = max(
-            0,
-            invoice.total - invoice.amountPaid
+        invoice.amountPaid = min(
+            max(invoice.amountPaid, 0),
+            max(invoice.total, 0)
         )
-
-        if invoice.status == .paid {
-            invoice.amountPaid = invoice.total
-            invoice.balanceDue = 0
-
-            if invoice.paidDate == nil {
-                invoice.paidDate = Date()
-            }
-        } else if invoice.balanceDue > 0 {
-            invoice.paidDate = nil
-        }
 
         store.updateInvoice(invoice)
         dismiss()

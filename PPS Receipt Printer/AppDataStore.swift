@@ -130,12 +130,14 @@ final class AppDataStore: ObservableObject {
     }
 
     private let saveFileName = "pps-field-manager-data.json"
+    private let persistenceEnabled: Bool
 
     init(
         offlineOperationQueue: OfflineOperationQueue? = nil,
         offlineSynchronizationMode: OfflineSynchronizationMode = .localOnly,
         offlineConnectivityMonitor: OfflineConnectivityMonitor? = nil,
-        offlineSynchronizationAdapter: (any OfflineSynchronizationAdapter)? = nil
+        offlineSynchronizationAdapter: (any OfflineSynchronizationAdapter)? = nil,
+        persistenceEnabled: Bool = true
     ) {
         let assignmentStore = AssignmentStore()
         let assignmentEngine = AssignmentEngine(store: assignmentStore)
@@ -147,6 +149,7 @@ final class AppDataStore: ObservableObject {
         self.offlineOperationQueue = operationQueue
         self.offlineSynchronizationMode = offlineSynchronizationMode
         self.offlineConnectivityMonitor = connectivityMonitor
+        self.persistenceEnabled = persistenceEnabled
         if offlineSynchronizationMode.requiresRemoteQueue,
            let offlineSynchronizationAdapter {
             self.offlineSynchronizationService = OfflineSynchronizationService(
@@ -163,6 +166,7 @@ final class AppDataStore: ObservableObject {
         )
 
         loadData()
+        removeLeakedOfflineTestFixturesIfNeeded()
         materializePendingRecurringJobs()
         synchronizeAssignmentsFromJobs()
 
@@ -1143,18 +1147,57 @@ final class AppDataStore: ObservableObject {
         }
 
         let previousStatus = invoices[index].status
-        invoices[index] = invoice
-        if previousStatus != invoice.status {
+        let normalizedInvoice = normalizedPaymentState(for: invoice)
+        invoices[index] = normalizedInvoice
+        if previousStatus != normalizedInvoice.status {
             enqueueInvoiceOperation(
-                invoice: invoice,
+                invoice: normalizedInvoice,
                 previousStatus: previousStatus,
                 timestamp: Date()
             )
         }
         synchronizeCompletedJobFromInvoice(
-            invoice,
+            normalizedInvoice,
             previousStatus: previousStatus
         )
+    }
+
+    private func normalizedPaymentState(
+        for invoice: InvoiceRecord,
+        at timestamp: Date = Date()
+    ) -> InvoiceRecord {
+        var normalized = invoice
+        let total = max(normalized.total, 0)
+
+        if normalized.status == .paid {
+            normalized.amountPaid = total
+        } else {
+            normalized.amountPaid = min(
+                max(normalized.amountPaid, 0),
+                total
+            )
+
+            if total > 0 && normalized.amountPaid >= total {
+                normalized.status = .paid
+            } else if normalized.amountPaid > 0 {
+                normalized.status = .partiallyPaid
+            } else if normalized.status == .partiallyPaid {
+                normalized.status = .sent
+            }
+        }
+
+        normalized.balanceDue = max(
+            0,
+            total - normalized.amountPaid
+        )
+
+        if normalized.status == .paid {
+            normalized.paidDate = normalized.paidDate ?? timestamp
+        } else {
+            normalized.paidDate = nil
+        }
+
+        return normalized
     }
 
     private func synchronizeCompletedJobFromInvoice(
@@ -1448,6 +1491,10 @@ final class AppDataStore: ObservableObject {
     }
 
     private func saveData() {
+        guard persistenceEnabled else {
+            return
+        }
+
         let snapshot = AppDataSnapshot(
             customers: customers,
             sites: sites,
@@ -1473,6 +1520,10 @@ final class AppDataStore: ObservableObject {
     }
 
     private func loadData() {
+        guard persistenceEnabled else {
+            return
+        }
+
         let url = saveFileURL()
 
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -1505,6 +1556,76 @@ final class AppDataStore: ObservableObject {
     private func saveFileURL() -> URL {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return documents.appendingPathComponent(saveFileName)
+    }
+
+    /// Removes fixtures written by early offline integration tests before the
+    /// primary AppDataStore persistence boundary became injectable.
+    ///
+    /// The marker is intentionally exact so customer and operational data can
+    /// never be mistaken for test content.
+    private func removeLeakedOfflineTestFixturesIfNeeded() {
+        guard persistenceEnabled else {
+            return
+        }
+
+        let testCustomerNumber = "PPS-OFFLINE-TEST"
+        let leakedJobs = jobs.filter {
+            $0.customerNumber == testCustomerNumber &&
+            (
+                $0.jobNumber.hasPrefix("JOB-OFFLINE-") ||
+                $0.jobNumber == "JOB-LOCAL-ONLY"
+            )
+        }
+
+        let leakedAssignments = assignmentStore.assignments.filter {
+            $0.customerNumber == testCustomerNumber &&
+            (
+                $0.jobNumber.hasPrefix("JOB-OFFLINE-") ||
+                $0.jobNumber == "JOB-LOCAL-ONLY"
+            )
+        }
+        let hasLeakedInvoice = invoices.contains {
+            $0.customerNumber == testCustomerNumber &&
+            (
+                $0.jobNumber.hasPrefix("JOB-OFFLINE-") ||
+                $0.jobNumber == "JOB-LOCAL-ONLY"
+            )
+        }
+
+        guard !leakedJobs.isEmpty ||
+                !leakedAssignments.isEmpty ||
+                hasLeakedInvoice else {
+            return
+        }
+
+        let leakedJobIDs = Set(
+            leakedJobs.map(\.id) + leakedAssignments.map(\.jobID)
+        )
+        let leakedJobNumbers = Set(
+            leakedJobs.map(\.jobNumber) + leakedAssignments.map(\.jobNumber)
+        )
+
+        jobs.removeAll { leakedJobIDs.contains($0.id) }
+        invoices.removeAll {
+            $0.customerNumber == testCustomerNumber ||
+            leakedJobNumbers.contains($0.jobNumber)
+        }
+
+        let retainedAssignments = assignmentStore.assignments.filter {
+            !leakedJobIDs.contains($0.jobID) &&
+            !leakedJobNumbers.contains($0.jobNumber) &&
+            $0.customerNumber != testCustomerNumber
+        }
+
+        do {
+            try assignmentStore.replaceAll(with: retainedAssignments)
+            saveData()
+        } catch {
+            print(
+                "Failed to remove leaked offline test fixtures: " +
+                error.localizedDescription
+            )
+        }
     }
 }
 

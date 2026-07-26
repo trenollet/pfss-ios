@@ -7,6 +7,19 @@
 
 import SwiftUI
 
+extension JobWorkflowAccent {
+    var color: Color {
+        switch self {
+        case .secondary: return .secondary
+        case .blue: return .blue
+        case .orange: return .orange
+        case .purple: return .purple
+        case .green: return .green
+        case .red: return .red
+        }
+    }
+}
+
 struct JobWorkflowStatusCard: View {
     let context: JobWorkflowContext
     let action: () -> Void
@@ -22,8 +35,8 @@ struct JobWorkflowStatusCard: View {
                         .foregroundStyle(.secondary)
 
                     Label(
-                        context.currentState.rawValue,
-                        systemImage: stateIcon
+                        context.presentation.statusTitle,
+                        systemImage: context.presentation.statusSystemImage
                     )
                     .font(.headline)
                 }
@@ -51,7 +64,7 @@ struct JobWorkflowStatusCard: View {
                         )
 
                     Capsule()
-                        .fill(stateColor)
+                        .fill(context.presentation.accent.color)
                         .frame(
                             width: max(progressWidth, 0)
                         )
@@ -68,7 +81,7 @@ struct JobWorkflowStatusCard: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .tint(actionColor)
+            .tint(context.nextAction.presentation.accent.color)
 
             if let secondaryAction,
                let performAction {
@@ -82,7 +95,7 @@ struct JobWorkflowStatusCard: View {
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
-                .tint(.orange)
+                .tint(secondaryAction.presentation.accent.color)
             }
         }
         .padding(.vertical, 4)
@@ -100,60 +113,6 @@ struct JobWorkflowStatusCard: View {
             max(rawFraction, 0),
             1
         )
-    }
-
-    private var stateIcon: String {
-        switch context.currentState {
-        case .notStarted: return "clock"
-        case .traveling: return "car.fill"
-        case .arrived: return "mappin.circle.fill"
-        case .settingUp:
-            return "wrench.and.screwdriver.fill"
-        case .working: return "hammer.fill"
-        case .paused: return "pause.circle.fill"
-        case .packingUp: return "shippingbox.fill"
-        case .workComplete:
-            return "checkmark.circle.fill"
-        case .invoiceCreated: return "doc.text.fill"
-        case .paymentReceived:
-            return "creditcard.fill"
-        case .completed: return "flag.checkered"
-        case .cancelled: return "xmark.circle.fill"
-        }
-    }
-
-    private var stateColor: Color {
-        switch context.currentState {
-        case .completed, .paymentReceived:
-            return .green
-        case .cancelled:
-            return .red
-        case .traveling, .arrived:
-            return .blue
-        case .settingUp, .working, .paused, .packingUp:
-            return .orange
-        case .workComplete, .invoiceCreated:
-            return .purple
-        case .notStarted:
-            return .secondary
-        }
-    }
-
-    private var actionColor: Color {
-        switch context.nextAction {
-        case .completeJob:
-            return .green
-        case .recordPayment:
-            return .purple
-        case .createInvoice:
-            return .blue
-        case .pauseWork, .resumeWork:
-            return .orange
-        case .viewDetails:
-            return .secondary
-        default:
-            return .orange
-        }
     }
 
     private var secondaryAction: JobWorkflowAction? {
