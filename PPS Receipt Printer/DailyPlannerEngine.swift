@@ -13,8 +13,9 @@ import Foundation
 /// Planning order is intentionally stable:
 /// 1. Preserve fixed commitments.
 /// 2. Place lunch around fixed work.
-/// 3. Place arrival-window and deadline work by earliest constraint.
-/// 4. Fill remaining capacity with flexible-day work.
+/// 3. Place arrival-window work inside its promised window.
+/// 4. Place deadline and flexible work in a reviewed route order when one
+///    exists, while still validating every completion deadline.
 ///
 /// Route geography and traffic are intentionally deferred to Step 4.
 struct DailyPlannerEngine {
@@ -124,14 +125,11 @@ struct DailyPlannerEngine {
             state: &state
         )
 
-        let constrainedAssignments = validAssignments
-            .filter {
-                $0.scheduling.mode == .arrivalWindow ||
-                $0.scheduling.mode == .deadline
-            }
+        let arrivalWindowAssignments = validAssignments
+            .filter { $0.scheduling.mode == .arrivalWindow }
             .sorted(by: constrainedAssignmentOrder)
 
-        for assignment in constrainedAssignments {
+        for assignment in arrivalWindowAssignments {
             placeConstrainedAssignment(
                 assignment,
                 technician: technician,
@@ -142,18 +140,32 @@ struct DailyPlannerEngine {
             )
         }
 
-        let flexibleAssignments = validAssignments
-            .filter { $0.scheduling.mode == .flexibleDay }
-            .sorted(by: flexibleAssignmentOrder)
+        let movableAssignments = validAssignments
+            .filter {
+                $0.scheduling.mode == .flexibleDay ||
+                $0.scheduling.mode == .deadline
+            }
+            .sorted(by: movableAssignmentOrder)
 
-        for assignment in flexibleAssignments {
-            placeFlexibleAssignment(
-                assignment,
-                technician: technician,
-                workdayStart: workdayStart,
-                workdayEnd: workdayEnd,
-                state: &state
-            )
+        for assignment in movableAssignments {
+            if assignment.scheduling.mode == .deadline {
+                placeConstrainedAssignment(
+                    assignment,
+                    technician: technician,
+                    planningDate: planningDate,
+                    workdayStart: workdayStart,
+                    workdayEnd: workdayEnd,
+                    state: &state
+                )
+            } else {
+                placeFlexibleAssignment(
+                    assignment,
+                    technician: technician,
+                    workdayStart: workdayStart,
+                    workdayEnd: workdayEnd,
+                    state: &state
+                )
+            }
         }
 
         appendCapacityConflictIfNeeded(
@@ -821,6 +833,34 @@ struct DailyPlannerEngine {
         default:
             return stableAssignmentOrder(first, second)
         }
+    }
+
+    /// A reviewed route is authoritative for geographically movable work.
+    /// Deadline validation still happens during placement, so a human route
+    /// remains allowed but cannot silently hide a missed commitment.
+    private func movableAssignmentOrder(
+        _ first: Assignment,
+        _ second: Assignment
+    ) -> Bool {
+        switch (first.routeSequence, second.routeSequence) {
+        case let (.some(lhs), .some(rhs)) where lhs != rhs:
+            return lhs < rhs
+        case (.some, .none):
+            return true
+        case (.none, .some):
+            return false
+        default:
+            break
+        }
+
+        if first.scheduling.mode == .deadline,
+           second.scheduling.mode == .deadline {
+            return constrainedAssignmentOrder(first, second)
+        }
+        if first.scheduling.mode != second.scheduling.mode {
+            return first.scheduling.mode == .deadline
+        }
+        return flexibleAssignmentOrder(first, second)
     }
 
     private func stableAssignmentOrder(

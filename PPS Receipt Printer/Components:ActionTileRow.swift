@@ -14,6 +14,7 @@ struct ActionTileItem: Identifiable {
     let systemImage: String
     let tint: Color
     let isEnabled: Bool
+    let isInteractive: Bool
     let action: () -> Void
 
     init(
@@ -21,12 +22,14 @@ struct ActionTileItem: Identifiable {
         systemImage: String,
         tint: Color = .blue,
         isEnabled: Bool = true,
+        isInteractive: Bool = true,
         action: @escaping () -> Void
     ) {
         self.title = title
         self.systemImage = systemImage
         self.tint = tint
         self.isEnabled = isEnabled
+        self.isInteractive = isInteractive
         self.action = action
     }
 }
@@ -42,6 +45,7 @@ struct ActionTileRow: View {
                     systemImage: item.systemImage,
                     tint: item.tint,
                     isEnabled: item.isEnabled,
+                    isInteractive: item.isInteractive,
                     action: item.action
                 )
             }

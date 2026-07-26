@@ -9,7 +9,8 @@ import Foundation
 
 enum OperationsTimelineEntryKind: String, Codable, Hashable {
     case assignment = "Assignment"
-    case travel = "Travel / Transition"
+    case travel = "Travel"
+    case stopBuffer = "Stop Buffer"
     case lunch = "Lunch"
     case openCapacity = "Open Capacity"
 }

@@ -45,6 +45,10 @@ final class AppDataStore: ObservableObject {
     @Published var employees: [EmployeeRecord] = [] {
         didSet { saveData() }
     }
+    /// Accepted or freshly refreshed road routes for the current app session.
+    /// Assignment.routeSequence remains the durable source of route order;
+    /// these plans retain MapKit leg timing for Timeline presentation.
+    @Published var acceptedRoutePlans: [String: RoutePlan] = [:]
     
     var activeCustomers: [Customer] {
         customers.filter { $0.lifecycleStatus == .active }
@@ -516,7 +520,14 @@ final class AppDataStore: ObservableObject {
             job.secondaryTechnicianID = assignment.supportingTechnicianIDs.first
 
             if let operationalDate = assignment.scheduling.operationalDate {
-                job.scheduledDate = operationalDate
+                switch assignment.scheduling.mode {
+                case .fixedTime, .arrivalWindow:
+                    job.scheduledDate = operationalDate
+                case .flexibleDay, .deadline:
+                    job.scheduledDate = Calendar.current.startOfDay(
+                        for: operationalDate
+                    )
+                }
             }
 
             job.assignmentSchedulingMode = assignment.scheduling.mode
@@ -564,6 +575,10 @@ final class AppDataStore: ObservableObject {
             if job.primaryTechnicianID != original.primaryTechnicianID ||
                 job.secondaryTechnicianID != original.secondaryTechnicianID ||
                 job.scheduledDate != original.scheduledDate ||
+                job.assignmentSchedulingMode != original.assignmentSchedulingMode ||
+                job.arrivalWindowEnd != original.arrivalWindowEnd ||
+                job.completionDeadline != original.completionDeadline ||
+                job.assignmentPriority != original.assignmentPriority ||
                 job.status != original.status ||
                 job.workflowState != original.workflowState ||
                 job.completedDate != original.completedDate {
@@ -613,13 +628,17 @@ final class AppDataStore: ObservableObject {
             )
             deadline = nil
         case .flexibleDay:
-            serviceDate = job.scheduledDate
+            serviceDate = Calendar.current.startOfDay(
+                for: job.scheduledDate
+            )
             fixedStart = nil
             windowStart = nil
             windowEnd = nil
             deadline = nil
         case .deadline:
-            serviceDate = nil
+            serviceDate = Calendar.current.startOfDay(
+                for: job.completionDeadline ?? job.scheduledDate
+            )
             fixedStart = nil
             windowStart = nil
             windowEnd = nil
@@ -1063,8 +1082,87 @@ final class AppDataStore: ObservableObject {
     }
 
     func updateInvoice(_ invoice: InvoiceRecord) {
-        if let index = invoices.firstIndex(where: { $0.id == invoice.id }) {
-            invoices[index] = invoice
+        guard let index = invoices.firstIndex(where: {
+            $0.id == invoice.id
+        }) else {
+            return
+        }
+
+        let previousStatus = invoices[index].status
+        invoices[index] = invoice
+        synchronizeCompletedJobFromInvoice(
+            invoice,
+            previousStatus: previousStatus
+        )
+    }
+
+    private func synchronizeCompletedJobFromInvoice(
+        _ invoice: InvoiceRecord,
+        previousStatus: InvoiceStatus
+    ) {
+        let completesTechnicianWork: Bool
+        switch invoice.status {
+        case .sent, .partiallyPaid, .paid, .overdue:
+            completesTechnicianWork = true
+        case .draft, .void:
+            completesTechnicianWork = false
+        }
+
+        guard completesTechnicianWork,
+              let jobIndex = jobs.firstIndex(where: {
+                  $0.jobNumber == invoice.jobNumber
+              }) else {
+            return
+        }
+
+        let timestamp = invoice.status == .paid
+            ? (invoice.paidDate ?? Date())
+            : Date()
+
+        switch invoice.status {
+        case .sent, .overdue:
+            if previousStatus != invoice.status &&
+                !jobs[jobIndex].timelineEvents.contains(where: {
+                    $0.type == .invoiceSent
+                }) {
+                jobs[jobIndex].timelineEvents.append(
+                    JobTimelineEvent(
+                        type: .invoiceSent,
+                        title: "Invoice Sent",
+                        timestamp: timestamp,
+                        employeeID: jobs[jobIndex].primaryTechnicianID
+                    )
+                )
+            }
+
+        case .partiallyPaid, .paid:
+            if !jobs[jobIndex].timelineEvents.contains(where: {
+                $0.type == .paymentReceived
+            }) {
+                jobs[jobIndex].timelineEvents.append(
+                    JobTimelineEvent(
+                        type: .paymentReceived,
+                        title: "Payment Received",
+                        timestamp: timestamp,
+                        employeeID: jobs[jobIndex].primaryTechnicianID
+                    )
+                )
+            }
+
+        case .draft, .void:
+            break
+        }
+
+        if jobs[jobIndex].workflowState != .completed {
+            _ = performWorkflowAction(
+                jobID: jobs[jobIndex].id,
+                action: .completeJob,
+                employeeID: jobs[jobIndex].primaryTechnicianID,
+                note: invoice.status == .paid
+                    ? "Job completed after payment was received."
+                    : "Job completed after the invoice was sent.",
+                at: timestamp
+            )
         }
     }
 
@@ -1223,7 +1321,10 @@ final class AppDataStore: ObservableObject {
 
         invoices.append(invoice)
 
-        jobs[jobIndex].status = .completed
+        // Creating a draft invoice is a billing handoff, not the end of the
+        // technician workflow. The Job becomes complete when that invoice is
+        // sent or payment is recorded through updateInvoice(_:).
+        jobs[jobIndex].status = .inProgress
         jobs[jobIndex].workflowState = .invoiceCreated
 
         if !jobs[jobIndex].timelineEvents.contains(where: {

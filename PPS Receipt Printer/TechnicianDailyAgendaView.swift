@@ -37,43 +37,100 @@ struct TechnicianDailyAgendaView: View {
     @State private var showingRouteOptimizationError = false
     @State private var routeSummary: DailyRouteOptimizer.RouteSummary?
     @State private var isRouteOptimized = false
+    @State private var optimizedStartByJobID: [UUID: Date] = [:]
 
     @MainActor
     private func workflowCoordinator() -> FieldOperationsWorkflowCoordinator {
         FieldOperationsWorkflowCoordinator(store: store)
     }
 
+    private var currentEmployee: EmployeeRecord {
+        store.employees.first(where: { $0.id == employee.id }) ?? employee
+    }
+
     private var agenda: TechnicianAgenda {
         SchedulingEngine.dailyAgenda(
-            for: employee,
+            for: currentEmployee,
             on: selectedDate,
             from: store.jobs
         )
     }
 
     private var sortedJobs: [JobRecord] {
-        agenda.jobs
+        agenda.jobs.sorted { first, second in
+            let firstIsFinished = isFinishedForAgenda(first)
+            let secondIsFinished = isFinishedForAgenda(second)
+
+            if firstIsFinished != secondIsFinished {
+                return !firstIsFinished
+            }
+
+            if firstIsFinished && secondIsFinished {
+                let firstCompletion = completionDate(for: first)
+                let secondCompletion = completionDate(for: second)
+                if firstCompletion != secondCompletion {
+                    return firstCompletion > secondCompletion
+                }
+                return first.id.uuidString < second.id.uuidString
+            }
+
+            let firstStart = plannedStart(for: first)
+            let secondStart = plannedStart(for: second)
+            if firstStart != secondStart {
+                return firstStart < secondStart
+            }
+
+            let firstSequence = store.assignment(forJobID: first.id)?.routeSequence
+            let secondSequence = store.assignment(forJobID: second.id)?.routeSequence
+
+            switch (firstSequence, secondSequence) {
+            case let (.some(left), .some(right)) where left != right:
+                return left < right
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            default:
+                return first.id.uuidString < second.id.uuidString
+            }
+        }
+    }
+
+    private var plannedStartByJobID: [UUID: Date] {
+        let plan = store.dailyPlan(
+            for: currentEmployee,
+            on: selectedDate
+        )
+        return Dictionary(
+            uniqueKeysWithValues: plan.assignmentItems.compactMap { item in
+                guard let jobID = item.jobID else { return nil }
+                return (jobID, item.serviceStart)
+            }
+        )
+    }
+
+    private func plannedStart(for job: JobRecord) -> Date {
+        optimizedStartByJobID[job.id]
+            ?? plannedStartByJobID[job.id]
+            ?? job.scheduledDate
     }
 
     private var completedJobCount: Int {
-        sortedJobs.filter {
-            $0.status == .completed
-        }
-        .count
+        sortedJobs.filter(isFinishedForAgenda).count
     }
 
     private var firstJob: JobRecord? {
-        displayedJobs.first
+        displayedJobs.first { !isFinishedForAgenda($0) }
     }
 
     private var estimatedFinishDate: Date? {
-        sortedJobs.compactMap { job in
+        sortedJobs.filter { !isFinishedForAgenda($0) }.compactMap { job in
             Calendar.current.date(
                 byAdding: .minute,
                 value: SchedulingEngine.scheduledMinutes(
                     for: job
                 ),
-                to: job.scheduledDate
+                to: plannedStart(for: job)
             )
         }
         .max()
@@ -211,6 +268,7 @@ struct TechnicianDailyAgendaView: View {
             displayedJobs = sortedJobs
             routeSummary = nil
             isRouteOptimized = false
+            optimizedStartByJobID = [:]
 
             if locationManager.authorizationStatus == .authorizedAlways ||
                locationManager.authorizationStatus == .authorizedWhenInUse {
@@ -221,6 +279,10 @@ struct TechnicianDailyAgendaView: View {
             displayedJobs = sortedJobs
             routeSummary = nil
             isRouteOptimized = false
+            optimizedStartByJobID = [:]
+        }
+        .onChange(of: finishedJobIDs) {
+            displayedJobs = sortedJobs
         }
         .alert(
             "Route Optimization",
@@ -240,7 +302,7 @@ struct TechnicianDailyAgendaView: View {
             Circle()
                 .fill(
                     employeeColor(
-                        named: employee.colorName
+                        named: currentEmployee.colorName
                     )
                 )
                 .frame(
@@ -258,7 +320,7 @@ struct TechnicianDailyAgendaView: View {
                 spacing: 3
             ) {
                 Text(
-                    "\(greetingText), \(employee.firstName)"
+                    "\(greetingText), \(currentEmployee.firstName)"
                 )
                 .font(.title2)
                 .fontWeight(.bold)
@@ -456,6 +518,23 @@ struct TechnicianDailyAgendaView: View {
 
     private var scheduleHeader: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if canOverrideNonWorkingDay {
+                Button {
+                    enableOvertimeWorkday()
+                } label: {
+                    Label(
+                        "Work This Day (Overtime)",
+                        systemImage: "calendar.badge.plus"
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+                .accessibilityHint(
+                    "Uses the technician's normal start and end times for this day only."
+                )
+            }
+
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Today's Schedule")
@@ -465,7 +544,7 @@ struct TechnicianDailyAgendaView: View {
                     if let firstJob {
                         Text(
                             "Starts "
-                            + firstJob.scheduledDate.formatted(
+                            + plannedStart(for: firstJob).formatted(
                                 date: .omitted,
                                 time: .shortened
                             )
@@ -667,7 +746,7 @@ struct TechnicianDailyAgendaView: View {
 
                 Text(
                     twentyFourHourTime(
-                        job.scheduledDate
+                        plannedStart(for: job)
                     )
                 )
                 .font(.system(size: 16))
@@ -676,28 +755,31 @@ struct TechnicianDailyAgendaView: View {
                 .lineLimit(1)
             }
 
-            HStack {
-                Spacer()
-
-                Label(
-                    workflowContext(
-                        for: job
-                    ).currentState.rawValue,
-                    systemImage:
-                        workflowContext(
-                            for: job
-                        ).nextAction.systemImage
-                )
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundStyle(
-                    statusColor(
-                        for: job.status
+            VStack(spacing: 5) {
+                if let invoiceState = technicianInvoiceState(for: job) {
+                    Label(
+                        invoiceState.title,
+                        systemImage: invoiceState.systemImage
                     )
-                )
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.green)
 
-                Spacer()
+                    Text("Job Complete")
+                        .font(.subheadline)
+                        .fontWeight(.bold)
+                        .foregroundStyle(.green)
+                } else {
+                    Label(
+                        workflowContext(for: job).currentState.rawValue,
+                        systemImage: workflowContext(for: job).nextAction.systemImage
+                    )
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(statusColor(for: job.status))
+                }
             }
+            .frame(maxWidth: .infinity)
 
             if let site = site(for: job) {
                 Label {
@@ -734,7 +816,9 @@ struct TechnicianDailyAgendaView: View {
             ActionTileItem(
                 title: "Navigate",
                 systemImage: "location.fill",
-                isEnabled: hasUsableAddress(for: job)
+                isEnabled:
+                    hasUsableAddress(for: job) &&
+                    !isTechnicianComplete(job)
             ) {
                 prepareNavigation(for: job)
             },
@@ -748,9 +832,21 @@ struct TechnicianDailyAgendaView: View {
             }
         ]
 
-        let context = workflowContext(for: job)
-        let workflowActions = context.availableActions.map {
-            workflowAction($0, for: job)
+        let workflowActions: [ActionTileItem]
+        if isTechnicianComplete(job) {
+            workflowActions = [
+                ActionTileItem(
+                    title: "COMPLETE",
+                    systemImage: "flag.checkered",
+                    tint: .green,
+                    isInteractive: false
+                ) {}
+            ]
+        } else {
+            let context = workflowContext(for: job)
+            workflowActions = context.availableActions.map {
+                workflowAction($0, for: job)
+            }
         }
 
         return VStack(spacing: 10) {
@@ -789,6 +885,59 @@ struct TechnicianDailyAgendaView: View {
         workflowCoordinator().workflowContext(for: job)
     }
 
+    private func technicianInvoiceState(
+        for job: JobRecord
+    ) -> (title: String, systemImage: String)? {
+        if let invoice = store.invoice(forJobID: job.id) {
+            switch invoice.status {
+            case .sent, .overdue:
+                return ("Invoice Sent", "paperplane.fill")
+            case .partiallyPaid, .paid:
+                return ("Payment Received", "flag.checkered")
+            case .draft, .void:
+                break
+            }
+        }
+
+        if job.workflowState == .paymentReceived {
+            return ("Payment Received", "flag.checkered")
+        }
+
+        return nil
+    }
+
+    private func isTechnicianComplete(_ job: JobRecord) -> Bool {
+        technicianInvoiceState(for: job) != nil ||
+        job.workflowState == .paymentReceived ||
+        job.workflowState == .completed
+    }
+
+    private func isFinishedForAgenda(_ job: JobRecord) -> Bool {
+        job.status == .completed ||
+        job.status == .cancelled ||
+        isTechnicianComplete(job)
+    }
+
+    private var finishedJobIDs: [UUID] {
+        agenda.jobs
+            .filter(isFinishedForAgenda)
+            .map(\.id)
+            .sorted { $0.uuidString < $1.uuidString }
+    }
+
+    private func completionDate(for job: JobRecord) -> Date {
+        job.completedDate ??
+        job.timelineEvents
+            .filter {
+                $0.type == .jobCompleted ||
+                $0.type == .paymentReceived ||
+                $0.type == .invoiceSent
+            }
+            .map(\.timestamp)
+            .max() ??
+        .distantPast
+    }
+
     private func performWorkflowAction(
         _ action: JobWorkflowAction,
         for job: JobRecord
@@ -809,7 +958,7 @@ struct TechnicianDailyAgendaView: View {
         _ = workflowCoordinator().performWorkflowAction(
             jobID: job.id,
             action: action,
-            employeeID: employee.id
+            employeeID: currentEmployee.id
         )
     }
 
@@ -943,6 +1092,72 @@ struct TechnicianDailyAgendaView: View {
         return .green
     }
 
+    private var canOverrideNonWorkingDay: Bool {
+        guard !agenda.isWorkingDay,
+              agenda.scheduledMinutes > 0 else {
+            return false
+        }
+
+        return !availabilityExceptionsForSelectedDay.contains {
+            $0.kind == .unavailable
+        }
+    }
+
+    private var availabilityExceptionsForSelectedDay: [WorkforceAvailabilityException] {
+        let dayStart = Calendar.current.startOfDay(for: selectedDate)
+        guard let nextDay = Calendar.current.date(
+            byAdding: .day,
+            value: 1,
+            to: dayStart
+        ) else {
+            return []
+        }
+
+        let interval = DateInterval(start: dayStart, end: nextDay)
+        return currentEmployee.workforceProfile.availabilityExceptions.filter {
+            $0.overlaps(interval)
+        }
+    }
+
+    private func enableOvertimeWorkday() {
+        var updatedEmployee = currentEmployee
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: selectedDate)
+
+        guard let overrideStart = calendar.date(
+            byAdding: .minute,
+            value: updatedEmployee.defaultStartMinutes,
+            to: dayStart
+        ),
+        let overrideEnd = calendar.date(
+            byAdding: .minute,
+            value: updatedEmployee.defaultEndMinutes,
+            to: dayStart
+        ),
+        overrideEnd > overrideStart else {
+            return
+        }
+
+        updatedEmployee.workforceProfile.availabilityExceptions.removeAll {
+            $0.kind == .available &&
+            $0.overlaps(DateInterval(start: dayStart, end: overrideEnd))
+        }
+        updatedEmployee.workforceProfile.availabilityExceptions.append(
+            WorkforceAvailabilityException(
+                kind: .available,
+                startDate: overrideStart,
+                endDate: overrideEnd,
+                reason: "Overtime workday enabled from My Day."
+            )
+        )
+
+        store.updateEmployee(updatedEmployee)
+        displayedJobs = sortedJobs
+        routeSummary = nil
+        isRouteOptimized = false
+        optimizedStartByJobID = [:]
+    }
+
     private var greetingText: String {
         let hour = Calendar.current.component(
             .hour,
@@ -963,11 +1178,11 @@ struct TechnicianDailyAgendaView: View {
 
     private var employeeInitials: String {
         let firstInitial =
-            employee.firstName.first.map(String.init)
+            currentEmployee.firstName.first.map(String.init)
             ?? ""
 
         let lastInitial =
-            employee.lastName.first.map(String.init)
+            currentEmployee.lastName.first.map(String.init)
             ?? ""
 
         let initials =
@@ -1265,23 +1480,79 @@ struct TechnicianDailyAgendaView: View {
         from currentLocation: CLLocation
     ) {
         Task {
-            let optimizer = DailyRouteOptimizer()
-            let result = await optimizer.optimize(
-                jobs: sortedJobs,
-                sites: store.sites,
-                startingLocation: currentLocation,
-                settings:
-                    store.businessProfile.operations
+            let activeJobs = sortedJobs.filter {
+                !isFinishedForAgenda($0)
+            }
+            let plan = store.dailyPlan(
+                for: currentEmployee,
+                on: selectedDate
             )
-            let optimizedIDs = Set(result.jobs.map(\.id))
-            let remaining = sortedJobs.filter {
-                !optimizedIDs.contains($0.id)
+            let routePlan = await store.routePlan(
+                from: plan,
+                origin: RouteOrigin(
+                    coordinate: RouteCoordinate(
+                        latitude: currentLocation.coordinate.latitude,
+                        longitude: currentLocation.coordinate.longitude
+                    ),
+                    label: "Technician Location"
+                ),
+                source: .recommended,
+                preferRoadNetwork: true,
+                preserveHumanRouteSequence: false
+            )
+
+            let jobsByID = Dictionary(
+                uniqueKeysWithValues: activeJobs.map { ($0.id, $0) }
+            )
+            let routeOrderedJobs = routePlan.stops.compactMap {
+                jobsByID[$0.jobID]
+            }
+            let routedJobIDs = Set(routeOrderedJobs.map(\.id))
+            let remainingActiveJobs = activeJobs.filter {
+                !routedJobIDs.contains($0.id)
             }
 
+            var settings = store.businessProfile.operations
+            settings.normalize()
+            let planningBufferMinutes = settings.dailyRouteBufferMinutes +
+                (settings.perStopBufferMinutes * routePlan.stopCount)
+            let summary = DailyRouteOptimizer.RouteSummary(
+                stopCount: routePlan.stopCount,
+                totalDistanceMeters: routePlan.totalDistanceMeters,
+                estimatedDriveTimeSeconds: routePlan.totalDriveTimeSeconds,
+                planningBufferSeconds: TimeInterval(planningBufferMinutes * 60),
+                includeBuffersInPlannedTime: settings.includeBuffersInRouteTime
+            )
+            let optimizedStarts = Dictionary(
+                uniqueKeysWithValues: routePlan.stops.map {
+                    ($0.jobID, $0.serviceStartDate)
+                }
+            )
+
             await MainActor.run {
-                displayedJobs = result.jobs + remaining
-                routeSummary = result.summary
-                isRouteOptimized = !result.jobs.isEmpty
+                let completeRouteOrder = routeOrderedJobs + remainingActiveJobs
+
+                do {
+                    try store.applyTechnicianRouteOrder(
+                        jobIDs: completeRouteOrder.map(\.id),
+                        technician: currentEmployee
+                    )
+                    store.rememberAcceptedRoutePlan(routePlan)
+                    optimizedStartByJobID = optimizedStarts
+                    displayedJobs = sortedJobs
+                    routeSummary = summary
+                    isRouteOptimized = !routePlan.stops.isEmpty
+                    if routePlan.hasBlockingConflicts {
+                        routeOptimizationErrorMessage = routePlan.conflicts
+                            .filter { $0.severity == .error }
+                            .map(\.message)
+                            .joined(separator: "\n")
+                        showingRouteOptimizationError = true
+                    }
+                } catch {
+                    routeOptimizationErrorMessage = error.localizedDescription
+                    showingRouteOptimizationError = true
+                }
                 isOptimizingRoute = false
             }
         }
@@ -1291,8 +1562,7 @@ struct TechnicianDailyAgendaView: View {
         for job: JobRecord
     ) -> Int? {
         guard isRouteOptimized,
-              job.status != .completed,
-              job.status != .cancelled,
+              !isFinishedForAgenda(job),
               let index = displayedJobs.firstIndex(where: {
                   $0.id == job.id
               })

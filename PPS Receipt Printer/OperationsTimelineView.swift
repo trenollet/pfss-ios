@@ -72,7 +72,10 @@ struct OperationsTimelineView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Timeline")
         .navigationBarTitleDisplayMode(.inline)
-        .refreshable { generatedAt = Date() }
+        .refreshable { await refreshMappedTravel() }
+        .task(id: calendar.startOfDay(for: selectedDate)) {
+            await refreshMappedTravel()
+        }
         .onChange(of: selectedDate) { _, _ in generatedAt = Date() }
         .navigationDestination(isPresented: isShowingDetails) {
             if let assignmentID = selectedAssignmentID {
@@ -95,6 +98,21 @@ struct OperationsTimelineView: View {
                 .environmentObject(store)
             }
         }
+    }
+
+    @MainActor
+    private func refreshMappedTravel() async {
+        let technicians = store.activeEmployees.filter {
+            $0.role == .technician
+        }
+        for technician in technicians {
+            await store.refreshTimelineRoutePlan(
+                for: technician,
+                on: selectedDate,
+                calendar: calendar
+            )
+        }
+        generatedAt = Date()
     }
 
     private var dateControls: some View {
@@ -569,6 +587,7 @@ private func timelineEntryColor(
     switch entry.kind {
     case .assignment: return laneColor
     case .travel: return .indigo
+    case .stopBuffer: return .purple
     case .lunch: return .mint
     case .openCapacity: return .green
     }
@@ -578,6 +597,7 @@ private func timelineEntrySymbol(_ kind: OperationsTimelineEntryKind) -> String 
     switch kind {
     case .assignment: return "wrench.and.screwdriver.fill"
     case .travel: return "car.fill"
+    case .stopBuffer: return "timer"
     case .lunch: return "fork.knife"
     case .openCapacity: return "clock.arrow.circlepath"
     }

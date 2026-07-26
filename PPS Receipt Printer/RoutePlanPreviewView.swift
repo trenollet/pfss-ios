@@ -469,6 +469,7 @@ struct RoutePlanPreviewView: View {
                     ? nil
                     : normalizedOverrideReason
             )
+            store.rememberAcceptedRoutePlan(routePlan)
             appliedMessage = results.isEmpty
                 ? "This route order was already current."
                 : "Applied \(results.count) route position\(results.count == 1 ? "" : "s")."

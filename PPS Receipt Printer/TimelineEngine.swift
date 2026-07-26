@@ -20,7 +20,9 @@ struct OperationsTimelineEngine {
     func snapshot(
         board: DispatchBoardSnapshot,
         assignments: [Assignment],
-        employees: [EmployeeRecord]
+        jobs: [JobRecord],
+        employees: [EmployeeRecord],
+        routePlansByTechnicianID: [UUID: RoutePlan] = [:]
     ) -> OperationsTimelineSnapshot {
         let assignmentsByID = Dictionary(
             uniqueKeysWithValues: assignments.map { ($0.id, $0) }
@@ -31,13 +33,18 @@ struct OperationsTimelineEngine {
         let employeesByID = Dictionary(
             uniqueKeysWithValues: employees.map { ($0.id, $0) }
         )
+        let jobsByID = Dictionary(
+            uniqueKeysWithValues: jobs.map { ($0.id, $0) }
+        )
 
         let lanes = board.technicianLanes.map { lane in
             makeLane(
                 lane,
                 assignmentRecords: assignmentsByID,
                 assignmentRecordsByJobID: assignmentsByJobID,
-                employee: employeesByID[lane.id]
+                jobsByID: jobsByID,
+                employee: employeesByID[lane.id],
+                routePlan: routePlansByTechnicianID[lane.id]
             )
         }
         .sorted {
@@ -61,14 +68,27 @@ struct OperationsTimelineEngine {
         _ lane: DispatchBoardTechnicianLane,
         assignmentRecords: [UUID: Assignment],
         assignmentRecordsByJobID: [UUID: Assignment],
-        employee: EmployeeRecord?
+        jobsByID: [UUID: JobRecord],
+        employee: EmployeeRecord?,
+        routePlan: RoutePlan?
     ) -> OperationsTimelineLane {
         let itemsByID = Dictionary(
             uniqueKeysWithValues: lane.assignments.map { ($0.id, $0) }
         )
+        let routeStopsByAssignmentID = Dictionary(
+            uniqueKeysWithValues: (routePlan?.stops ?? []).map {
+                ($0.assignmentID, $0)
+            }
+        )
         let planItems = lane.dailyPlan.items.sorted {
-            if $0.occupiedStart != $1.occupiedStart {
-                return $0.occupiedStart < $1.occupiedStart
+            let firstStart = $0.assignmentID
+                .flatMap { routeStopsByAssignmentID[$0]?.departureDate }
+                ?? $0.occupiedStart
+            let secondStart = $1.assignmentID
+                .flatMap { routeStopsByAssignmentID[$0]?.departureDate }
+                ?? $1.occupiedStart
+            if firstStart != secondStart {
+                return firstStart < secondStart
             }
             return $0.id < $1.id
         }
@@ -79,28 +99,54 @@ struct OperationsTimelineEngine {
         var cursor = workdayStart
 
         for planItem in planItems {
-            if let cursor, planItem.occupiedStart > cursor {
+            let routeStop = planItem.assignmentID.flatMap {
+                routeStopsByAssignmentID[$0]
+            }
+            let occupiedStart = routeStop?.departureDate
+                ?? planItem.occupiedStart
+            let serviceStart = routeStop?.serviceStartDate
+                ?? planItem.serviceStart
+            let serviceEnd = routeStop?.serviceEndDate
+                ?? planItem.serviceEnd
+            let postBufferMinutes = max(
+                Int(planItem.occupiedEnd.timeIntervalSince(planItem.serviceEnd) / 60),
+                0
+            )
+            let occupiedEnd = calendar.date(
+                byAdding: .minute,
+                value: postBufferMinutes,
+                to: serviceEnd
+            ) ?? serviceEnd
+
+            if let cursor, occupiedStart > cursor {
                 entries.append(openEntry(
                     technicianID: lane.id,
                     start: cursor,
-                    end: planItem.occupiedStart
+                    end: occupiedStart
                 ))
             }
 
-            if planItem.occupiedStart < planItem.serviceStart {
+            if let routeStop,
+               routeStop.estimatedArrivalDate > routeStop.departureDate {
+                entries.append(roadTravelEntry(
+                    technicianID: lane.id,
+                    assignmentID: planItem.assignmentID,
+                    stop: routeStop
+                ))
+            } else if occupiedStart < serviceStart {
                 entries.append(transitionEntry(
                     technicianID: lane.id,
                     assignmentID: planItem.assignmentID,
-                    start: planItem.occupiedStart,
-                    end: planItem.serviceStart
+                    start: occupiedStart,
+                    end: serviceStart
                 ))
             }
 
             if planItem.kind == .lunch {
                 entries.append(lunchEntry(
                     technicianID: lane.id,
-                    start: planItem.serviceStart,
-                    end: planItem.serviceEnd
+                    start: serviceStart,
+                    end: serviceEnd
                 ))
             } else if let assignmentID = planItem.assignmentID,
                       let item = itemsByID[assignmentID] {
@@ -108,26 +154,27 @@ struct OperationsTimelineEngine {
                     item: item,
                     record: assignmentRecords[assignmentID]
                         ?? assignmentRecordsByJobID[item.jobID],
+                    job: jobsByID[item.jobID],
                     technicianID: lane.id,
-                    start: planItem.serviceStart,
-                    end: planItem.serviceEnd
+                    start: serviceStart,
+                    end: serviceEnd
                 ))
             }
 
-            // Business Operations buffers are operational transition time.
-            // Show them explicitly instead of allowing them to look like
-            // unexplained open capacity after the service interval.
+            // Business Operations buffers are configurable stop overhead, not
+            // road-network travel. Label them honestly so a three-minute
+            // buffer is never mistaken for the drive to the next appointment.
             if planItem.kind == .assignment,
-               planItem.occupiedEnd > planItem.serviceEnd {
+               occupiedEnd > serviceEnd {
                 entries.append(transitionEntry(
                     technicianID: lane.id,
                     assignmentID: planItem.assignmentID,
-                    start: planItem.serviceEnd,
-                    end: planItem.occupiedEnd
+                    start: serviceEnd,
+                    end: occupiedEnd
                 ))
             }
 
-            cursor = maxDate(cursor, planItem.occupiedEnd)
+            cursor = maxDate(cursor, occupiedEnd)
         }
 
         // Assignments not placed by the Daily Planner remain visible using
@@ -149,6 +196,7 @@ struct OperationsTimelineEngine {
                 item: item,
                 record: assignmentRecords[item.id]
                     ?? assignmentRecordsByJobID[item.jobID],
+                job: jobsByID[item.jobID],
                 technicianID: lane.id,
                 start: start,
                 end: end
@@ -213,12 +261,25 @@ struct OperationsTimelineEngine {
                 isBlocking: alert.severity == .blocking
             )
         }
-        return Array(Set(planningAlerts + boardAlerts)).sorted { $0.id < $1.id }
+        var uniqueAlerts: [String: OperationsTimelineAlert] = [:]
+        for alert in planningAlerts + boardAlerts {
+            let key = [
+                alert.assignmentID?.uuidString ?? "none",
+                alert.title,
+                alert.message,
+                alert.isBlocking ? "blocking" : "warning"
+            ].joined(separator: "|")
+            if uniqueAlerts[key] == nil {
+                uniqueAlerts[key] = alert
+            }
+        }
+        return uniqueAlerts.values.sorted { $0.id < $1.id }
     }
 
     private func assignmentEntry(
         item: DispatchBoardAssignmentItem,
         record: Assignment?,
+        job: JobRecord?,
         technicianID: UUID,
         start: Date,
         end: Date
@@ -238,7 +299,7 @@ struct OperationsTimelineEngine {
             priority: item.priority,
             hasConflict: item.hasBlockingConflict,
             warnings: item.warnings,
-            milestones: milestones(for: record)
+            milestones: milestones(for: record, job: job)
         )
     }
 
@@ -249,13 +310,32 @@ struct OperationsTimelineEngine {
         end: Date
     ) -> OperationsTimelineEntry {
         intervalEntry(
-            kind: .travel,
+            kind: .stopBuffer,
             technicianID: technicianID,
             assignmentID: assignmentID,
             start: start,
             end: end,
-            title: "Travel / Transition",
-            detail: "Reserved operational time"
+            title: "Stop Buffer",
+            detail: "Configured operational overhead"
+        )
+    }
+
+    private func roadTravelEntry(
+        technicianID: UUID,
+        assignmentID: UUID?,
+        stop: RouteStopPlan
+    ) -> OperationsTimelineEntry {
+        let miles = stop.travel.distanceMiles.formatted(
+            .number.precision(.fractionLength(1))
+        )
+        return intervalEntry(
+            kind: .travel,
+            technicianID: technicianID,
+            assignmentID: assignmentID,
+            start: stop.departureDate,
+            end: stop.estimatedArrivalDate,
+            title: "Travel",
+            detail: "Apple Maps estimate · \(miles) mi"
         )
     }
 
@@ -317,21 +397,67 @@ struct OperationsTimelineEngine {
         )
     }
 
-    private func milestones(for assignment: Assignment?) -> [OperationsTimelineMilestone] {
-        guard let assignment else { return [] }
-        let values: [(String, Date?)] = [
-            ("Dispatched", assignment.dispatchedDate),
-            ("Travel Started", assignment.enRouteDate),
-            ("Arrived", assignment.onSiteDate),
-            ("Work Completed", assignment.workCompletedDate),
-            ("Invoice Ready", assignment.invoiceReadyDate),
-            ("Closed", assignment.closedDate),
-            ("Cancelled", assignment.cancelledDate)
-        ]
-        return values.compactMap { title, timestamp in
-            timestamp.map { OperationsTimelineMilestone(title: title, timestamp: $0) }
+    private func milestones(
+        for assignment: Assignment?,
+        job: JobRecord?
+    ) -> [OperationsTimelineMilestone] {
+        struct Candidate {
+            let key: String
+            let title: String
+            let timestamp: Date
         }
-        .sorted { $0.timestamp < $1.timestamp }
+
+        let jobCandidates = (job?.timelineEvents ?? []).compactMap { event -> Candidate? in
+            guard let key = milestoneKey(for: event.type) else { return nil }
+            return Candidate(key: key, title: event.title, timestamp: event.timestamp)
+        }
+        let jobKeys = Set(jobCandidates.map(\.key))
+
+        let assignmentValues: [(String, String, Date?)] = [
+            ("dispatched", "Dispatched", assignment?.dispatchedDate),
+            ("travel", "Travel Started", assignment?.enRouteDate),
+            ("arrived", "Arrived", assignment?.onSiteDate),
+            ("workComplete", "Work Completed", assignment?.workCompletedDate),
+            ("invoice", "Invoice Ready", assignment?.invoiceReadyDate),
+            ("closed", "Closed", assignment?.closedDate),
+            ("cancelled", "Cancelled", assignment?.cancelledDate)
+        ]
+        let assignmentCandidates: [Candidate] = assignmentValues.compactMap { value in
+            let (key, title, timestamp) = value
+            guard let timestamp, !jobKeys.contains(key) else { return nil }
+            return Candidate(key: key, title: title, timestamp: timestamp)
+        }
+
+        return (jobCandidates + assignmentCandidates)
+            .sorted { $0.timestamp < $1.timestamp }
+            .map {
+                OperationsTimelineMilestone(
+                    title: $0.title,
+                    timestamp: $0.timestamp
+                )
+            }
+    }
+
+    private func milestoneKey(
+        for type: JobTimelineEventType
+    ) -> String? {
+        switch type {
+        case .assigned: return "assigned"
+        case .travelStarted: return "travel"
+        case .arrived: return "arrived"
+        case .setupStarted: return "setup"
+        case .workStarted: return "workStarted"
+        case .workPaused: return "workPaused"
+        case .workResumed: return "workResumed"
+        case .packUpStarted: return "packUp"
+        case .workCompleted: return "workComplete"
+        case .invoiceCreated: return "invoice"
+        case .invoiceSent: return "invoiceSent"
+        case .paymentReceived: return "payment"
+        case .jobCompleted: return "closed"
+        case .cancelled: return "cancelled"
+        case .note: return nil
+        }
     }
 
     private func boardDayStart(_ date: Date) -> Date {
@@ -350,9 +476,10 @@ struct OperationsTimelineEngine {
     private func entryOrder(_ kind: OperationsTimelineEntryKind) -> Int {
         switch kind {
         case .travel: return 0
-        case .assignment: return 1
-        case .lunch: return 2
-        case .openCapacity: return 3
+        case .stopBuffer: return 1
+        case .assignment: return 2
+        case .lunch: return 3
+        case .openCapacity: return 4
         }
     }
 }

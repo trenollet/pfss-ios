@@ -84,6 +84,43 @@ struct RouteEngineTests {
         #expect(route.orderedAssignmentIDs.first == near.id)
     }
 
+    @Test func generousDeadlineDoesNotOverrideGeographicOrder() async {
+        let day = makeDate(hour: 0)
+        let deadline = makeAssignment(
+            idSeed: 1,
+            mode: .deadline,
+            serviceDate: day,
+            start: makeDate(hour: 8),
+            deadline: makeDate(hour: 17)
+        )
+        let nearbyFlexible = makeAssignment(
+            idSeed: 2,
+            mode: .flexibleDay,
+            serviceDate: day,
+            start: makeDate(hour: 9)
+        )
+        let estimator = MatrixEstimator(
+            secondsByDestinationLatitude: [
+                1: 1_800,
+                2: 300
+            ]
+        )
+
+        let route = await RouteEngine(travelEstimator: estimator).planRoute(
+            from: makePlan(day: day, assignments: [deadline, nearbyFlexible]),
+            assignments: [deadline, nearbyFlexible],
+            locations: [
+                location(for: deadline, latitude: 1),
+                location(for: nearbyFlexible, latitude: 2)
+            ],
+            origin: origin,
+            generatedAt: day
+        )
+
+        #expect(route.orderedAssignmentIDs == [nearbyFlexible.id, deadline.id])
+        #expect(route.conflicts.contains { $0.kind == .deadlineMissed } == false)
+    }
+
     @Test func lateArrivalProducesFixedStartConflict() async throws {
         let day = makeDate(hour: 0)
         let fixed = makeAssignment(

@@ -19,10 +19,21 @@ extension AppDataStore {
             generatedAt: generatedAt,
             calendar: calendar
         )
+        let routePlans = Dictionary(
+            uniqueKeysWithValues: board.technicianLanes.compactMap { lane in
+                acceptedRoutePlan(
+                    for: lane.id,
+                    on: date,
+                    calendar: calendar
+                ).map { (lane.id, $0) }
+            }
+        )
         return OperationsTimelineEngine(calendar: calendar).snapshot(
             board: board,
             assignments: assignmentEngine.assignments,
-            employees: activeEmployees
+            jobs: activeJobs,
+            employees: activeEmployees,
+            routePlansByTechnicianID: routePlans
         )
     }
 }

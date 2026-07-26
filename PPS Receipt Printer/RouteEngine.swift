@@ -151,8 +151,10 @@ struct RouteEngine {
 
     // MARK: - Ordering
 
-    /// Reorders Flexible Day runs only. Fixed Time, Arrival Window, Deadline,
-    /// and lunch positions remain anchors from the accepted Daily Plan.
+    /// Reorders geographically movable work between hard appointment anchors.
+    /// Fixed Time and Arrival Window work remain anchors. Deadline work may
+    /// move with Flexible Day work when the resulting route still completes it
+    /// before its deadline.
     private func constraintPreservingOrder(
         _ nodes: [RouteNode],
         origin: RouteOrigin,
@@ -242,7 +244,25 @@ struct RouteEngine {
                 }
             }
 
-            let selectedIndex = candidates.min { first, second in
+            var feasibleCandidates: [(index: Int, estimate: RouteTravelEstimate)] = []
+            for candidate in candidates {
+                if await preservesRemainingDeadlines(
+                    candidate: candidate,
+                    remaining: remaining,
+                    departingAt: departureDate
+                ) {
+                    feasibleCandidates.append(candidate)
+                }
+            }
+
+            // Geography remains the deciding factor until taking the nearest
+            // stop would make a remaining deadline impossible. At that point
+            // the deadline becomes an operational constraint, not a blanket
+            // first-stop priority.
+            let selectionPool = feasibleCandidates.isEmpty
+                ? candidates
+                : feasibleCandidates
+            let selectedIndex = selectionPool.min { first, second in
                 if first.estimate.expectedTravelTimeSeconds ==
                     second.estimate.expectedTravelTimeSeconds {
                     return stableNodeOrder(
@@ -255,12 +275,72 @@ struct RouteEngine {
             }?.index ?? 0
 
             let selected = remaining.remove(at: selectedIndex)
+            let selectedTravel = candidates.first {
+                $0.index == selectedIndex
+            }?.estimate ?? .zero
             ordered.append(selected)
             currentCoordinate = selected.location.coordinate
-            departureDate = selected.item.occupiedEnd
+            departureDate = departureDate
+                .addingTimeInterval(selectedTravel.expectedTravelTimeSeconds)
+                .addingTimeInterval(
+                    TimeInterval(
+                        (selected.item.serviceMinutes + selected.postServiceMinutes) * 60
+                    )
+                )
         }
 
         return ordered
+    }
+
+    private func preservesRemainingDeadlines(
+        candidate: (index: Int, estimate: RouteTravelEstimate),
+        remaining: [RouteNode],
+        departingAt departureDate: Date
+    ) async -> Bool {
+        let selected = remaining[candidate.index]
+        let selectedArrival = departureDate.addingTimeInterval(
+            candidate.estimate.expectedTravelTimeSeconds
+        )
+        let selectedEnd = selectedArrival.addingTimeInterval(
+            TimeInterval(selected.item.serviceMinutes * 60)
+        )
+        let nextDeparture = selectedEnd.addingTimeInterval(
+            TimeInterval(selected.postServiceMinutes * 60)
+        )
+
+        if selected.assignment.scheduling.mode == .deadline,
+           let deadline = selected.assignment.scheduling.completionDeadline,
+           selectedEnd > deadline.addingTimeInterval(
+                configuration.constraintToleranceSeconds
+           ) {
+            return false
+        }
+
+        for (index, deadlineNode) in remaining.enumerated()
+        where index != candidate.index &&
+            deadlineNode.assignment.scheduling.mode == .deadline {
+            guard let deadline = deadlineNode.assignment.scheduling.completionDeadline
+            else { continue }
+
+            guard let travel = try? await travelEstimator.estimateTravel(
+                from: selected.location.coordinate,
+                to: deadlineNode.location.coordinate,
+                departingAt: nextDeparture
+            ) else {
+                continue
+            }
+            let projectedCompletion = nextDeparture
+                .addingTimeInterval(travel.expectedTravelTimeSeconds)
+                .addingTimeInterval(
+                    TimeInterval(deadlineNode.item.serviceMinutes * 60)
+                )
+            if projectedCompletion > deadline.addingTimeInterval(
+                configuration.constraintToleranceSeconds
+            ) {
+                return false
+            }
+        }
+        return true
     }
 
     private func humanSequenceOrder(_ nodes: [RouteNode]) -> [RouteNode] {
@@ -406,7 +486,7 @@ struct RouteEngine {
             )
 
         case .flexibleDay:
-            let start = max(arrival, node.item.serviceStart)
+            let start = arrival
             return RouteTimingResult(
                 serviceStart: start,
                 serviceEnd: start.addingTimeInterval(duration),
@@ -415,7 +495,7 @@ struct RouteEngine {
             )
 
         case .deadline:
-            let start = max(arrival, node.item.serviceStart)
+            let start = arrival
             let end = start.addingTimeInterval(duration)
             let deadline = scheduling.completionDeadline ?? node.item.serviceEnd
             let missed = end > deadline.addingTimeInterval(tolerance)
@@ -545,8 +625,12 @@ private extension RouteEngine {
         let location: RouteAssignmentLocation
 
         var isFlexible: Bool {
-            assignment.scheduling.mode == .flexibleDay &&
-            !item.isFixedCommitment
+            switch assignment.scheduling.mode {
+            case .flexibleDay, .deadline:
+                return !item.isFixedCommitment
+            case .fixedTime, .arrivalWindow:
+                return false
+            }
         }
 
         var postServiceMinutes: Int {
@@ -561,4 +645,3 @@ private extension RouteEngine {
         let conflict: RoutePlanningConflict?
     }
 }
-

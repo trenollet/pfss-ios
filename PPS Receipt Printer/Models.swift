@@ -148,6 +148,7 @@ enum JobTimelineEventType: String, Codable {
     case packUpStarted
     case workCompleted
     case invoiceCreated
+    case invoiceSent
     case paymentReceived
     case jobCompleted
     case cancelled

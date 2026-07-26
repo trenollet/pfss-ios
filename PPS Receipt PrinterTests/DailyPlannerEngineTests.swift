@@ -53,6 +53,39 @@ struct Phase15DailyPlannerEngineTests {
         #expect(plan.unplacedAssignmentIDs.isEmpty)
     }
 
+    @Test func availableOverridePlansWorkOnNormalDayOff() throws {
+        let day = makeDate(hour: 0)
+        var technician = makeTechnician(lunchMinutes: 0)
+        technician.workingDays = []
+        technician.workforceProfile.availabilityExceptions = [
+            WorkforceAvailabilityException(
+                kind: .available,
+                startDate: makeDate(hour: 8),
+                endDate: makeDate(hour: 17),
+                reason: "Approved overtime"
+            )
+        ]
+        let flexible = makeAssignment(
+            number: "ASN-OVERTIME",
+            scheduling: AssignmentScheduling(
+                mode: .flexibleDay,
+                serviceDate: day,
+                estimatedDurationMinutes: 60
+            )
+        )
+
+        let plan = makeEngine().plan(
+            for: technician,
+            on: day,
+            assignments: [flexible]
+        )
+
+        let item = try #require(plan.assignmentItems.first)
+        #expect(hour(item.serviceStart) == 8)
+        #expect(plan.unplacedAssignmentIDs.isEmpty)
+        #expect(plan.conflicts.allSatisfy { $0.kind != .nonWorkingDay })
+    }
+
     @Test func arrivalWindowStartsAfterBlockingFixedCommitment() throws {
         let day = makeDate(hour: 0)
         let technician = makeTechnician(lunchMinutes: 0)

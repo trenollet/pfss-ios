@@ -68,6 +68,30 @@ struct JobDetailView: View {
     private var hasScheduledDurationOverride: Bool {
         enteredScheduledDurationMinutes > 0
     }
+
+    private var arrivalWindowEndBinding: Binding<Date> {
+        Binding(
+            get: {
+                job.arrivalWindowEnd ?? Calendar.current.date(
+                    byAdding: .hour,
+                    value: 2,
+                    to: job.scheduledDate
+                ) ?? job.scheduledDate
+            },
+            set: { job.arrivalWindowEnd = $0 }
+        )
+    }
+
+    private var completionDeadlineBinding: Binding<Date> {
+        Binding(
+            get: {
+                job.completionDeadline ?? QuarterHourDatePicker.normalized(
+                    job.scheduledDate
+                )
+            },
+            set: { job.completionDeadline = $0 }
+        )
+    }
     private var assignableEmployees: [EmployeeRecord] {
         store.activeEmployees.sorted {
             $0.displayName.localizedCaseInsensitiveCompare(
@@ -385,7 +409,23 @@ struct JobDetailView: View {
             }
             
             Section("Schedule") {
-                QuarterHourDatePicker(selection: $job.scheduledDate)
+                Picker(
+                    "Scheduling Mode",
+                    selection: $job.assignmentSchedulingMode
+                ) {
+                    ForEach(AssignmentSchedulingMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+
+                schedulingControls
+
+                Picker("Priority", selection: $job.assignmentPriority) {
+                    ForEach(AssignmentPriority.allCases) { priority in
+                        Text(priority.rawValue).tag(priority)
+                    }
+                }
+
                 HStack {
                     Text("Estimated Labor")
                     Spacer()
@@ -545,6 +585,9 @@ struct JobDetailView: View {
                 job.recurrenceFrequency = nil
             }
         }
+        .onChange(of: job.assignmentSchedulingMode) {
+            prepareSchedulingFields(for: job.assignmentSchedulingMode)
+        }
         .scrollDismissesKeyboard(.interactively)
         .navigationTitle("Edit Job")
         .toolbar {
@@ -604,6 +647,86 @@ struct JobDetailView: View {
         if site.siteName.isEmpty { return site.serviceAddress }
         if site.serviceAddress.isEmpty { return site.siteName }
         return "\(site.siteName) — \(site.serviceAddress)"
+    }
+
+    @ViewBuilder
+    private var schedulingControls: some View {
+        switch job.assignmentSchedulingMode {
+        case .fixedTime:
+            QuarterHourDatePicker(
+                selection: $job.scheduledDate,
+                dateLabel: "Service Date",
+                timeLabel: "Fixed Start"
+            )
+
+        case .arrivalWindow:
+            QuarterHourDatePicker(
+                selection: $job.scheduledDate,
+                dateLabel: "Service Date",
+                timeLabel: "Earliest Arrival"
+            )
+            QuarterHourDatePicker(
+                selection: arrivalWindowEndBinding,
+                dateLabel: "Window End Date",
+                timeLabel: "Latest Arrival"
+            )
+
+        case .flexibleDay:
+            DatePicker(
+                "Service Date",
+                selection: $job.scheduledDate,
+                displayedComponents: .date
+            )
+
+        case .deadline:
+            QuarterHourDatePicker(
+                selection: completionDeadlineBinding,
+                dateLabel: "Deadline Date",
+                timeLabel: "Complete By"
+            )
+        }
+    }
+
+    private func prepareSchedulingFields(
+        for mode: AssignmentSchedulingMode
+    ) {
+        switch mode {
+        case .fixedTime:
+            job.scheduledDate = QuarterHourDatePicker.normalized(
+                job.scheduledDate
+            )
+            job.arrivalWindowEnd = nil
+            job.completionDeadline = nil
+
+        case .arrivalWindow:
+            job.scheduledDate = QuarterHourDatePicker.normalized(
+                job.scheduledDate
+            )
+            if job.arrivalWindowEnd == nil ||
+                job.arrivalWindowEnd! <= job.scheduledDate {
+                job.arrivalWindowEnd = Calendar.current.date(
+                    byAdding: .hour,
+                    value: 2,
+                    to: job.scheduledDate
+                )
+            }
+            job.completionDeadline = nil
+
+        case .flexibleDay:
+            job.scheduledDate = Calendar.current.startOfDay(
+                for: job.scheduledDate
+            )
+            job.arrivalWindowEnd = nil
+            job.completionDeadline = nil
+
+        case .deadline:
+            if job.completionDeadline == nil {
+                job.completionDeadline = QuarterHourDatePicker.normalized(
+                    job.scheduledDate
+                )
+            }
+            job.arrivalWindowEnd = nil
+        }
     }
     @ViewBuilder
     private func employeeCapacitySummary(
@@ -734,7 +857,39 @@ struct JobDetailView: View {
     private func saveJobChanges(shouldDismiss: Bool) {
         isInputFocused = false
 
-        job.scheduledDate = QuarterHourDatePicker.normalized(job.scheduledDate)
+        switch job.assignmentSchedulingMode {
+        case .fixedTime:
+            job.scheduledDate = QuarterHourDatePicker.normalized(
+                job.scheduledDate
+            )
+            job.arrivalWindowEnd = nil
+            job.completionDeadline = nil
+
+        case .arrivalWindow:
+            job.scheduledDate = QuarterHourDatePicker.normalized(
+                job.scheduledDate
+            )
+            job.arrivalWindowEnd = QuarterHourDatePicker.normalized(
+                arrivalWindowEndBinding.wrappedValue
+            )
+            job.completionDeadline = nil
+
+        case .flexibleDay:
+            job.scheduledDate = Calendar.current.startOfDay(
+                for: job.scheduledDate
+            )
+            job.arrivalWindowEnd = nil
+            job.completionDeadline = nil
+
+        case .deadline:
+            job.completionDeadline = QuarterHourDatePicker.normalized(
+                completionDeadlineBinding.wrappedValue
+            )
+            job.scheduledDate = Calendar.current.startOfDay(
+                for: job.completionDeadline ?? job.scheduledDate
+            )
+            job.arrivalWindowEnd = nil
+        }
 
         if job.status == .completed && job.completedDate == nil {
             job.completedDate = Date()
@@ -915,6 +1070,8 @@ struct JobDetailView: View {
             return "checkmark.circle.fill"
         case .invoiceCreated:
             return "doc.text.fill"
+        case .invoiceSent:
+            return "paperplane.fill"
         case .paymentReceived:
             return "dollarsign.circle.fill"
         case .jobCompleted:

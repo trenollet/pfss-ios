@@ -89,9 +89,14 @@ struct JobNewView: View {
         PricingCalculator.total(for: lineItems, discount: discountValue)
     }
     private var operationalJobDate: Date {
-        schedulingMode == .deadline
-            ? QuarterHourDatePicker.normalized(completionDeadline)
-            : QuarterHourDatePicker.normalized(scheduledDate)
+        switch schedulingMode {
+        case .fixedTime, .arrivalWindow:
+            return QuarterHourDatePicker.normalized(scheduledDate)
+        case .flexibleDay:
+            return Calendar.current.startOfDay(for: scheduledDate)
+        case .deadline:
+            return QuarterHourDatePicker.normalized(completionDeadline)
+        }
     }
     private var assignableEmployees: [EmployeeRecord] {
         store.activeEmployees.sorted {

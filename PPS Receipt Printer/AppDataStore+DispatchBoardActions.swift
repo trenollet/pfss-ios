@@ -18,6 +18,7 @@ enum DispatchBoardActionError: LocalizedError {
     case reasonRequired
     case routeLaneUnavailable
     case routeBoundaryReached
+    case routeAssignmentMismatch
 
     var errorDescription: String? {
         switch self {
@@ -31,6 +32,8 @@ enum DispatchBoardActionError: LocalizedError {
             return "The Assignment is not currently in a technician route lane."
         case .routeBoundaryReached:
             return "The Assignment is already at the beginning or end of this route."
+        case .routeAssignmentMismatch:
+            return "One or more jobs no longer belong to this technician's route. Refresh My Day and try again."
         }
     }
 }
@@ -174,6 +177,40 @@ extension AppDataStore {
                 assignmentID: id,
                 routeSequence: desiredSequence,
                 actor: .system,
+                reason: reason,
+                at: timestamp
+            )
+        }
+    }
+
+    /// Persists a technician-approved My Day order through the same audited
+    /// Dispatch boundary used by the board and route-plan screens.
+    func applyTechnicianRouteOrder(
+        jobIDs: [UUID],
+        technician: EmployeeRecord,
+        reason: String = "Technician accepted the optimized My Day route.",
+        at timestamp: Date = Date()
+    ) throws {
+        var seenJobIDs = Set<UUID>()
+        let uniqueJobIDs = jobIDs.filter {
+            seenJobIDs.insert($0).inserted
+        }
+        let assignments = try uniqueJobIDs.map { jobID in
+            guard let assignment = assignment(forJobID: jobID),
+                  assignment.crew.containsActiveEmployee(technician.id) else {
+                throw DispatchBoardActionError.routeAssignmentMismatch
+            }
+            return assignment
+        }
+
+        let actor = DispatchActor.employee(technician)
+        for (index, assignment) in assignments.enumerated() {
+            let sequence = index + 1
+            guard assignment.routeSequence != sequence else { continue }
+            _ = try dispatchEngine.reorderRoute(
+                assignmentID: assignment.id,
+                routeSequence: sequence,
+                actor: actor,
                 reason: reason,
                 at: timestamp
             )

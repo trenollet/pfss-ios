@@ -11,10 +11,9 @@ import Foundation
 
 /// Deterministic operating rules used when constructing one technician day.
 ///
-/// Travel geography is intentionally deferred to Phase 14 Step 4. During
-/// Step 3, `transitionBufferMinutes` reserves operational handoff/travel time
-/// between stops and `dailyReserveMinutes` protects the configured daily
-/// overhead without inventing route mileage.
+/// `transitionBufferMinutes` is configurable operational overhead between
+/// stops. It is not a travel estimate. Road-network travel is supplied by the
+/// Route Engine and must remain distinct in route and timeline presentation.
 struct DailyPlannerConfiguration: Codable, Hashable {
     var slotIntervalMinutes: Int
     var transitionBufferMinutes: Int
