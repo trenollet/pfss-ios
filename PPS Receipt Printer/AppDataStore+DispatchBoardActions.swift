@@ -181,6 +181,17 @@ extension AppDataStore {
                 at: timestamp
             )
         }
+
+        let orderedAssignments = orderedIDs.compactMap {
+            assignmentEngine.assignment(id: $0)
+        }
+        enqueueRouteChangeOperation(
+            technicianID: lane.id,
+            orderedJobIDs: orderedAssignments.map(\.jobID),
+            orderedAssignmentIDs: orderedIDs,
+            reason: reason,
+            timestamp: timestamp
+        )
     }
 
     /// Persists a technician-approved My Day order through the same audited
@@ -215,5 +226,13 @@ extension AppDataStore {
                 at: timestamp
             )
         }
+
+        enqueueRouteChangeOperation(
+            technicianID: technician.id,
+            orderedJobIDs: assignments.map(\.jobID),
+            orderedAssignmentIDs: assignments.map(\.id),
+            reason: reason,
+            timestamp: timestamp
+        )
     }
 }

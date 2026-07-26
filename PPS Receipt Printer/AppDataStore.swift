@@ -14,7 +14,11 @@ final class AppDataStore: ObservableObject {
     let assignmentStore: AssignmentStore
     let assignmentEngine: AssignmentEngine
     let dispatchEngine: DispatchEngine
+    let offlineOperationQueue: OfflineOperationQueue
+    let offlineSynchronizationMode: OfflineSynchronizationMode
     private var assignmentObservation: AnyCancellable?
+    private var offlineQueueObservation: AnyCancellable?
+    @Published var lastOfflineOperationError: String?
     @Published var customers: [Customer] = [] {
         didSet { saveData() }
     }
@@ -125,11 +129,17 @@ final class AppDataStore: ObservableObject {
 
     private let saveFileName = "pps-field-manager-data.json"
 
-    init() {
+    init(
+        offlineOperationQueue: OfflineOperationQueue? = nil,
+        offlineSynchronizationMode: OfflineSynchronizationMode = .localOnly
+    ) {
         let assignmentStore = AssignmentStore()
         let assignmentEngine = AssignmentEngine(store: assignmentStore)
+        let operationQueue = offlineOperationQueue ?? OfflineOperationQueue()
         self.assignmentStore = assignmentStore
         self.assignmentEngine = assignmentEngine
+        self.offlineOperationQueue = operationQueue
+        self.offlineSynchronizationMode = offlineSynchronizationMode
         self.dispatchEngine = DispatchEngine(
             assignmentEngine: assignmentEngine,
             policy: DispatchPolicy(operatingMode: .hybrid)
@@ -144,6 +154,9 @@ final class AppDataStore: ObservableObject {
             self?.saveData()
         }
         assignmentObservation = assignmentStore.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        offlineQueueObservation = operationQueue.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
         synchronizeJobsFromAssignments(assignmentStore.assignments)
@@ -824,6 +837,11 @@ final class AppDataStore: ObservableObject {
         )
 
         jobs[index].timelineEvents.append(event)
+        enqueueTechnicianNoteOperation(
+            jobID: jobID,
+            event: event,
+            text: trimmedText
+        )
         return event
     }
     func workflowContext(
@@ -880,6 +898,13 @@ final class AppDataStore: ObservableObject {
                     employeeID: employeeID,
                     at: timestamp
                 )
+                enqueueWorkflowOperation(
+                    jobID: jobID,
+                    action: action,
+                    employeeID: employeeID,
+                    note: note,
+                    timestamp: timestamp
+                )
             }
             return created
         }
@@ -903,6 +928,13 @@ final class AppDataStore: ObservableObject {
             action: action,
             employeeID: employeeID,
             at: timestamp
+        )
+        enqueueWorkflowOperation(
+            jobID: jobID,
+            action: action,
+            employeeID: employeeID,
+            note: note,
+            timestamp: timestamp
         )
         return true
     }
@@ -1090,6 +1122,13 @@ final class AppDataStore: ObservableObject {
 
         let previousStatus = invoices[index].status
         invoices[index] = invoice
+        if previousStatus != invoice.status {
+            enqueueInvoiceOperation(
+                invoice: invoice,
+                previousStatus: previousStatus,
+                timestamp: Date()
+            )
+        }
         synchronizeCompletedJobFromInvoice(
             invoice,
             previousStatus: previousStatus

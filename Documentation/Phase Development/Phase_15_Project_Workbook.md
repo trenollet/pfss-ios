@@ -458,8 +458,264 @@ action queue.
 
 # Step 5 – Offline-Safe Workflow Handling
 
+## Status
+Parts 1 through 4 validated; Part 5 implemented and awaiting validation.
+
 ## Objective
 Ensure reliable operation with poor or no connectivity.
+
+### Architectural Boundary
+PFSS remains a local-first application in this step. The offline queue and
+synchronization contracts must not assume that CloudKit or another remote
+backend already exists. Future adapters will consume the shared operation
+envelope without changing technician-facing workflow code.
+
+### Implementation Order
+1. Offline operation models.
+2. Persistent operation queue.
+3. Workflow integration.
+4. Connectivity monitor.
+5. Synchronization processor.
+6. Conflict handling.
+7. Connection and synchronization status UI.
+8. Regression and field testing.
+
+## Part 1 – Offline Operation Model
+
+### Status
+Complete and validated.
+
+### Implementation Record
+- Added a standard `PendingOfflineOperation` envelope for any action awaiting
+  synchronization.
+- Added stable operation IDs and idempotency keys that remain unchanged across
+  retries.
+- Added typed operation and entity categories without coupling the model to a
+  specific remote service.
+- Added versioned, type-labelled Codable payload storage.
+- Added pending, synchronizing, retry, failure, conflict, synchronized, and
+  cancelled operation states.
+- Added complete retry-attempt history, controlled retry timestamps, and
+  durable failure diagnostics.
+- Added local, remote, and merged record snapshots so conflicts never require
+  discarding technician data.
+- Added creation, update, attempt, retry, and synchronization timestamps.
+- Added optimistic base-revision storage for future remote conflict detection.
+- Added regression tests for persistence round trips, idempotency, retry timing,
+  terminal-state protection, and preservation of conflicting versions.
+
+### Files Created
+- `PPS Receipt Printer/OfflineOperationModels.swift`
+- `PPS Receipt PrinterTests/OfflineOperationModelsTests.swift`
+
+### Part 1 Validation
+- [x] Project builds cleanly in Xcode.
+- [x] Offline operation model tests pass.
+- [x] Payload encode/decode round trip is preserved.
+- [x] Idempotency identity remains stable after persistence.
+- [x] Retry readiness respects scheduled delays and terminal states.
+- [x] Conflict models preserve both local and remote versions.
+
+### Part 1 Acceptance Result
+Product-owner validation confirmed a clean Xcode build with no errors. The
+shared offline operation contract is accepted as the foundation for Step 5.
+
+## Part 2 – Persistent Operation Queue
+
+### Status
+Complete and validated.
+
+### Implementation Record
+- Added an observable `OfflineOperationQueue` as the single source of truth for
+  pending synchronization work.
+- Added a separate versioned queue snapshot rather than expanding the primary
+  `AppDataStore` snapshot.
+- Added atomic disk writes so a crash cannot leave a partially written queue.
+- Added automatic queue restoration during initialization for app and device
+  restart recovery.
+- Added monotonic sequence numbers that preserve original action order even
+  when creation timestamps are identical.
+- Added duplicate prevention using durable idempotency keys and operation IDs.
+- Added guarded updates that prevent operation identity and queue position from
+  changing during retries.
+- Added mutation, lookup, removal, terminal-history cleanup, reload, pending
+  counts, and persistence-error reporting.
+- Ensured an unsuccessful disk write never publishes the unpersisted mutation
+  to observers.
+- Added regression tests for restart restoration, order preservation, duplicate
+  prevention, failed-write safety, identity protection, and cleanup behavior.
+
+### Files Created
+- `PPS Receipt Printer/OfflineOperationQueue.swift`
+- `PPS Receipt PrinterTests/OfflineOperationQueueTests.swift`
+
+### File Modified
+- `PPS Receipt Printer/OfflineOperationModels.swift`
+
+### Part 2 Validation
+- [x] Project builds cleanly in Xcode.
+- [x] Persistent queue tests pass.
+- [x] Queued operations survive constructing a new queue instance.
+- [x] Original queue order survives persistence and reload.
+- [x] Duplicate idempotency keys do not create duplicate actions.
+- [x] Failed persistence leaves the last durable in-memory state unchanged.
+- [x] Terminal cleanup never removes pending, failed, or conflicted work.
+
+### Part 2 Acceptance Result
+Product-owner validation confirmed a clean Xcode build and successful model and
+persistent-queue test runs. Queue restoration, ordering, duplicate prevention,
+failed-write protection, and terminal cleanup are accepted.
+
+## Part 3 – Route Workflow Actions Through the Queue
+
+### Status
+Complete and validated.
+
+### Implementation Record
+- Added an explicit synchronization mode. PFSS remains `localOnly` until a
+  remote adapter exists, preventing the app from presenting a false permanent
+  backlog while retaining the full queue integration boundary.
+- Injected the persistent operation queue into `AppDataStore` so future sync
+  services and SwiftUI status views observe the same queue instance.
+- Routed every successful Field Operations lifecycle action through one
+  local-first boundary after the local Job and Assignment changes succeed.
+- Added typed durable payloads for workflow actions, technician notes, invoice
+  status/payment handoffs, and technician route-order changes.
+- Technician notes retain the exact timeline event ID, author, text, and
+  timestamp used by the local audit trail.
+- Sent/overdue invoice handoffs and partial/full payment changes are queued as
+  distinct operation types while preserving the linked Job number.
+- My Day accepted routes and Dispatch Board manual route changes enqueue the
+  exact ordered Job and Assignment identifiers plus the human-readable reason.
+- Invalid lifecycle transitions do not mutate local state and do not enter the
+  synchronization queue.
+- Queue encoding or persistence failure never rolls back technician work that
+  is already safe in the primary local store; the error is retained for the
+  reusable sync-status UI planned in Part 6.
+- Added integration tests for immediate local updates, durable workflow intent,
+  invalid-transition protection, note identity, payment handoff, automatic Job
+  completion, and local-only operation.
+
+### Files Created
+- `PPS Receipt Printer/AppDataStore+OfflineOperations.swift`
+- `PPS Receipt PrinterTests/OfflineWorkflowIntegrationTests.swift`
+
+### Files Modified
+- `PPS Receipt Printer/AppDataStore.swift`
+- `PPS Receipt Printer/AppDataStore+DispatchBoardActions.swift`
+- `Documentation/Phase Development/Phase_15_Project_Workbook.md`
+
+### Part 3 Validation
+- [x] Project builds cleanly in Xcode.
+- [x] All existing regression tests pass.
+- [x] Successful lifecycle actions update the UI/local model immediately.
+- [x] Successful lifecycle actions create one durable synchronization intent.
+- [x] Invalid lifecycle actions create no queue entry.
+- [x] Technician notes preserve their local timeline identity in the queue.
+- [x] Invoice and payment transitions create correctly typed queue operations.
+- [x] Accepted and manually changed route order is captured for synchronization.
+- [x] Local-only mode does not create a false remote backlog.
+
+### Part 3 Acceptance Result
+Product-owner testing confirmed a clean build and successful complete test run.
+The local-first workflow boundary, queue payloads, invalid-transition protection,
+and repeat-run test isolation are accepted.
+
+## Part 4 – Connectivity and Synchronization Service
+
+### Status
+Complete and validated.
+
+### Implementation Record
+- Added an `NWPathMonitor`-backed connectivity service with explicit Unknown,
+  Offline, and Online states.
+- Added a remote synchronization adapter protocol so CloudKit or a future PFSS
+  server can plug in without changing the queue or technician workflow.
+- Added a single ordered processor that submits operations by their durable
+  sequence number and never processes later work after an earlier failure.
+- Added automatic processing when connectivity returns and a manual Sync Now
+  entry point that can intentionally bypass a scheduled retry delay.
+- Added controlled retry backoff, a maximum-attempt limit, and durable attempt
+  history including timestamps, outcomes, failures, and scheduled delays.
+- Added startup recovery for operations interrupted while Synchronizing. Their
+  original identity and order are preserved, the interrupted attempt is marked
+  Deferred, and the operation safely returns to Waiting for Retry.
+- Retryable failures become Waiting for Retry; permanent or exhausted failures
+  remain visible and stop automatic processing safely.
+- Successful operations retain their remote revision and are never resubmitted,
+  including after repeated manual synchronization requests.
+- Added an initial conflict result boundary. Part 5 will implement merge and
+  human-review resolution policies while preserving both versions.
+- Added processor tests for ordered delivery, offline safety, retry recovery,
+  permanent-failure ordering, and duplicate-submission prevention.
+
+### Files Created
+- `PPS Receipt Printer/OfflineConnectivityMonitor.swift`
+- `PPS Receipt Printer/OfflineSynchronizationService.swift`
+- `PPS Receipt PrinterTests/OfflineSynchronizationServiceTests.swift`
+
+### Files Modified
+- `PPS Receipt Printer/OfflineOperationQueue.swift`
+- `PPS Receipt PrinterTests/OfflineOperationQueueTests.swift`
+- `Documentation/Phase Development/Phase_15_Project_Workbook.md`
+
+### Part 4 Validation
+- [x] Project builds cleanly in Xcode.
+- [x] All existing regression tests pass.
+- [x] Offline state leaves queued operations untouched.
+- [x] Returning online begins processing in original queue order.
+- [x] Retry delays and attempt history persist correctly.
+- [x] Manual Sync Now safely retries eligible failed work.
+- [x] Permanent failures stop later causally dependent operations.
+- [x] Successful operations are never submitted twice.
+
+### Part 4 Acceptance Result
+Product-owner testing confirmed a clean build and successful synchronization
+test run. Connectivity recovery, ordered delivery, retry behavior, and duplicate
+submission protection are accepted.
+
+## Part 5 – Conflict Handling
+
+### Status
+Implemented; awaiting validation.
+
+### Implementation Record
+- Added conservative three-way JSON merging using the last common base, local
+  technician version, and remote version.
+- Independent changes to different fields merge automatically; competing edits
+  to the same field never overwrite either version silently.
+- Added backward-compatible optional base-version decoding. Older conflicts
+  without a common ancestor remain safe and require human review.
+- Automatically merged operations retain their identity and queue position,
+  update their base revision, and are resubmitted exactly once.
+- Repeated conflicts after an automatic merge stop for review instead of
+  entering an unbounded retry loop.
+- Human resolutions support Keep Local, Keep Remote, and Preserve Both.
+- Every human decision records the employee, timestamp, resolution, note, and
+  retained conflict snapshots in the durable operation envelope.
+- Keep Local returns the same operation to the queue against the latest remote
+  revision. Keep Remote completes it locally, while Preserve Both closes the
+  synchronization intent without deleting either captured version.
+- Added focused tests for safe automatic merges, competing-field detection,
+  audited Keep Local resolution, and automatic merged-operation resubmission.
+
+### Files Created
+- `PPS Receipt Printer/OfflineConflictResolver.swift`
+- `PPS Receipt PrinterTests/OfflineConflictResolverTests.swift`
+
+### Files Modified
+- `PPS Receipt Printer/OfflineOperationModels.swift`
+- `PPS Receipt Printer/OfflineSynchronizationService.swift`
+- `Documentation/Phase Development/Phase_15_Project_Workbook.md`
+
+### Part 5 Validation
+- [ ] Project builds cleanly in Xcode.
+- [ ] All existing regression tests pass.
+- [ ] Independent local and remote edits merge automatically.
+- [ ] Competing edits preserve both versions and require review.
+- [ ] Automatically merged operations resubmit once without changing identity.
+- [ ] Human conflict resolutions retain actor, timestamp, note, and snapshots.
+- [ ] Keep Local, Keep Remote, and Preserve Both leave durable safe states.
 
 ### Expected Outcomes
 - Actions continue offline.
@@ -471,6 +727,11 @@ Ensure reliable operation with poor or no connectivity.
 - Offline testing completed.
 - Queue recovery validated.
 - Conflict handling verified.
+
+### Resume Point
+Validate Part 5 in Xcode, then begin Part 6 by adding reusable connection and
+synchronization status UI plus detailed queue visibility in Operations or
+Settings.
 
 ---
 
