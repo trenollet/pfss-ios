@@ -459,7 +459,8 @@ action queue.
 # Step 5 – Offline-Safe Workflow Handling
 
 ## Status
-Parts 1 through 4 validated; Part 5 implemented and awaiting validation.
+Complete and validated. All seven implementation parts, the clean Xcode build,
+and the complete regression and recovery test suite are accepted.
 
 ## Objective
 Ensure reliable operation with poor or no connectivity.
@@ -677,7 +678,7 @@ submission protection are accepted.
 ## Part 5 – Conflict Handling
 
 ### Status
-Implemented; awaiting validation.
+Complete and validated.
 
 ### Implementation Record
 - Added conservative three-way JSON merging using the last common base, local
@@ -709,13 +710,120 @@ Implemented; awaiting validation.
 - `Documentation/Phase Development/Phase_15_Project_Workbook.md`
 
 ### Part 5 Validation
-- [ ] Project builds cleanly in Xcode.
-- [ ] All existing regression tests pass.
-- [ ] Independent local and remote edits merge automatically.
-- [ ] Competing edits preserve both versions and require review.
-- [ ] Automatically merged operations resubmit once without changing identity.
-- [ ] Human conflict resolutions retain actor, timestamp, note, and snapshots.
-- [ ] Keep Local, Keep Remote, and Preserve Both leave durable safe states.
+- [x] Project builds cleanly in Xcode.
+- [x] All existing regression tests pass.
+- [x] Independent local and remote edits merge automatically.
+- [x] Competing edits preserve both versions and require review.
+- [x] Automatically merged operations resubmit once without changing identity.
+- [x] Human conflict resolutions retain actor, timestamp, note, and snapshots.
+- [x] Keep Local, Keep Remote, and Preserve Both leave durable safe states.
+
+### Part 5 Acceptance Result
+Product-owner testing confirmed a clean build and successful complete test run.
+Automatic merging, preservation of unsafe versions, audited human resolution,
+and safe merged-operation resubmission are accepted.
+
+## Part 6 – Connection and Synchronization Status UI
+
+### Status
+Complete and validated.
+
+### Implementation Record
+- Added one reusable presentation resolver for local-only, checking, online,
+  offline-safe, synchronizing, pending, failed, conflict, and fully synchronized
+  states.
+- Added a compact, accessible status badge to My Day. Selecting it opens the
+  detailed synchronization screen without disrupting the technician workflow.
+- Added a Sync Status tile to Operations using the established Operations hub
+  visual and navigation pattern.
+- Added a detailed queue screen with connection state, pending, synchronizing,
+  failed, and conflict counts plus recent synchronization activity.
+- Failure messages and unresolved conflict preservation are visible without
+  exposing raw payload contents or silently discarding local work.
+- Added a shared connectivity monitor and optional synchronization service to
+  `AppDataStore`, ensuring My Day and Operations observe the same live state.
+- Added a manual Sync Now control. It activates automatically when remote mode,
+  an adapter, and connectivity are available; it remains honestly disabled in
+  the current local-only application configuration.
+- Added a specific Saved on Device state so PFSS never claims cloud
+  synchronization before a CloudKit or server adapter exists.
+- Limited detailed synchronized history to the latest 50 operations while all
+  durable queue history remains available to the persistence layer.
+- Added resolver tests for local-only truthfulness, offline pending work,
+  conflict priority, and fully synchronized remote state.
+
+### Files Created
+- `PPS Receipt Printer/OfflineSyncStatusView.swift`
+- `PPS Receipt PrinterTests/OfflineSyncStatusResolverTests.swift`
+
+### Files Modified
+- `PPS Receipt Printer/AppDataStore.swift`
+- `PPS Receipt Printer/TechnicianDailyAgendaView.swift`
+- `PPS Receipt Printer/OperationsView.swift`
+- `Documentation/Phase Development/Phase_15_Project_Workbook.md`
+
+### Part 6 Validation
+- [x] Project builds cleanly in Xcode.
+- [x] All existing regression tests pass.
+- [x] My Day shows a compact status without obstructing the schedule.
+- [x] Operations provides detailed queue and connection information.
+- [x] Local-only mode says Saved on Device rather than Fully Synchronized.
+- [x] Offline pending work clearly states that changes are saved locally.
+- [x] Failures and conflicts take priority over lower-severity states.
+- [x] Sync Now enables only when a real remote synchronization path is ready.
+
+### Part 6 Acceptance Result
+Product-owner testing confirmed a clean build, successful complete test run,
+accurate local-only and connection messaging, and working detailed status
+navigation. Duplicate navigation containers in the Operations and Admin hubs
+were removed so every subpage presents exactly one system back button.
+
+## Part 7 – Recovery and Testing
+
+### Status
+Complete and validated.
+
+### Implementation Record
+- Added an end-to-end offline field workflow covering travel, arrival, setup,
+  work, pause/resume, pack-up, completion, invoice, payment, and job closure.
+- Verified the complete workflow survives queue reconstruction and later
+  synchronizes in its original causal order.
+- Added a connection-loss scenario that interrupts processing between actions,
+  leaves remaining work pending, and resumes without resubmitting completed
+  operations.
+- Added simulated app-termination recovery for an operation left in the
+  Synchronizing state, preserving its identifier, idempotency key, queue
+  position, attempt history, and retry eligibility.
+- Added retry-after-restart coverage proving the same durable idempotency key is
+  reused and no duplicate queue entry is created.
+- Added conflict restart coverage proving both technician and remote versions
+  remain intact and visible for human review.
+- Added repeated queue-reconstruction coverage to prove stable ordering and
+  unique identities across multiple simulated launches.
+
+### File Created
+- `PPS Receipt PrinterTests/OfflineRecoveryTests.swift`
+
+### Files Modified
+- `PPS Receipt Printer/OperationsView.swift`
+- `PPS Receipt Printer/AdminView.swift`
+- `Documentation/Phase Development/Phase_15_Project_Workbook.md`
+
+### Part 7 Validation
+- [x] Project builds cleanly in Xcode.
+- [x] All existing regression tests pass.
+- [x] Complete offline lifecycle survives restart and synchronizes in order.
+- [x] Connection loss during processing does not lose or duplicate work.
+- [x] Interrupted synchronization recovers to a durable retryable state.
+- [x] Retry after restart preserves operation identity and idempotency.
+- [x] Conflicts preserve both versions after queue restoration.
+- [x] Repeated app-style queue restoration preserves order and uniqueness.
+
+### Part 7 Acceptance Result
+Product-owner testing confirmed a clean Xcode build and a successful complete
+test run, including every `OfflineRecoveryTests` scenario. Offline lifecycle
+ordering, restart recovery, intermittent connectivity handling, retry identity,
+duplicate prevention, and conflict preservation are accepted.
 
 ### Expected Outcomes
 - Actions continue offline.
@@ -724,14 +832,22 @@ Implemented; awaiting validation.
 - No technician data loss.
 
 ### Completion Criteria
-- Offline testing completed.
-- Queue recovery validated.
-- Conflict handling verified.
+- [x] Offline testing completed.
+- [x] Queue recovery validated.
+- [x] Conflict handling verified.
+
+### Step 5 Acceptance Result
+Phase 15 Step 5 is complete. PFSS now has a durable local-first synchronization
+boundary that preserves technician actions through lost connectivity, app or
+device restarts, retryable failures, and conflicting remote edits. The current
+application remains honest about its local-only configuration while exposing a
+ready integration point for a future CloudKit or server adapter. The complete
+implementation builds cleanly and all regression and recovery tests pass.
 
 ### Resume Point
-Validate Part 5 in Xcode, then begin Part 6 by adding reusable connection and
-synchronization status UI plus detailed queue visibility in Operations or
-Settings.
+Commit the completed Step 5 offline-safe workflow infrastructure, then begin
+Step 6 by auditing the current workflow surfaces for redundant navigation,
+duplicate actions, inconsistent terminology, and unnecessary technician taps.
 
 ---
 

@@ -148,6 +148,24 @@ struct TechnicianDailyAgendaView: View {
 
                 dailySummaryCard
 
+                NavigationLink {
+                    OfflineSyncDetailsView(
+                        queue: store.offlineOperationQueue,
+                        connectivity: store.offlineConnectivityMonitor,
+                        mode: store.offlineSynchronizationMode,
+                        onSyncNow: store.offlineSynchronizationService.map { service in
+                            { service.syncNow() }
+                        }
+                    )
+                } label: {
+                    OfflineSyncStatusBadge(
+                        queue: store.offlineOperationQueue,
+                        connectivity: store.offlineConnectivityMonitor,
+                        mode: store.offlineSynchronizationMode
+                    )
+                }
+                .buttonStyle(.plain)
+
                 scheduleHeader
 
                 if let routeSummary {
@@ -175,6 +193,9 @@ struct TechnicianDailyAgendaView: View {
         )
         .navigationTitle("My Day")
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            store.startOfflineServices()
+        }
         .sheet(isPresented: $showingDatePicker) {
             NavigationStack {
                 DatePicker(

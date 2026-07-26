@@ -16,6 +16,8 @@ final class AppDataStore: ObservableObject {
     let dispatchEngine: DispatchEngine
     let offlineOperationQueue: OfflineOperationQueue
     let offlineSynchronizationMode: OfflineSynchronizationMode
+    let offlineConnectivityMonitor: OfflineConnectivityMonitor
+    let offlineSynchronizationService: OfflineSynchronizationService?
     private var assignmentObservation: AnyCancellable?
     private var offlineQueueObservation: AnyCancellable?
     @Published var lastOfflineOperationError: String?
@@ -131,15 +133,30 @@ final class AppDataStore: ObservableObject {
 
     init(
         offlineOperationQueue: OfflineOperationQueue? = nil,
-        offlineSynchronizationMode: OfflineSynchronizationMode = .localOnly
+        offlineSynchronizationMode: OfflineSynchronizationMode = .localOnly,
+        offlineConnectivityMonitor: OfflineConnectivityMonitor? = nil,
+        offlineSynchronizationAdapter: (any OfflineSynchronizationAdapter)? = nil
     ) {
         let assignmentStore = AssignmentStore()
         let assignmentEngine = AssignmentEngine(store: assignmentStore)
         let operationQueue = offlineOperationQueue ?? OfflineOperationQueue()
+        let connectivityMonitor = offlineConnectivityMonitor
+            ?? OfflineConnectivityMonitor()
         self.assignmentStore = assignmentStore
         self.assignmentEngine = assignmentEngine
         self.offlineOperationQueue = operationQueue
         self.offlineSynchronizationMode = offlineSynchronizationMode
+        self.offlineConnectivityMonitor = connectivityMonitor
+        if offlineSynchronizationMode.requiresRemoteQueue,
+           let offlineSynchronizationAdapter {
+            self.offlineSynchronizationService = OfflineSynchronizationService(
+                queue: operationQueue,
+                connectivity: connectivityMonitor,
+                adapter: offlineSynchronizationAdapter
+            )
+        } else {
+            self.offlineSynchronizationService = nil
+        }
         self.dispatchEngine = DispatchEngine(
             assignmentEngine: assignmentEngine,
             policy: DispatchPolicy(operatingMode: .hybrid)
@@ -160,6 +177,11 @@ final class AppDataStore: ObservableObject {
             self?.objectWillChange.send()
         }
         synchronizeJobsFromAssignments(assignmentStore.assignments)
+    }
+
+    func startOfflineServices() {
+        offlineConnectivityMonitor.start()
+        offlineSynchronizationService?.start()
     }
 
     func generateCustomerNumber() -> String {

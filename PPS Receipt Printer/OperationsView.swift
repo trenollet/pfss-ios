@@ -202,33 +202,34 @@ struct OperationsView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 22) {
-                    summaryGrid
-                }
-                .padding()
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 22) {
+                summaryGrid
             }
-            .navigationTitle("Operations")
-            .navigationBarTitleDisplayMode(.large)
-            .refreshable {
-                await objectWillChangeRefresh()
-            }
-            .navigationDestination(item: $selectedAssignmentID) { assignmentID in
-                AssignmentDetailView(
-                    engine: store.assignmentEngine,
-                    dispatchEngine: store.dispatchEngine,
-                    assignmentID: assignmentID,
-                    employees: store.activeEmployees,
-                    customers: store.customers,
-                    sites: store.sites
-                )
-            }
-            .alert("Assignment Error", isPresented: $showingOperationError) {
-                Button("OK", role: .cancel) { }
-            } message: {
-                Text(operationErrorMessage)
-            }
+            .padding()
+        }
+        .navigationTitle("Operations")
+        .navigationBarTitleDisplayMode(.large)
+        .task {
+            store.startOfflineServices()
+        }
+        .refreshable {
+            await objectWillChangeRefresh()
+        }
+        .navigationDestination(item: $selectedAssignmentID) { assignmentID in
+            AssignmentDetailView(
+                engine: store.assignmentEngine,
+                dispatchEngine: store.dispatchEngine,
+                assignmentID: assignmentID,
+                employees: store.activeEmployees,
+                customers: store.customers,
+                sites: store.sites
+            )
+        }
+        .alert("Assignment Error", isPresented: $showingOperationError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(operationErrorMessage)
         }
     }
 
@@ -242,6 +243,23 @@ struct OperationsView: View {
             ],
             spacing: 16
         ) {
+            operationsTile(
+                title: "Sync Status",
+                value: syncStatusTileValue,
+                icon: syncPresentationState.systemImage,
+                subtitle: syncPresentationState.title,
+                color: syncPresentationState.color
+            ) {
+                OfflineSyncDetailsView(
+                    queue: store.offlineOperationQueue,
+                    connectivity: store.offlineConnectivityMonitor,
+                    mode: store.offlineSynchronizationMode,
+                    onSyncNow: store.offlineSynchronizationService.map { service in
+                        { service.syncNow() }
+                    }
+                )
+            }
+
             operationsTile(
                 title: "Today's Jobs",
                 value: "\(todayJobs.count)",
@@ -351,6 +369,22 @@ struct OperationsView: View {
                 )
             }
         }
+    }
+
+    private var syncPresentationState: OfflineSyncPresentationState {
+        OfflineSyncStatusResolver.resolve(
+            mode: store.offlineSynchronizationMode,
+            queue: store.offlineOperationQueue,
+            connectivity: store.offlineConnectivityMonitor.status
+        )
+    }
+
+    private var syncStatusTileValue: String {
+        if store.offlineSynchronizationMode == .localOnly {
+            return "Local"
+        }
+        let count = store.offlineOperationQueue.pendingCount
+        return count == 0 ? "Ready" : "\(count)"
     }
 
     // MARK: - Live Model Builders
