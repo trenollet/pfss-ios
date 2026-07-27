@@ -33,7 +33,7 @@ struct OperationsLiveMapView: View {
 
     private var activeTechnicians: [EmployeeRecord] {
         store.activeEmployees
-            .filter { $0.role == .technician }
+            .filter { $0.hasRole(.technician) }
             .sorted {
                 $0.displayName.localizedCaseInsensitiveCompare(
                     $1.displayName

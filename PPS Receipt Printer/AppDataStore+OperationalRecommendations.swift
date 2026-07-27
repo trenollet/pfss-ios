@@ -51,7 +51,7 @@ extension AppDataStore {
             requiredServiceType: job.serviceType
         )
         let technicians = activeEmployees
-            .filter { $0.role == .technician }
+            .filter { $0.hasRole(.technician) }
         let legacyDecisions = DispatchDecisionEngine.rankedDecisions(
             for: job,
             employees: technicians,

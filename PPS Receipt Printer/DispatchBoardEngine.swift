@@ -35,7 +35,7 @@ struct DispatchBoardEngine {
             .filter {
                 $0.isActive &&
                 $0.lifecycleStatus == .active &&
-                $0.role == .technician
+                $0.hasRole(.technician)
             }
             .sorted(by: stableEmployeeOrder)
 

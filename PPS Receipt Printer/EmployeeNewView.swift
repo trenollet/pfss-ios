@@ -16,7 +16,8 @@ struct EmployeeNewView: View {
     @State private var phone = ""
     @State private var email = ""
 
-    @State private var role: EmployeeRole = .technician
+    @State private var roles: Set<EmployeeRole> = [.technician]
+    @State private var showingRoleSelection = false
 
     @State private var startTime =
         EmployeeNewView.dateFromMinutes(480)
@@ -101,15 +102,20 @@ struct EmployeeNewView: View {
                     .autocorrectionDisabled()
                     .focused($isInputFocused)
 
-                    Picker(
-                        "Role",
-                        selection: $role
-                    ) {
-                        ForEach(EmployeeRole.allCases) { role in
-                            Text(role.rawValue)
-                                .tag(role)
+                    Button {
+                        showingRoleSelection = true
+                    } label: {
+                        LabeledContent("Roles") {
+                            HStack(spacing: 6) {
+                                Text(roleDisplayText)
+                                    .multilineTextAlignment(.trailing)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
                     }
+                    .foregroundStyle(.primary)
 
                     Toggle(
                         "Active Employee",
@@ -212,6 +218,9 @@ struct EmployeeNewView: View {
 
             }
             .navigationTitle("New Employee")
+            .sheet(isPresented: $showingRoleSelection) {
+                EmployeeRoleSelectionView(selectedRoles: $roles)
+            }
             .toolbar {
                 ToolbarItem(
                     placement: .cancellationAction
@@ -253,6 +262,13 @@ struct EmployeeNewView: View {
         return name.isEmpty ? "New Employee" : name
     }
 
+    private var roleDisplayText: String {
+        EmployeeRole.allCases
+            .filter(roles.contains)
+            .map(\.displayName)
+            .joined(separator: ", ")
+    }
+
     private var workforceProfileSummary: String {
         guard workforceProfile.hasIntelligenceData else {
             return "Optional operational profile"
@@ -292,7 +308,8 @@ struct EmployeeNewView: View {
             email: email.trimmingCharacters(
                 in: .whitespacesAndNewlines
             ),
-            role: role,
+            role: EmployeeRole.allCases.first(where: roles.contains) ?? .technician,
+            roles: roles,
             defaultStartMinutes:
                 minutesFromDate(startTime),
             defaultEndMinutes:

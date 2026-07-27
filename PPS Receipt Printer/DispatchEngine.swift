@@ -677,9 +677,9 @@ final class DispatchEngine: ObservableObject {
     private func isEligibleTechnician(_ employee: EmployeeRecord) -> Bool {
         employee.isActive &&
         employee.lifecycleStatus == .active &&
-        (employee.role == .technician ||
-         employee.role == .manager ||
-         employee.role == .owner)
+        (employee.hasRole(.technician) ||
+         employee.hasRole(.manager) ||
+         employee.hasRole(.owner))
     }
 
     private func requireAuthorization(

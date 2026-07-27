@@ -57,7 +57,7 @@ extension AppDataStore {
             $0.id == technicianID &&
             $0.isActive &&
             $0.lifecycleStatus == .active &&
-            ($0.role == .technician || $0.role == .manager || $0.role == .owner)
+            ($0.hasRole(.technician) || $0.hasRole(.manager) || $0.hasRole(.owner))
         }) else {
             throw DispatchBoardActionError.technicianUnavailable
         }

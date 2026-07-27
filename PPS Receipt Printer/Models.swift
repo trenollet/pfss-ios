@@ -189,6 +189,15 @@ enum EmployeeRole: String, CaseIterable, Identifiable, Codable {
 
     var id: String { rawValue }
 
+    var displayName: String {
+        switch self {
+        case .salesperson:
+            return "Sales"
+        default:
+            return rawValue
+        }
+    }
+
     var canOverrideScheduling: Bool {
         switch self {
         case .owner, .manager:
@@ -254,6 +263,10 @@ struct EmployeeRecord: Identifiable, Codable {
 
     var role: EmployeeRole
 
+    /// Every business role this employee may perform. `role` remains the
+    /// compatibility/authorization primary role for older saved records.
+    var roles: Set<EmployeeRole>
+
     // Stored as minutes after midnight.
     var defaultStartMinutes: Int
     var defaultEndMinutes: Int
@@ -281,6 +294,7 @@ struct EmployeeRecord: Identifiable, Codable {
         phone: String = "",
         email: String = "",
         role: EmployeeRole = .technician,
+        roles: Set<EmployeeRole>? = nil,
         defaultStartMinutes: Int = 480,
         defaultEndMinutes: Int = 1020,
         lunchDurationMinutes: Int = 30,
@@ -296,7 +310,11 @@ struct EmployeeRecord: Identifiable, Codable {
         self.lastName = lastName
         self.phone = phone
         self.email = email
-        self.role = role
+        let selectedRoles = Self.validRoles(roles, fallback: role)
+        self.roles = selectedRoles
+        self.role = selectedRoles.contains(role)
+            ? role
+            : Self.preferredPrimaryRole(in: selectedRoles)
         self.defaultStartMinutes = defaultStartMinutes
         self.defaultEndMinutes = defaultEndMinutes
         self.lunchDurationMinutes = lunchDurationMinutes
@@ -328,6 +346,40 @@ struct EmployeeRecord: Identifiable, Codable {
             0
         )
     }
+
+    func hasRole(_ role: EmployeeRole) -> Bool {
+        roles.contains(role) || (roles.isEmpty && self.role == role)
+    }
+
+    var roleDisplayText: String {
+        EmployeeRole.allCases
+            .filter(hasRole)
+            .map(\.displayName)
+            .joined(separator: ", ")
+    }
+
+    var canOverrideScheduling: Bool {
+        roles.contains { $0.canOverrideScheduling } || role.canOverrideScheduling
+    }
+
+    mutating func normalizeRoles() {
+        roles = Self.validRoles(roles, fallback: role)
+        role = Self.preferredPrimaryRole(in: roles)
+    }
+
+    private static func validRoles(
+        _ roles: Set<EmployeeRole>?,
+        fallback: EmployeeRole
+    ) -> Set<EmployeeRole> {
+        guard let roles, roles.isEmpty == false else { return [fallback] }
+        return roles
+    }
+
+    private static func preferredPrimaryRole(
+        in roles: Set<EmployeeRole>
+    ) -> EmployeeRole {
+        EmployeeRole.allCases.first(where: roles.contains) ?? .technician
+    }
 }
 
 extension EmployeeRecord {
@@ -338,6 +390,7 @@ extension EmployeeRecord {
         case phone
         case email
         case role
+        case roles
         case defaultStartMinutes
         case defaultEndMinutes
         case lunchDurationMinutes
@@ -357,7 +410,18 @@ extension EmployeeRecord {
         lastName = try container.decodeIfPresent(String.self, forKey: .lastName) ?? ""
         phone = try container.decodeIfPresent(String.self, forKey: .phone) ?? ""
         email = try container.decodeIfPresent(String.self, forKey: .email) ?? ""
-        role = try container.decodeIfPresent(EmployeeRole.self, forKey: .role) ?? .technician
+        let legacyRole = try container.decodeIfPresent(
+            EmployeeRole.self,
+            forKey: .role
+        ) ?? .technician
+        roles = try container.decodeIfPresent(
+            Set<EmployeeRole>.self,
+            forKey: .roles
+        ) ?? [legacyRole]
+        roles = Self.validRoles(roles, fallback: legacyRole)
+        role = roles.contains(legacyRole)
+            ? legacyRole
+            : Self.preferredPrimaryRole(in: roles)
         defaultStartMinutes = try container.decodeIfPresent(
             Int.self,
             forKey: .defaultStartMinutes

@@ -83,7 +83,7 @@ struct DispatchBoardEmergencyInsertionView: View {
             .filter {
                 $0.isActive &&
                 $0.lifecycleStatus == .active &&
-                ($0.role == .technician || $0.role == .manager || $0.role == .owner)
+                ($0.hasRole(.technician) || $0.hasRole(.manager) || $0.hasRole(.owner))
             }
             .sorted {
                 $0.displayName.localizedCaseInsensitiveCompare($1.displayName)

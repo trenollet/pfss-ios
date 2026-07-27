@@ -103,7 +103,7 @@ struct OperationsTimelineView: View {
     @MainActor
     private func refreshMappedTravel() async {
         let technicians = store.activeEmployees.filter {
-            $0.role == .technician
+            $0.hasRole(.technician)
         }
         for technician in technicians {
             await store.refreshTimelineRoutePlan(

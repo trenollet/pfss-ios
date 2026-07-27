@@ -854,7 +854,8 @@ duplicate actions, inconsistent terminology, and unnecessary technician taps.
 # Step 6 – Workflow Cleanup and UI Simplification
 
 ## Status
-Complete and validated.
+Parts 1–6 complete and validated. Part 7 implementation complete with
+product-owner build and workflow validation pending. Part 8 remains pending.
 
 ## Objective
 Remove redundant workflows and simplify navigation.
@@ -1343,9 +1344,96 @@ Operations destinations reflect shared Assignment state, Details remains
 read-only, Manage retains dispatcher-owned actions, and Admin correctly shows
 Version 1.0, Build 2 for device verification.
 
+## Part 7 – Navigation and Presentation Cleanup
+
+### Status
+Implementation complete. Product-owner Xcode build and workflow validation
+pending.
+
+### Objective
+Verify one cohesive navigation and presentation system across operational
+surfaces, then extend the employee-role experience so small-business employees
+can participate in every operational role they actually perform.
+
+### Navigation Acceptance Scope
+- One back button per destination.
+- Consistent page titles, cards, and tiles.
+- No unnecessary nested navigation containers.
+- No dead-end screens.
+- Predictable return behavior.
+- Consistent empty and error states.
+
+### Multi-Role Employee Requirement
+PFSS employees may hold any combination of Owner, Manager, Office, Sales, and
+Technician roles. Role capabilities are cumulative: an Owner who is also a
+Technician remains eligible for technician schedules, My Day, dispatch crews,
+route planning, live mapping, capacity, and Workforce Intelligence while
+retaining Owner authority.
+
+### Implementation Record
+- Added a durable `roles` set to `EmployeeRecord` while retaining the legacy
+  singular `role` as a compatibility and primary authorization value.
+- Added backward-compatible decoding that converts every existing single-role
+  employee into a one-role set without data loss.
+- Added role normalization, `hasRole(_:)`, cumulative scheduling authority,
+  and consistent multi-role display text.
+- Added a reusable Select Roles screen with checkbox-style controls and a
+  requirement that at least one role remain selected.
+- Replaced the Employee New and Employee Detail role dropdowns with a Roles
+  button that opens the multi-select screen.
+- Updated employee lists, Job screens, capacity views, and daily-work views to
+  display all selected roles.
+- Updated technician eligibility across Daily Planner, Dispatch Board, crew
+  management, emergency insertion, Operations Timeline, Live Map, My Day,
+  capacity, recommendations, and Workforce Intelligence to use role membership
+  instead of singular-role equality.
+- Updated Dispatch actors and authorization so employees receive the combined
+  capabilities of all selected roles.
+- Added regression coverage for multi-role membership, legacy decoding,
+  persistence round trips, and Dispatch actor role propagation.
+
+### Files Added
+- `PPS Receipt Printer/EmployeeRoleSelectionView.swift`
+- `PPS Receipt PrinterTests/EmployeeRoleTests.swift`
+
+### Files Modified
+- `PPS Receipt Printer/Models.swift`
+- `PPS Receipt Printer/EmployeeNewView.swift`
+- `PPS Receipt Printer/EmployeeDetailView.swift`
+- `PPS Receipt Printer/EmployeesView.swift`
+- `PPS Receipt Printer/DispatchModels.swift`
+- `PPS Receipt Printer/DispatchEngine.swift`
+- Employee and technician consumers across scheduling, dispatch, route,
+  Operations, capacity, recommendations, and Workforce Intelligence.
+- `Documentation/Phase Development/Phase_15_Project_Workbook.md`
+
+### Part 7 Validation
+- [x] Existing single-role employee data has a backward-compatible migration.
+- [x] At least one employee role is always required by the role selector.
+- [x] Operational technician queries use role membership.
+- [x] Dispatch authorization evaluates cumulative employee roles.
+- [x] Modified Swift sources pass syntax parsing.
+- [x] Repository diff passes whitespace validation.
+- [ ] Project builds cleanly in the product owner's Xcode environment.
+- [ ] Existing employees retain their prior role after loading.
+- [ ] A multi-role Owner and Technician appears in technician workflows.
+- [ ] Employee role changes persist after closing and reopening PFSS.
+- [ ] Complete regression suite passes.
+
+## Part 8 – Regression and Acceptance Testing
+
+### Status
+Pending Part 7 acceptance.
+
+### Objective
+Test My Day, Dispatch Board, Assignment Detail, Job Detail, Timeline, and Live
+Map and confirm every shared action produces the same state transition, timeline
+event, offline operation, UI result, invoice handoff, and completion behavior.
+
 ### Resume Point
-Step 6 is complete. Proceed to Step 7 acceptance testing and polish using
-Version 1.0, Build 2 as the verified test baseline.
+Validate Part 7 multi-role employees and the full regression suite in Xcode.
+After acceptance, execute Part 8 end-to-end workflow testing using Version 1.0,
+Build 2 as the verified test baseline.
 
 ### Expected Outcomes
 - Cleaner navigation.

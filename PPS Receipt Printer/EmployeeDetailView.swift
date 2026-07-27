@@ -15,6 +15,7 @@ struct EmployeeDetailView: View {
 
     @State private var startTime: Date
     @State private var endTime: Date
+    @State private var showingRoleSelection = false
 
     @FocusState private var isInputFocused: Bool
 
@@ -99,15 +100,20 @@ struct EmployeeDetailView: View {
                 .autocorrectionDisabled()
                 .focused($isInputFocused)
 
-                Picker(
-                    "Role",
-                    selection: $employee.role
-                ) {
-                    ForEach(EmployeeRole.allCases) { role in
-                        Text(role.rawValue)
-                            .tag(role)
+                Button {
+                    showingRoleSelection = true
+                } label: {
+                    LabeledContent("Roles") {
+                        HStack(spacing: 6) {
+                            Text(employee.roleDisplayText)
+                                .multilineTextAlignment(.trailing)
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
                     }
                 }
+                .foregroundStyle(.primary)
 
                 Toggle(
                     "Active Employee",
@@ -244,6 +250,9 @@ struct EmployeeDetailView: View {
             }
         }
         .navigationTitle(employee.displayName)
+        .sheet(isPresented: $showingRoleSelection) {
+            EmployeeRoleSelectionView(selectedRoles: $employee.roles)
+        }
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
@@ -307,6 +316,8 @@ struct EmployeeDetailView: View {
 
         employee.defaultEndMinutes =
             minutesFromDate(endTime)
+
+        employee.normalizeRoles()
 
         store.updateEmployee(employee)
         dismiss()

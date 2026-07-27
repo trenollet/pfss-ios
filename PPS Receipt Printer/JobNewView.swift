@@ -555,7 +555,7 @@ struct JobNewView: View {
 
                 Spacer()
 
-                Text(employee.role.rawValue)
+                Text(employee.roleDisplayText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

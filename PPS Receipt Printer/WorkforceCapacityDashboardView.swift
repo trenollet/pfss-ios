@@ -35,7 +35,7 @@ struct WorkforceCapacityDashboardView: View {
     private var capacityForecasts: [CapacityForecast] {
         let calendar = Calendar.current
         let startDate = calendar.startOfDay(for: selectedDate)
-        let technicians = activeEmployees.filter { $0.role == .technician }
+        let technicians = activeEmployees.filter { $0.hasRole(.technician) }
 
         return (0..<forecastDayCount).compactMap { dayOffset in
             guard let date = calendar.date(
@@ -188,7 +188,7 @@ struct WorkforceCapacityDashboardView: View {
                     Text(summary.employee.displayName)
                         .font(.headline)
 
-                    Text(summary.employee.role.rawValue)
+                    Text(summary.employee.roleDisplayText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

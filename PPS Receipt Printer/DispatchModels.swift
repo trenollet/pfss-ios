@@ -35,22 +35,29 @@ enum DispatchAction: String, CaseIterable, Identifiable, Codable {
 struct DispatchActor: Codable {
     var employeeID: UUID?
     var role: EmployeeRole?
+    var roles: Set<EmployeeRole>?
     var isSystem: Bool
 
     init(
         employeeID: UUID? = nil,
         role: EmployeeRole? = nil,
+        roles: Set<EmployeeRole>? = nil,
         isSystem: Bool = false
     ) {
         self.employeeID = employeeID
         self.role = role
+        self.roles = roles
         self.isSystem = isSystem
     }
 
     static let system = DispatchActor(isSystem: true)
 
     static func employee(_ employee: EmployeeRecord) -> DispatchActor {
-        DispatchActor(employeeID: employee.id, role: employee.role)
+        DispatchActor(
+            employeeID: employee.id,
+            role: employee.role,
+            roles: employee.roles
+        )
     }
 }
 
@@ -86,33 +93,27 @@ struct DispatchPolicy: Codable {
             return .allowed
         }
 
-        guard let employeeID = actor.employeeID,
-              let role = actor.role else {
+        guard let employeeID = actor.employeeID else {
             return .denied("A known employee is required for this dispatch action.")
         }
 
-        switch role {
-        case .owner, .manager:
+        let actorRoles = actor.roles.flatMap { $0.isEmpty ? nil : $0 }
+            ?? actor.role.map { Set([$0]) }
+            ?? []
+
+        guard actorRoles.isEmpty == false else {
+            return .denied("At least one employee role is required for this dispatch action.")
+        }
+
+        if actorRoles.contains(.owner) || actorRoles.contains(.manager) {
             return .allowed
+        }
 
-        case .office:
-            guard operatingMode != .selfManaged else {
-                return .denied(
-                    "Office dispatch actions are disabled in Technician Self-Managed mode."
-                )
-            }
+        if actorRoles.contains(.office), operatingMode != .selfManaged {
             return .allowed
+        }
 
-        case .salesperson:
-            return .denied("Salespeople do not have dispatch authority.")
-
-        case .technician:
-            guard operatingMode != .dispatcherManaged else {
-                return .denied(
-                    "Technician dispatch actions are disabled in Dispatcher Managed mode."
-                )
-            }
-
+        if actorRoles.contains(.technician), operatingMode != .dispatcherManaged {
             return technicianAuthorization(
                 action: action,
                 employeeID: employeeID,
@@ -120,6 +121,20 @@ struct DispatchPolicy: Codable {
                 affectedTechnicianID: affectedTechnicianID
             )
         }
+
+        if actorRoles.contains(.office) {
+            return .denied(
+                "Office dispatch actions are disabled in Technician Self-Managed mode."
+            )
+        }
+
+        if actorRoles.contains(.technician) {
+            return .denied(
+                "Technician dispatch actions are disabled in Dispatcher Managed mode."
+            )
+        }
+
+        return .denied("The employee's selected roles do not provide dispatch authority.")
     }
 
     private func technicianAuthorization(

@@ -25,7 +25,7 @@ struct DailyPlanPreviewView: View {
 
     private var technicians: [EmployeeRecord] {
         store.activeEmployees
-            .filter { $0.role == .technician }
+            .filter { $0.hasRole(.technician) }
             .sorted {
                 $0.displayName.localizedCaseInsensitiveCompare(
                     $1.displayName
@@ -657,4 +657,3 @@ struct DailyPlanPreviewView: View {
         return "\(remainder) min"
     }
 }
-

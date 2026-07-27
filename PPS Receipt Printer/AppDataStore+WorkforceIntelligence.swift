@@ -37,7 +37,7 @@ extension AppDataStore {
         on date: Date
     ) -> [WorkforceTechnicianSnapshot] {
         WorkforceIntelligenceEngine().snapshots(
-            for: activeEmployees.filter { $0.role == .technician },
+            for: activeEmployees.filter { $0.hasRole(.technician) },
             on: date,
             assignments: assignmentStore.assignments
         )
@@ -48,7 +48,7 @@ extension AppDataStore {
         requirements: WorkforceCapabilityRequirements
     ) -> [WorkforceTechnicianSnapshot] {
         WorkforceIntelligenceEngine().snapshots(
-            for: activeEmployees.filter { $0.role == .technician },
+            for: activeEmployees.filter { $0.hasRole(.technician) },
             on: date,
             assignments: assignmentStore.assignments,
             requirements: requirements

@@ -16,9 +16,9 @@ struct TechnicianWorkspaceView: View {
     private var eligibleEmployees: [EmployeeRecord] {
         store.activeEmployees
             .filter { employee in
-                employee.role == .technician
-                    || employee.role == .manager
-                    || employee.role == .owner
+                employee.hasRole(.technician)
+                    || employee.hasRole(.manager)
+                    || employee.hasRole(.owner)
             }
             .sorted {
                 $0.displayName.localizedCaseInsensitiveCompare(
