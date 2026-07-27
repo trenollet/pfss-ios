@@ -118,7 +118,13 @@ struct DispatchBoardAssignmentActionsView: View {
         guard let assignment, let selectedTechnicianID else { return false }
         let changesOwner = assignment.primaryTechnicianID != nil &&
             assignment.primaryTechnicianID != selectedTechnicianID
-        let overridesRecommendation = recommendation?.bestCandidate?.employeeID != nil &&
+        let tiedLeaderIDs = Set(
+            recommendation?.leadingCandidates.map(\.employeeID) ?? []
+        )
+        let acceptedTie = recommendation?.hasTopScoreTie == true &&
+            tiedLeaderIDs.contains(selectedTechnicianID)
+        let overridesRecommendation = recommendation != nil &&
+            !acceptedTie &&
             recommendation?.bestCandidate?.employeeID != selectedTechnicianID
         return changesOwner || overridesRecommendation
     }
@@ -218,7 +224,14 @@ struct DispatchBoardAssignmentActionsView: View {
     @ViewBuilder
     private func ownershipSection(_ assignment: Assignment) -> some View {
         Section("Primary Technician") {
-            if let recommended = recommendation?.bestCandidate {
+            if recommendation?.hasTopScoreTie == true {
+                Label(
+                    "Top candidates tied: \(recommendation?.leadingCandidates.map(\.employeeName).joined(separator: ", ") ?? "")",
+                    systemImage: "equal.circle.fill"
+                )
+                .font(.subheadline)
+                .foregroundStyle(.blue)
+            } else if let recommended = recommendation?.bestCandidate {
                 Label(
                     "PFSS recommends \(recommended.employeeName) (\(recommended.scorePercentage)%)",
                     systemImage: "star.circle.fill"

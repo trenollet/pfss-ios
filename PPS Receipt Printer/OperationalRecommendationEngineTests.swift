@@ -210,7 +210,7 @@ final class OperationalRecommendationEngineTests: XCTestCase {
         )
     }
 
-    func testIdenticalInputsProduceStableRankingRegardlessOfInputOrder() {
+    func testIdenticalInputsProduceExplicitTieRegardlessOfInputOrder() {
         let alpha = makeCandidate(
             id: technicianID(1),
             name: "Alpha Technician"
@@ -237,7 +237,10 @@ final class OperationalRecommendationEngineTests: XCTestCase {
             first.rankedCandidates.map(\.employeeID),
             second.rankedCandidates.map(\.employeeID)
         )
-        XCTAssertEqual(first.bestCandidate?.employeeID, alpha.employeeID)
+        XCTAssertTrue(first.hasTopScoreTie)
+        XCTAssertNil(first.bestCandidate)
+        XCTAssertEqual(first.leadingCandidates.count, 2)
+        XCTAssertEqual(first.leadingCandidates.map(\.rank), [1, 1])
     }
 
     func testDuplicateTechnicianInputIsEvaluatedOnce() {

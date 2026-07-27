@@ -13,9 +13,16 @@ struct SiteDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State var site: CustomerSite
+    private let originalSite: CustomerSite
     @State private var createdJob: JobRecord?
     @State private var isClosing = false
+    @State private var showingUnsavedChangesAlert = false
     @FocusState private var isInputFocused: Bool
+
+    init(site: CustomerSite) {
+        originalSite = site
+        _site = State(initialValue: site)
+    }
 
     private var customerDisplayName: String {
         guard let customer = store.customers.first(where: {
@@ -115,7 +122,7 @@ struct SiteDetailView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
-                    closeSiteDetail()
+                    requestDismissal()
                 } label: {
                     Label("Back", systemImage: "chevron.left")
                 }
@@ -130,9 +137,44 @@ struct SiteDetailView: View {
             }
 
         }
+        .alert(
+            "Unsaved Changes",
+            isPresented: $showingUnsavedChangesAlert
+        ) {
+            Button("Save Changes") {
+                closeSiteDetail(savingChanges: true)
+            }
+
+            Button("Discard Changes", role: .destructive) {
+                closeSiteDetail()
+            }
+
+            Button("Continue Editing", role: .cancel) { }
+        } message: {
+            Text("This site has changes that have not been saved.")
+        }
         .onDisappear {
             isInputFocused = false
         }
+    }
+
+    private var hasUnsavedChanges: Bool {
+        encodedSite(site) != encodedSite(originalSite)
+    }
+
+    private func requestDismissal() {
+        resignInputFocus()
+        if hasUnsavedChanges {
+            showingUnsavedChangesAlert = true
+        } else {
+            closeSiteDetail()
+        }
+    }
+
+    private func encodedSite(_ site: CustomerSite) -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(site)
     }
 
     /// Ends text editing before beginning the navigation transition.

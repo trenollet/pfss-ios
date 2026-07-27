@@ -38,6 +38,21 @@ final class EmployeeRoleTests: XCTestCase {
 
         XCTAssertEqual(employee.roles, [.technician])
         XCTAssertTrue(employee.hasRole(.technician))
+        XCTAssertEqual(employee.baseAddress, "")
+    }
+
+    func testEmployeeBaseAddressSurvivesPersistenceRoundTrip() throws {
+        let employee = EmployeeRecord(
+            firstName: "Field",
+            lastName: "Technician",
+            baseAddress: "123 Main Street, Edmond, OK 73034"
+        )
+
+        let data = try JSONEncoder().encode(employee)
+        let decoded = try JSONDecoder().decode(EmployeeRecord.self, from: data)
+
+        XCTAssertEqual(decoded.baseAddress, employee.baseAddress)
+        XCTAssertEqual(decoded.normalizedBaseAddress, employee.baseAddress)
     }
 
     func testMultipleRolesSurvivePersistenceRoundTrip() throws {

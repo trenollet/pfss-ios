@@ -74,7 +74,15 @@ extension AppDataStore {
             onOrAfter: assignment.scheduling.operationalDate,
             generatedAt: timestamp
         )
-        let recommendationIsOverride = recommendation?.bestCandidate?.employeeID != technicianID
+        let recommendedID = recommendation?.bestCandidate?.employeeID
+        let tiedLeaderIDs = Set(
+            recommendation?.leadingCandidates.map(\.employeeID) ?? []
+        )
+        let acceptedTie = recommendation?.hasTopScoreTie == true &&
+            tiedLeaderIDs.contains(technicianID)
+        let recommendationIsOverride = recommendation != nil &&
+            !acceptedTie &&
+            recommendedID != technicianID
         let isReassignment = assignment.primaryTechnicianID != nil
 
         if (recommendationIsOverride || isReassignment) && cleanReason.isEmpty {

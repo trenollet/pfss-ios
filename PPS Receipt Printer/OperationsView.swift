@@ -78,14 +78,6 @@ struct OperationsView: View {
             }
     }
 
-    private var technicianModels: [TechnicianStatusModel] {
-        activeTechnicians.map(makeTechnicianStatusModel)
-    }
-
-    private var dispatchQueueItems: [DispatchQueueItem] {
-        dispatchJobs.map(makeDispatchQueueItem)
-    }
-
     private var revenueSummary: RevenueSummary {
         let scheduledRevenue = todayJobs
             .filter {
@@ -152,52 +144,10 @@ struct OperationsView: View {
         )
     }
 
-    private var recommendationItems: [RecommendationItem] {
-        dispatchJobs.compactMap { job in
-            guard let result = recommendation(for: job),
-                  let candidate = result.bestCandidate else {
-                return RecommendationItem(
-                    title: "Dispatch Review Needed",
-                    detail: "\(customerDisplayName(for: job)) has no eligible technician recommendation yet.",
-                    priority: .high
-                )
-            }
-
-            return RecommendationItem(
-                title: "Assign \(candidate.employeeName)",
-                detail: recommendationDetail(
-                    candidate,
-                    customerName: customerDisplayName(for: job)
-                ),
-                priority: recommendationPriority(
-                    for: job,
-                    confidencePercentage:
-                        candidate.scorePercentage
-                )
-            )
-        }
-    }
-
-    private var averageUtilization: Double {
-        guard !technicianModels.isEmpty else {
-            return 0
-        }
-
-        return technicianModels.reduce(0.0) {
-            $0 + min(max($1.utilization, 0), 1)
-        } / Double(technicianModels.count)
-    }
-
-    private var availableTechnicianCount: Int {
-        technicianModels.filter {
-            $0.status == .available
-        }.count
-    }
-
     private var highPriorityDispatchCount: Int {
-        dispatchQueueItems.filter {
-            $0.priority == .high ||
-            $0.priority == .emergency
+        dispatchJobs.filter {
+            $0.assignmentPriority == .high ||
+            $0.assignmentPriority == .emergency
         }.count
     }
 
@@ -236,13 +186,16 @@ struct OperationsView: View {
     // MARK: - Summary
 
     private var summaryGrid: some View {
-        LazyVGrid(
-            columns: [
-                GridItem(.flexible()),
-                GridItem(.flexible())
-            ],
-            spacing: 16
-        ) {
+        CustomizableTileGrid(
+            storageKey: "pfss.tile-layout.operations.v1",
+            defaultTileIDs: [
+                "sync", "today", "technicians", "dispatchQueue",
+                "dispatchBoard", "dailyPlanner", "workforce", "capacity",
+                "revenue", "recommendations"
+            ]
+        ) { tileID in
+            switch tileID {
+            case "sync":
             operationsTile(
                 title: "Sync Status",
                 value: syncStatusTileValue,
@@ -259,7 +212,7 @@ struct OperationsView: View {
                     }
                 )
             }
-
+            case "today":
             operationsTile(
                 title: "Today's Jobs",
                 value: "\(todayJobs.count)",
@@ -269,27 +222,27 @@ struct OperationsView: View {
             ) {
                 OperationsActiveAssignmentsView()
             }
-
+            case "technicians":
             operationsTile(
                 title: "Technicians",
                 value: "\(activeTechnicians.count)",
                 icon: "person.3.fill",
-                subtitle: "\(availableTechnicianCount) available",
+                subtitle: "Active technicians",
                 color: .green
             ) {
                 OperationsTechniciansView()
             }
-
+            case "dispatchQueue":
             operationsTile(
                 title: "Dispatch Queue",
-                value: "\(dispatchQueueItems.count)",
+                value: "\(dispatchJobs.count)",
                 icon: "list.bullet.clipboard",
                 subtitle: "\(highPriorityDispatchCount) high priority",
                 color: .orange
             ) {
                 OperationsDispatchQueueView()
             }
-
+            case "dispatchBoard":
             operationsTile(
                 title: "Dispatch Board",
                 value: "Open",
@@ -299,7 +252,7 @@ struct OperationsView: View {
             ) {
                 DispatchBoardView()
             }
-
+            case "dailyPlanner":
             operationsTile(
                 title: "Daily Planner",
                 value: "Plan",
@@ -309,7 +262,7 @@ struct OperationsView: View {
             ) {
                 DailyPlanPreviewView()
             }
-
+            case "workforce":
             operationsTile(
                 title: "Workforce Intelligence",
                 value: "Review",
@@ -321,19 +274,17 @@ struct OperationsView: View {
             ) {
                 WorkforceIntelligenceDashboardView()
             }
-
+            case "capacity":
             operationsTile(
                 title: "Capacity",
-                value: averageUtilization.formatted(
-                    .percent.precision(.fractionLength(0))
-                ),
+                value: "Review",
                 icon: "gauge.with.dots.needle.67percent",
-                subtitle: capacitySubtitle,
-                color: capacityColor
+                subtitle: "Workforce capacity",
+                color: .green
             ) {
                 WorkforceCapacityDashboardView()
             }
-
+            case "revenue":
             operationsTile(
                 title: "Revenue",
                 value: revenueSummary.collected.formatted(
@@ -345,28 +296,20 @@ struct OperationsView: View {
             ) {
                 OperationsRevenueView(summary: revenueSummary)
             }
-
+            case "recommendations":
             operationsTile(
                 title: "Recommendations",
-                value: "\(recommendationItems.count)",
+                value: "\(dispatchJobs.count)",
                 icon: "sparkles",
-                subtitle: recommendationItems.isEmpty
+                subtitle: dispatchJobs.isEmpty
                     ? "No recommendations"
                     : "Dispatch opportunities",
                 color: .yellow
             ) {
-                OperationsRecommendationsView(
-                    jobs: dispatchJobs,
-                    items: recommendationItems,
-                    recommendedJobIDs: Set(
-                        dispatchJobs.compactMap { job in
-                            bestRecommendationCandidate(for: job) == nil
-                                ? nil
-                                : job.id
-                        }
-                    ),
-                    onAssignRecommended: assignRecommendedTechnician
-                )
+                OperationsRecommendationsView(jobs: dispatchJobs)
+            }
+            default:
+                EmptyView()
             }
         }
     }
@@ -832,38 +775,6 @@ struct OperationsView: View {
         }.count
 
         return "\(remaining) remaining"
-    }
-
-    private var capacitySubtitle: String {
-        switch averageUtilization {
-        case 0..<0.60:
-            return "Open capacity"
-
-        case 0.60..<0.85:
-            return "Healthy workload"
-
-        case 0.85..<1:
-            return "Nearly full"
-
-        default:
-            return "At capacity"
-        }
-    }
-
-    private var capacityColor: Color {
-        switch averageUtilization {
-        case 0..<0.60:
-            return .green
-
-        case 0.60..<0.85:
-            return .blue
-
-        case 0.85..<1:
-            return .orange
-
-        default:
-            return .red
-        }
     }
 
     private func formattedOpening(

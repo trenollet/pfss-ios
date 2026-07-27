@@ -40,7 +40,8 @@ extension AppDataStore {
         policy: OperationalRecommendationPolicy = .balanced,
         onOrAfter requestedDate: Date? = nil,
         calendar: Calendar = .current,
-        generatedAt: Date = Date()
+        generatedAt: Date = Date(),
+        travelEvidenceByEmployeeID: [UUID: OperationalTravelEvidence] = [:]
     ) -> OperationalRecommendationResult? {
         guard let assignment = assignment(forJobID: job.id) else {
             return nil
@@ -110,7 +111,7 @@ extension AppDataStore {
                     availableMinutes: workforce.workload.remainingCapacityMinutes,
                     conflictMessages: conflictMessages
                 ),
-                travel: nil,
+                travel: travelEvidenceByEmployeeID[technician.id],
                 isPreferredTechnician: technician.id == request.preferredTechnicianID,
                 isIncumbentTechnician: technician.id == request.incumbentTechnicianID
             )
@@ -124,6 +125,46 @@ extension AppDataStore {
             request: request,
             candidates: candidates,
             generatedAt: generatedAt
+        )
+    }
+
+    /// Builds the same deterministic recommendation with Apple Maps road
+    /// distance and ETA evidence whenever a technician has a preceding job
+    /// location that can serve as a defensible route origin.
+    func routeAwareOperationalRecommendation(
+        for job: JobRecord,
+        purpose: OperationalRecommendationPurpose = .technicianAssignment,
+        policy: OperationalRecommendationPolicy = .balanced,
+        onOrAfter requestedDate: Date? = nil,
+        calendar: Calendar = .current,
+        generatedAt: Date = Date()
+    ) async -> OperationalRecommendationResult? {
+        guard let baseline = operationalRecommendation(
+            for: job,
+            purpose: purpose,
+            policy: policy,
+            onOrAfter: requestedDate,
+            calendar: calendar,
+            generatedAt: generatedAt
+        ) else { return nil }
+
+        let travel = await OperationalRecommendationTravelResolver.shared
+            .evidence(
+                for: job,
+                candidates: baseline.candidates,
+                jobs: activeJobs,
+                sites: sites,
+                employees: activeEmployees
+            )
+
+        return operationalRecommendation(
+            for: job,
+            purpose: purpose,
+            policy: policy,
+            onOrAfter: requestedDate,
+            calendar: calendar,
+            generatedAt: generatedAt,
+            travelEvidenceByEmployeeID: travel
         )
     }
 
@@ -146,7 +187,10 @@ extension AppDataStore {
         }
 
         let recommendedID = recommendation.bestCandidate?.employeeID
-        let isOverride = recommendedID != technicianID
+        let tiedLeaderIDs = Set(recommendation.leadingCandidates.map(\.employeeID))
+        let acceptedTie = recommendation.hasTopScoreTie &&
+            tiedLeaderIDs.contains(technicianID)
+        let isOverride = !acceptedTie && recommendedID != technicianID
         let cleanReason = overrideReason.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
@@ -177,10 +221,13 @@ extension AppDataStore {
         )
 
         let recommendationName = recommendation.bestCandidate?.employeeName
-            ?? "No eligible technician"
+            ?? recommendation.leadingCandidates.map(\.employeeName)
+                .joined(separator: " or ")
         let decisionNote = decision.wasHumanOverride
             ? "PFSS recommended \(recommendationName). A human selected \(candidate.employeeName). Reason: \(cleanReason)"
-            : "PFSS recommendation accepted: \(candidate.employeeName) at \(candidate.scorePercentage)% confidence."
+            : recommendation.hasTopScoreTie
+                ? "PFSS identified an operational tie. Human selected \(candidate.employeeName) from the tied leaders."
+                : "PFSS recommendation accepted: \(candidate.employeeName) at \(candidate.scorePercentage)% confidence."
         let auditLine = "Recommendation \(recommendation.id.uuidString): \(decisionNote)"
         let existingNotes = assignment.dispatchNotes.trimmingCharacters(
             in: .whitespacesAndNewlines

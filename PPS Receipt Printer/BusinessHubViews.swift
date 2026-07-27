@@ -13,10 +13,12 @@ struct SalesDashboardView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVGrid(
-                    columns: [GridItem(.flexible()), GridItem(.flexible())],
-                    spacing: 16
-                ) {
+                CustomizableTileGrid(
+                    storageKey: "pfss.tile-layout.sales.v1",
+                    defaultTileIDs: ["leads", "estimates"]
+                ) { tileID in
+                    switch tileID {
+                    case "leads":
                     hubTile(
                         title: "Leads",
                         value: "\(store.activeLeads.count)",
@@ -26,7 +28,7 @@ struct SalesDashboardView: View {
                     ) {
                         LeadsView()
                     }
-
+                    case "estimates":
                     hubTile(
                         title: "Estimates",
                         value: "\(store.activeEstimates.count)",
@@ -35,6 +37,9 @@ struct SalesDashboardView: View {
                         color: .indigo
                     ) {
                         EstimatesView()
+                    }
+                    default:
+                        EmptyView()
                     }
                 }
                 .padding()
@@ -52,11 +57,12 @@ struct ServiceDashboardView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 16) {
-                    LazyVGrid(
-                        columns: [GridItem(.flexible()), GridItem(.flexible())],
-                        spacing: 16
-                    ) {
+                CustomizableTileGrid(
+                    storageKey: "pfss.tile-layout.service.v1",
+                    defaultTileIDs: ["jobs", "invoices", "customers"]
+                ) { tileID in
+                    switch tileID {
+                    case "jobs":
                         hubTile(
                             title: "Jobs",
                             value: "\(store.activeJobs.count)",
@@ -66,7 +72,7 @@ struct ServiceDashboardView: View {
                         ) {
                             JobsView()
                         }
-
+                    case "invoices":
                         hubTile(
                             title: "Invoices",
                             value: "\(store.activeInvoices.count)",
@@ -76,8 +82,7 @@ struct ServiceDashboardView: View {
                         ) {
                             InvoicesView()
                         }
-                    }
-
+                    case "customers":
                     hubTile(
                         title: "Customers",
                         value: "\(store.activeCustomers.count)",
@@ -87,7 +92,9 @@ struct ServiceDashboardView: View {
                     ) {
                         CustomersView()
                     }
-                    .frame(maxWidth: 360)
+                    default:
+                        EmptyView()
+                    }
                 }
                 .padding()
             }

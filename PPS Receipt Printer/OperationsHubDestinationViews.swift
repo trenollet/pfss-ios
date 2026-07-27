@@ -220,6 +220,7 @@ struct OperationsDispatchQueueView: View {
     @State private var selectedAssignmentID: UUID?
     @State private var operationErrorMessage = ""
     @State private var showingOperationError = false
+    @State private var routeAwareRecommendations: [UUID: OperationalRecommendationResult] = [:]
 
     private var jobs: [JobRecord] {
         let activeJobs = store.activeJobs
@@ -296,15 +297,51 @@ struct OperationsDispatchQueueView: View {
         } message: {
             Text(operationErrorMessage)
         }
+        .task(id: jobs.map(\.id)) {
+            await refreshRecommendations()
+        }
+    }
+
+    private func recommendation(
+        for job: JobRecord
+    ) -> OperationalRecommendationResult? {
+        routeAwareRecommendations[job.id]
+    }
+
+    private func refreshRecommendations() async {
+        routeAwareRecommendations = [:]
+        await Task.yield()
+
+        // Show locally calculated recommendations immediately. Route-aware
+        // evidence replaces each result progressively as it becomes available.
+        for job in jobs {
+            if Task.isCancelled { return }
+            if let result = store.operationalRecommendation(
+                for: job,
+                policy: job.assignmentPriority == .emergency ? .emergency : .balanced,
+                onOrAfter: max(job.scheduledDate, Date()),
+                calendar: .current
+            ) {
+                routeAwareRecommendations[job.id] = result
+            }
+        }
+
+        for job in jobs {
+            if Task.isCancelled { return }
+            if let result = await store.routeAwareOperationalRecommendation(
+                for: job,
+                policy: job.assignmentPriority == .emergency ? .emergency : .balanced,
+                onOrAfter: max(job.scheduledDate, Date()),
+                calendar: .current
+            ) {
+                routeAwareRecommendations[job.id] = result
+            }
+            await Task.yield()
+        }
     }
 
     private func queueItem(for job: JobRecord) -> DispatchQueueItem {
-        let recommendation = store.operationalRecommendation(
-            for: job,
-            policy: job.assignmentPriority == .emergency ? .emergency : .balanced,
-            onOrAfter: max(job.scheduledDate, Date()),
-            calendar: .current
-        )
+        let recommendation = recommendation(for: job)
         let candidate = recommendation?.bestCandidate
 
         return DispatchQueueItem(
@@ -322,12 +359,7 @@ struct OperationsDispatchQueueView: View {
     }
 
     private func technicianOptions(for job: JobRecord) -> [DispatchTechnicianOption] {
-        let recommendation = store.operationalRecommendation(
-            for: job,
-            policy: job.assignmentPriority == .emergency ? .emergency : .balanced,
-            onOrAfter: max(job.scheduledDate, Date()),
-            calendar: .current
-        )
+        let recommendation = recommendation(for: job)
         guard let recommendation else { return [] }
         let recommendedID = recommendation.bestCandidate?.employeeID
 
@@ -341,7 +373,9 @@ struct OperationsDispatchQueueView: View {
                 hasConflictFreeOpening: candidate.proposedStartDate != nil,
                 rank: candidate.rank,
                 eligibility: candidate.eligibility,
-                evidence: candidate.evidence
+                evidence: candidate.evidence,
+                distanceMiles: candidate.distanceMiles,
+                travelMinutes: candidate.travelMinutes
             )
         }
         .sorted {
@@ -355,12 +389,7 @@ struct OperationsDispatchQueueView: View {
         to job: JobRecord,
         overrideReason: String
     ) {
-        let recommendation = store.operationalRecommendation(
-            for: job,
-            policy: job.assignmentPriority == .emergency ? .emergency : .balanced,
-            onOrAfter: max(job.scheduledDate, Date()),
-            calendar: .current
-        )
+        let recommendation = recommendation(for: job)
 
         guard let recommendation else {
             operationErrorMessage = "PFSS could not build a current technician recommendation for this Job."
@@ -448,15 +477,16 @@ struct OperationsRevenueView: View {
 // MARK: - Recommendations
 
 struct OperationsRecommendationsView: View {
+    @EnvironmentObject private var store: AppDataStore
     let jobs: [JobRecord]
-    let items: [RecommendationItem]
-    let recommendedJobIDs: Set<UUID>
-    let onAssignRecommended: (UUID?) -> Void
+    @State private var recommendations: [UUID: OperationalRecommendationResult] = [:]
+    @State private var operationErrorMessage = ""
+    @State private var showingOperationError = false
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 14) {
-                if items.isEmpty {
+                if jobs.isEmpty {
                     ContentUnavailableView(
                         "No Recommendations",
                         systemImage: "sparkles",
@@ -466,16 +496,19 @@ struct OperationsRecommendationsView: View {
                     )
                     .padding(.top, 50)
                 } else {
-                    ForEach(
-                        Array(zip(jobs, items)),
-                        id: \.0.id
-                    ) { job, recommendation in
+                    ForEach(jobs) { job in
                         RecommendationCard(
-                            item: recommendation,
-                            action: recommendedJobIDs.contains(job.id)
-                                ? { onAssignRecommended(job.id) }
-                                : nil
+                            item: recommendationItem(for: job),
+                            action: recommendations[job.id]?.bestCandidate == nil
+                                ? nil
+                                : { assignRecommendedTechnician(to: job) }
                         )
+                        .overlay(alignment: .topTrailing) {
+                            if recommendations[job.id] == nil {
+                                ProgressView()
+                                    .padding(12)
+                            }
+                        }
                     }
                 }
             }
@@ -484,5 +517,84 @@ struct OperationsRecommendationsView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Recommendations")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: jobs.map(\.id)) {
+            await refreshRecommendations()
+        }
+        .alert("Assignment Error", isPresented: $showingOperationError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(operationErrorMessage)
+        }
+    }
+
+    private func refreshRecommendations() async {
+        recommendations = [:]
+        await Task.yield()
+
+        for job in jobs {
+            if Task.isCancelled { return }
+            if let result = store.operationalRecommendation(
+                for: job,
+                policy: policy(for: job),
+                onOrAfter: max(job.scheduledDate, Date()),
+                calendar: .current
+            ) {
+                recommendations[job.id] = result
+            }
+        }
+
+        for job in jobs {
+            if Task.isCancelled { return }
+            if let result = await store.routeAwareOperationalRecommendation(
+                for: job,
+                policy: policy(for: job),
+                onOrAfter: max(job.scheduledDate, Date()),
+                calendar: .current
+            ) {
+                recommendations[job.id] = result
+            }
+            await Task.yield()
+        }
+    }
+
+    private func recommendationItem(for job: JobRecord) -> RecommendationItem {
+        guard let candidate = recommendations[job.id]?.bestCandidate else {
+            return RecommendationItem(
+                title: "Evaluating Dispatch Options",
+                detail: "PFSS is reviewing eligible technicians and route evidence.",
+                priority: .medium
+            )
+        }
+
+        let opening = candidate.proposedStartDate?.formatted(
+            date: .abbreviated,
+            time: .shortened
+        ) ?? "after schedule review"
+        return RecommendationItem(
+            title: "Assign \(candidate.employeeName)",
+            detail: "Recommended \(opening) with \(candidate.scorePercentage)% confidence.",
+            priority: job.assignmentPriority == .emergency ||
+                job.assignmentPriority == .high ? .high : .medium
+        )
+    }
+
+    private func assignRecommendedTechnician(to job: JobRecord) {
+        guard let recommendation = recommendations[job.id],
+              let candidate = recommendation.bestCandidate else { return }
+        do {
+            _ = try store.assignTechnicianUsingRecommendation(
+                candidate.employeeID,
+                toJobID: job.id,
+                recommendation: recommendation,
+                overrideReason: ""
+            )
+        } catch {
+            operationErrorMessage = error.localizedDescription
+            showingOperationError = true
+        }
+    }
+
+    private func policy(for job: JobRecord) -> OperationalRecommendationPolicy {
+        job.assignmentPriority == .emergency ? .emergency : .balanced
     }
 }

@@ -11,11 +11,6 @@ struct DashboardView: View {
     @EnvironmentObject private var store: AppDataStore
     @Binding var selectedSection: AppSection
 
-    private let columns = [
-        GridItem(.flexible()),
-        GridItem(.flexible())
-    ]
-
     private var todaysJobCount: Int {
         store.activeJobs.filter {
             Calendar.current.isDate($0.scheduledDate, inSameDayAs: Date())
@@ -29,8 +24,14 @@ struct DashboardView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 16) {
-                    LazyVGrid(columns: columns, spacing: 16) {
+                CustomizableTileGrid(
+                    storageKey: "pfss.tile-layout.dashboard.v1",
+                    defaultTileIDs: [
+                        "sales", "service", "myDay", "operations", "admin"
+                    ]
+                ) { tileID in
+                    switch tileID {
+                    case "sales":
                         dashboardTile(
                             title: "Sales",
                             value: "\(store.activeLeads.count + store.activeEstimates.count)",
@@ -39,7 +40,7 @@ struct DashboardView: View {
                             color: .blue,
                             section: .sales
                         )
-
+                    case "service":
                         dashboardTile(
                             title: "Service",
                             value: "\(store.activeJobs.count)",
@@ -48,8 +49,7 @@ struct DashboardView: View {
                             color: .orange,
                             section: .service
                         )
-                    }
-
+                    case "myDay":
                     dashboardTile(
                         title: "My Day",
                         value: "\(todaysJobCount)",
@@ -58,9 +58,7 @@ struct DashboardView: View {
                         color: .cyan,
                         section: .myDay
                     )
-                    .frame(maxWidth: 360)
-
-                    LazyVGrid(columns: columns, spacing: 16) {
+                    case "operations":
                         NavigationLink {
                             OperationsView()
                         } label: {
@@ -76,7 +74,7 @@ struct DashboardView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityHint("Opens Operations")
-
+                    case "admin":
                         dashboardTile(
                             title: "Admin",
                             value: "Manage",
@@ -85,6 +83,8 @@ struct DashboardView: View {
                             color: .gray,
                             section: .admin
                         )
+                    default:
+                        EmptyView()
                     }
                 }
                 .padding()

@@ -553,6 +553,26 @@ private struct DispatchBoardWorkCard: View {
                     .fixedSize()
             }
 
+            HStack(spacing: 10) {
+                Image(systemName: "calendar.badge.clock")
+                    .font(.title2)
+                    .foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Suggested Start")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(
+                        item.estimatedArrival?.formatted(date: .abbreviated, time: .shortened)
+                            ?? item.scheduleTimeText
+                    )
+                    .font(.title3.weight(.bold))
+                }
+                Spacer()
+            }
+            .padding(10)
+            .background(Color.blue.opacity(0.10))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     if item.priority == .emergency {
@@ -576,13 +596,6 @@ private struct DispatchBoardWorkCard: View {
             }
 
             HStack(spacing: 12) {
-                Label(
-                    item.estimatedArrival?.formatted(
-                        date: .omitted,
-                        time: .shortened
-                    ) ?? item.scheduleTimeText,
-                    systemImage: "clock.fill"
-                )
                 Label(
                     durationText(item.serviceMinutes),
                     systemImage: "wrench.and.screwdriver.fill"

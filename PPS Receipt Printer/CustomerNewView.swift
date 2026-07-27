@@ -13,6 +13,7 @@ struct CustomerNewView: View {
     @State private var followUpDate = Date()
     @State private var createdCustomer: Customer?
     @State private var isCreatingInitialSite = false
+    @State private var showingUnsavedChangesAlert = false
     @FocusState private var isInputFocused: Bool
 
     private var assignableEmployees: [EmployeeRecord] {
@@ -77,29 +78,56 @@ struct CustomerNewView: View {
                             )
                         }
                     }
+                    .scrollDismissesKeyboard(.interactively)
                     .navigationTitle("New Customer")
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
-                            Button("Cancel") { dismiss() }
+                            Button("Cancel") { requestDismissal() }
                         }
                         ToolbarItem(placement: .confirmationAction) {
                             Button("Save") { saveCustomer() }
                                 .disabled(!hasName)
                         }
-                        if isInputFocused {
-                            ToolbarItem(placement: .topBarTrailing) {
-                                Button {
-                                    isInputFocused = false
-                                } label: {
-                                    Image(systemName: "keyboard.chevron.compact.down")
-                                }
-                                .accessibilityLabel("Dismiss Keyboard")
+                        ToolbarItemGroup(placement: .keyboard) {
+                            Spacer()
+                            Button("Done") {
+                                isInputFocused = false
                             }
                         }
                     }
                 }
             }
+            .interactiveDismissDisabled(hasUnsavedChanges)
+            .alert(
+                "Unsaved Customer",
+                isPresented: $showingUnsavedChangesAlert
+            ) {
+                Button("Save") {
+                    saveCustomer()
+                }
+                .disabled(!hasName)
+
+                Button("Discard Changes", role: .destructive) {
+                    dismiss()
+                }
+
+                Button("Continue Editing", role: .cancel) { }
+            } message: {
+                Text("Save this customer before leaving, or discard the information entered on this page.")
+            }
         }
+    }
+
+    private var hasUnsavedChanges: Bool {
+        guard createdCustomer == nil else { return false }
+        return !businessName.isEmpty ||
+            !contactName.isEmpty ||
+            !phone.isEmpty ||
+            !email.isEmpty ||
+            leadSource != .website ||
+            estimateStatus != .newLead ||
+            !assignedEmployee.isEmpty ||
+            !Calendar.current.isDateInToday(followUpDate)
     }
 
     private var currentCreatedCustomer: Customer {
@@ -133,5 +161,14 @@ struct CustomerNewView: View {
         store.addCustomer(customer)
         createdCustomer = customer
         isCreatingInitialSite = true
+    }
+
+    private func requestDismissal() {
+        isInputFocused = false
+        if hasUnsavedChanges {
+            showingUnsavedChangesAlert = true
+        } else {
+            dismiss()
+        }
     }
 }

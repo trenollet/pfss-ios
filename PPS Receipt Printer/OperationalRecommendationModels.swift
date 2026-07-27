@@ -332,7 +332,21 @@ struct OperationalRecommendationResult: Identifiable, Codable, Hashable {
     }
 
     var bestCandidate: OperationalRecommendationCandidate? {
-        rankedCandidates.first
+        hasTopScoreTie ? nil : rankedCandidates.first
+    }
+
+    /// Candidates whose operational scores are effectively equal at the top.
+    /// PFSS deliberately does not convert an alphabetical ordering into a
+    /// recommendation when the underlying evidence cannot distinguish them.
+    var leadingCandidates: [OperationalRecommendationCandidate] {
+        guard let leader = rankedCandidates.first else { return [] }
+        return rankedCandidates.filter {
+            abs($0.score - leader.score) <= 0.5
+        }
+    }
+
+    var hasTopScoreTie: Bool {
+        leadingCandidates.count > 1
     }
 
     var hasRecommendation: Bool {
@@ -345,7 +359,7 @@ struct OperationalRecommendationResult: Identifiable, Codable, Hashable {
         policy: OperationalRecommendationPolicy,
         candidates: [OperationalRecommendationCandidate],
         generatedAt: Date = Date(),
-        engineVersion: String = "14.6.1"
+        engineVersion: String = "14.6.2"
     ) {
         self.id = id
         self.request = request

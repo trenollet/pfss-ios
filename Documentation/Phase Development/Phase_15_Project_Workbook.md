@@ -1347,8 +1347,9 @@ Version 1.0, Build 2 for device verification.
 ## Part 7 – Navigation and Presentation Cleanup
 
 ### Status
-Implementation complete. Product-owner Xcode build and workflow validation
-pending.
+Implementation complete. Multi-role employee behavior passed the product-owner
+Xcode build and complete regression suite. Explainable, route-aware Dispatch
+Queue recommendations are now pending product-owner validation.
 
 ### Objective
 Verify one cohesive navigation and presentation system across operational
@@ -1391,9 +1392,47 @@ retaining Owner authority.
   capabilities of all selected roles.
 - Added regression coverage for multi-role membership, legacy decoding,
   persistence round trips, and Dispatch actor role propagation.
+- Replaced alphabetical top-score selection with an explicit tied-candidates
+  state when operational evidence cannot meaningfully distinguish candidates.
+- Added dense ranking so effectively equal candidates share Rank #1.
+- Added an expandable score breakdown for every candidate, including every
+  supporting, warning, blocking, and informational factor and its contribution.
+- Added Apple Maps road-network distance and ETA evidence when a technician has
+  a preceding scheduled service location that provides a defensible origin.
+- Added a backward-compatible Home / Base Address to employee records and the
+  Employee New and Employee Detail screens.
+- Route-aware recommendations now fall back to the employee's saved base
+  address when no previous-stop location is available. Recommendation evidence
+  explicitly identifies whether Apple Maps used the previous stop or employee
+  base as its origin.
+- Preserved an explicit Travel Data Unavailable warning when no valid origin or
+  employee base, previous-stop origin, or destination can be resolved; PFSS
+  never fabricates proximity.
+- Made blocked and lower-ranked candidates visible with the exact evidence that
+  affected their eligibility and score.
+- Removed a Dispatch Board dead end when assigning unassigned work during an
+  operational tie. Selecting any tied leader now assigns normally; selecting a
+  genuinely lower-ranked technician opens the existing reason-entry sheet
+  before the assignment is applied.
+- Added accessible, color-coded Job and Lead status labels with larger text.
+  Job lists now show scheduled date/time prominently; Lead lists show their
+  follow-up date/time.
+- Added Date, Status, and Name/order filtering to Job and Lead list screens
+  while preserving their existing pull-down search.
+- Promoted the Dispatch Queue and Dispatch Board suggested start date/time into
+  a dedicated, prominent card area instead of burying it in rank explanation.
+- Refactored Employee Detail into focused navigation buttons for Employee,
+  Home / Base Address, Working Days, Normal Work Day, Time Off, and Workforce
+  Profile so rarely changed setup data no longer overwhelms the main page.
+- Exposed persisted Workforce availability exceptions as a dedicated Time Off
+  editor for vacations, appointments, and partial-day absences. These records
+  immediately participate in scheduling and recommendation availability.
 
 ### Files Added
 - `PPS Receipt Printer/EmployeeRoleSelectionView.swift`
+- `PPS Receipt Printer/OperationalRecommendationTravelResolver.swift`
+- `PPS Receipt Printer/RecordListFilters.swift`
+- `PPS Receipt Printer/EmployeeDetailSectionViews.swift`
 - `PPS Receipt PrinterTests/EmployeeRoleTests.swift`
 
 ### Files Modified
@@ -1414,11 +1453,84 @@ retaining Owner authority.
 - [x] Dispatch authorization evaluates cumulative employee roles.
 - [x] Modified Swift sources pass syntax parsing.
 - [x] Repository diff passes whitespace validation.
-- [ ] Project builds cleanly in the product owner's Xcode environment.
-- [ ] Existing employees retain their prior role after loading.
-- [ ] A multi-role Owner and Technician appears in technician workflows.
-- [ ] Employee role changes persist after closing and reopening PFSS.
-- [ ] Complete regression suite passes.
+- [x] Project builds cleanly in the product owner's Xcode environment.
+- [x] Existing employees retain their prior role after loading.
+- [x] A multi-role Owner and Technician appears in technician workflows.
+- [x] Employee role changes persist after closing and reopening PFSS.
+- [x] Complete regression suite passes for the multi-role implementation.
+- [ ] Dispatch Queue shows a full score breakdown for every technician.
+- [ ] Candidates with equal evidence are presented as tied, not alphabetically
+  recommended.
+- [ ] Apple Maps mileage and ETA appear when a preceding route origin exists.
+- [ ] Employee Home / Base Address persists after PFSS is restarted.
+- [ ] Apple Maps mileage and ETA use the employee base when no previous stop is
+  available, and the score breakdown labels that origin as `employee base`.
+- [ ] Missing route evidence remains visible and does not fabricate distance.
+- [ ] Blocked and lower-ranked technicians clearly explain their result.
+- [ ] Dispatch Board Unassigned work accepts a tied leader without demanding an
+  override reason.
+- [ ] Selecting a lower-ranked technician opens a usable override-reason field
+  and completes the assignment after a reason is entered.
+- [ ] Operations hub opens without waiting for route-aware recommendations.
+- [ ] Dispatch Queue shows local recommendations promptly, then updates route
+  evidence progressively without freezing navigation.
+
+### Operations Performance Hardening
+- The Operations landing page now calculates only the lightweight counts and
+  summaries required by its tiles. Technician agenda construction, dispatch
+  candidate scoring, geocoding, and Apple Maps route estimation no longer run
+  while the hub is opening.
+- Dispatch Queue and Recommendations publish local results first and replace
+  them progressively with route-aware evidence, keeping navigation responsive.
+- Identical origin/destination/departure route estimates are cached in
+  15-minute buckets so revisiting an operational screen does not immediately
+  repeat the same Apple Maps work.
+- First-launch data decoding and cache warm-up remain an observation item; the
+  repeatable Operations navigation delay is the performance issue addressed by
+  this change.
+
+### Employee Editing Data-Loss Protection
+- New Employee disables interactive sheet dismissal after information has been
+  entered, preventing an accidental scroll or swipe from discarding the draft.
+- Cancel on New Employee now offers Save, Discard Changes, or Continue Editing.
+- Employee Detail owns all edits made by its nested Workforce Profile. Back now
+  detects any unsaved employee, role, schedule, address, or workforce changes
+  and offers Save Changes, Discard Changes, or Continue Editing.
+- Keyboard dismissal moved into the keyboard accessory area so it cannot occupy
+  the same top-trailing toolbar position as Save on iPad.
+- Employee forms dismiss the keyboard interactively while scrolling without
+  dismissing the employee record itself.
+
+### Customer and Site Editing Data-Loss Protection
+- New Customer and New Site now detect entered information and disable
+  interactive sheet dismissal while an unsaved draft exists.
+- Cancel on either creation screen offers Save, Discard Changes, or Continue
+  Editing so an accidental swipe or navigation action cannot silently erase a
+  customer or site record.
+- Customer Detail and Site Detail now guard their Back actions when any field
+  differs from the stored record, offering Save Changes, Discard Changes, or
+  Continue Editing.
+- Customer keyboard dismissal uses the keyboard accessory area and interactive
+  scrolling so it does not cover the Save action on iPad.
+- Site Detail retains its established safe keyboard teardown sequence while
+  adding the same guarded navigation behavior, avoiding a regression of the
+  earlier keyboard and invalid-frame fixes.
+
+### Customizable Tile Workspaces (Step 6.5 Enhancement)
+- Dashboard, Operations, Sales, Service, Invoices, Jobs, Customers, Leads, and
+  Estimates now share one persistent tile-arrangement system. Admin remains a
+  fixed, intentionally governed configuration page.
+- Arrange mode supports drag-and-drop ordering, automatic on-device saving,
+  and a Reset to Default Layout action for every participating page.
+- Users may add, drag, and remove blank grid positions, allowing meaningful
+  visual separation instead of forcing every tile into a contiguous layout.
+- Tile destinations and actions remain unchanged by customization; only their
+  presentation order and spacing are user controlled.
+- Newly introduced tiles are reconciled into existing saved layouts without
+  discarding the user's established order or blank spaces.
+- Product-owner validation remains pending on iPhone and iPad for dragging,
+  persistence after relaunch, blank-space retention, navigation suppression
+  during arrangement, and reset behavior.
 
 ## Part 8 – Regression and Acceptance Testing
 
@@ -1431,9 +1543,10 @@ Map and confirm every shared action produces the same state transition, timeline
 event, offline operation, UI result, invoice handoff, and completion behavior.
 
 ### Resume Point
-Validate Part 7 multi-role employees and the full regression suite in Xcode.
-After acceptance, execute Part 8 end-to-end workflow testing using Version 1.0,
-Build 2 as the verified test baseline.
+Validate the Part 7 Dispatch Queue score breakdown, tied-candidate state,
+previous-stop and employee-base route evidence, and exclusion explanations in
+Xcode. After acceptance, execute Part 8 end-to-end workflow testing using
+Version 1.0, Build 2 as the verified baseline.
 
 ### Expected Outcomes
 - Cleaner navigation.

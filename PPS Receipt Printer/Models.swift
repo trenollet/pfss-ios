@@ -261,6 +261,11 @@ struct EmployeeRecord: Identifiable, Codable {
     var phone: String
     var email: String
 
+    /// The employee's normal starting location when PFSS does not have a
+    /// dependable operational location. This may be a home, shop, yard, or
+    /// other business-approved base address.
+    var baseAddress: String
+
     var role: EmployeeRole
 
     /// Every business role this employee may perform. `role` remains the
@@ -293,6 +298,7 @@ struct EmployeeRecord: Identifiable, Codable {
         lastName: String,
         phone: String = "",
         email: String = "",
+        baseAddress: String = "",
         role: EmployeeRole = .technician,
         roles: Set<EmployeeRole>? = nil,
         defaultStartMinutes: Int = 480,
@@ -310,6 +316,7 @@ struct EmployeeRecord: Identifiable, Codable {
         self.lastName = lastName
         self.phone = phone
         self.email = email
+        self.baseAddress = baseAddress
         let selectedRoles = Self.validRoles(roles, fallback: role)
         self.roles = selectedRoles
         self.role = selectedRoles.contains(role)
@@ -358,6 +365,13 @@ struct EmployeeRecord: Identifiable, Codable {
             .joined(separator: ", ")
     }
 
+    var normalizedBaseAddress: String? {
+        let address = baseAddress.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        return address.isEmpty ? nil : address
+    }
+
     var canOverrideScheduling: Bool {
         roles.contains { $0.canOverrideScheduling } || role.canOverrideScheduling
     }
@@ -389,6 +403,7 @@ extension EmployeeRecord {
         case lastName
         case phone
         case email
+        case baseAddress
         case role
         case roles
         case defaultStartMinutes
@@ -410,6 +425,10 @@ extension EmployeeRecord {
         lastName = try container.decodeIfPresent(String.self, forKey: .lastName) ?? ""
         phone = try container.decodeIfPresent(String.self, forKey: .phone) ?? ""
         email = try container.decodeIfPresent(String.self, forKey: .email) ?? ""
+        baseAddress = try container.decodeIfPresent(
+            String.self,
+            forKey: .baseAddress
+        ) ?? ""
         let legacyRole = try container.decodeIfPresent(
             EmployeeRole.self,
             forKey: .role

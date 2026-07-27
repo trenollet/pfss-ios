@@ -15,6 +15,7 @@ struct EmployeeNewView: View {
     @State private var lastName = ""
     @State private var phone = ""
     @State private var email = ""
+    @State private var baseAddress = ""
 
     @State private var roles: Set<EmployeeRole> = [.technician]
     @State private var showingRoleSelection = false
@@ -33,6 +34,7 @@ struct EmployeeNewView: View {
     @State private var colorName = "blue"
     @State private var isActive = true
     @State private var workforceProfile = WorkforceOperationalProfile()
+    @State private var showingUnsavedChangesAlert = false
 
     @FocusState private var isInputFocused: Bool
 
@@ -121,6 +123,21 @@ struct EmployeeNewView: View {
                         "Active Employee",
                         isOn: $isActive
                     )
+                }
+
+                Section {
+                    TextField(
+                        "Street, City, State ZIP",
+                        text: $baseAddress,
+                        axis: .vertical
+                    )
+                    .textContentType(.fullStreetAddress)
+                    .lineLimit(2...4)
+                    .focused($isInputFocused)
+                } header: {
+                    Text("Home / Base Address")
+                } footer: {
+                    Text("Used as the employee's route starting point when a current or previous-stop location is unavailable.")
                 }
 
                 Section("Normal Workday") {
@@ -217,7 +234,9 @@ struct EmployeeNewView: View {
                 }
 
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("New Employee")
+            .interactiveDismissDisabled(hasUnsavedChanges)
             .sheet(isPresented: $showingRoleSelection) {
                 EmployeeRoleSelectionView(selectedRoles: $roles)
             }
@@ -226,7 +245,7 @@ struct EmployeeNewView: View {
                     placement: .cancellationAction
                 ) {
                     Button("Cancel") {
-                        dismiss()
+                        requestDismissal()
                     }
                 }
 
@@ -241,18 +260,53 @@ struct EmployeeNewView: View {
                     )
                 }
 
-                if isInputFocused {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            isInputFocused = false
-                        } label: {
-                            Image(systemName: "keyboard.chevron.compact.down")
-                        }
-                        .accessibilityLabel("Dismiss Keyboard")
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        isInputFocused = false
                     }
                 }
             }
+            .alert(
+                "Unsaved Employee",
+                isPresented: $showingUnsavedChangesAlert
+            ) {
+                Button("Save") {
+                    saveEmployee()
+                }
+                .disabled(!canSave)
+
+                Button("Discard Changes", role: .destructive) {
+                    dismiss()
+                }
+
+                Button("Continue Editing", role: .cancel) { }
+            } message: {
+                Text("Save this employee before leaving, or discard the information entered on this page.")
+            }
         }
+    }
+
+    private var canSave: Bool {
+        !firstName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var hasUnsavedChanges: Bool {
+        !firstName.isEmpty ||
+        !lastName.isEmpty ||
+        !phone.isEmpty ||
+        !email.isEmpty ||
+        !baseAddress.isEmpty ||
+        roles != [.technician] ||
+        minutesFromDate(startTime) != 480 ||
+        minutesFromDate(endTime) != 1020 ||
+        lunchDurationMinutes != 30 ||
+        workingDays != Workday.standardWorkweek ||
+        colorName != "blue" ||
+        !isActive ||
+        encodedProfile(workforceProfile) != encodedProfile(
+            WorkforceOperationalProfile()
+        )
     }
 
     private var employeeDraftName: String {
@@ -308,6 +362,9 @@ struct EmployeeNewView: View {
             email: email.trimmingCharacters(
                 in: .whitespacesAndNewlines
             ),
+            baseAddress: baseAddress.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ),
             role: EmployeeRole.allCases.first(where: roles.contains) ?? .technician,
             roles: roles,
             defaultStartMinutes:
@@ -325,6 +382,23 @@ struct EmployeeNewView: View {
 
         store.addEmployee(employee)
         dismiss()
+    }
+
+    private func requestDismissal() {
+        isInputFocused = false
+        if hasUnsavedChanges {
+            showingUnsavedChangesAlert = true
+        } else {
+            dismiss()
+        }
+    }
+
+    private func encodedProfile(
+        _ profile: WorkforceOperationalProfile
+    ) -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(profile)
     }
 
     private func minutesFromDate(

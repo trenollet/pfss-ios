@@ -19,7 +19,14 @@ struct InvoicesView: View {
     @State private var searchText = ""
 
     var body: some View {
-        RecordHubLayout(title: "Invoices", searchText: $searchText) {
+        RecordHubLayout(
+            title: "Invoices",
+            searchText: $searchText,
+            layoutKey: "pfss.tile-layout.invoices.v1",
+            tileIDs: ["sent", "paid", "pastDue", "draft", "all"]
+        ) { tileID in
+            switch tileID {
+            case "sent":
             RecordHubTile(
                 title: "Sent",
                 count: store.activeInvoices.filter {
@@ -30,7 +37,7 @@ struct InvoicesView: View {
             ) {
                 InvoiceRecordsListView(bucket: .sent, title: "Sent Invoices")
             }
-
+            case "paid":
             RecordHubTile(
                 title: "Paid",
                 count: store.activeInvoices.filter {
@@ -41,7 +48,7 @@ struct InvoicesView: View {
             ) {
                 InvoiceRecordsListView(bucket: .paid, title: "Paid Invoices")
             }
-
+            case "pastDue":
             RecordHubTile(
                 title: "Past Due",
                 count: store.activeInvoices.filter {
@@ -52,7 +59,7 @@ struct InvoicesView: View {
             ) {
                 InvoiceRecordsListView(bucket: .pastDue, title: "Past Due Invoices")
             }
-
+            case "draft":
             RecordHubTile(
                 title: "Draft",
                 count: store.activeInvoices.filter {
@@ -63,17 +70,19 @@ struct InvoicesView: View {
             ) {
                 InvoiceRecordsListView(bucket: .draft, title: "Draft Invoices")
             }
-
+            case "all":
             RecordHubTile(
                 title: "All",
                 count: store.activeInvoices.count,
                 icon: "doc.text.fill",
-                color: .purple,
-                centered: true
+                color: .purple
             ) {
                 InvoiceRecordsListView()
             }
-
+            default:
+                EmptyView()
+            }
+        } supplement: {
             searchTile(
                 query: searchText,
                 count: matchingInvoiceCount,
@@ -100,7 +109,14 @@ struct JobsView: View {
     @State private var showingNewJob = false
 
     var body: some View {
-        RecordHubLayout(title: "Jobs", searchText: $searchText) {
+        RecordHubLayout(
+            title: "Jobs",
+            searchText: $searchText,
+            layoutKey: "pfss.tile-layout.jobs.v1",
+            tileIDs: ["new", "active", "completed", "all"]
+        ) { tileID in
+            switch tileID {
+            case "new":
             RecordHubActionTile(
                 title: "New Job",
                 value: "Add",
@@ -109,7 +125,7 @@ struct JobsView: View {
             ) {
                 showingNewJob = true
             }
-
+            case "active":
             RecordHubTile(
                 title: "Active",
                 count: store.activeJobs.filter { activeJobStatuses.contains($0.status) }.count,
@@ -118,7 +134,7 @@ struct JobsView: View {
             ) {
                 JobRecordsListView(statuses: activeJobStatuses, title: "Active Jobs")
             }
-
+            case "completed":
             RecordHubTile(
                 title: "Completed",
                 count: store.activeJobs.filter { $0.status == .completed }.count,
@@ -127,7 +143,7 @@ struct JobsView: View {
             ) {
                 JobRecordsListView(statuses: [.completed], title: "Completed Jobs")
             }
-
+            case "all":
             RecordHubTile(
                 title: "All",
                 count: store.activeJobs.count,
@@ -136,7 +152,10 @@ struct JobsView: View {
             ) {
                 JobRecordsListView()
             }
-
+            default:
+                EmptyView()
+            }
+        } supplement: {
             searchTile(
                 query: searchText,
                 count: matchingJobCount,
@@ -173,7 +192,14 @@ struct CustomersView: View {
     ]
 
     var body: some View {
-        RecordHubLayout(title: "Customers", searchText: $searchText) {
+        RecordHubLayout(
+            title: "Customers",
+            searchText: $searchText,
+            layoutKey: "pfss.tile-layout.customers.v1",
+            tileIDs: ["new", "newLead", "followUp", "all"]
+        ) { tileID in
+            switch tileID {
+            case "new":
             RecordHubActionTile(
                 title: "New Customer",
                 value: "Add",
@@ -182,7 +208,7 @@ struct CustomersView: View {
             ) {
                 showingNewCustomer = true
             }
-
+            case "newLead":
             RecordHubTile(
                 title: "New Lead",
                 count: store.activeCustomers.filter { $0.estimateStatus == .newLead }.count,
@@ -191,7 +217,7 @@ struct CustomersView: View {
             ) {
                 CustomerRecordsListView(statuses: [.newLead], title: "New Lead Customers")
             }
-
+            case "followUp":
             RecordHubTile(
                 title: "Follow Up",
                 count: store.activeCustomers.filter { followUpStatuses.contains($0.estimateStatus) }.count,
@@ -200,7 +226,7 @@ struct CustomersView: View {
             ) {
                 CustomerRecordsListView(statuses: followUpStatuses, title: "Customer Follow Up")
             }
-
+            case "all":
             RecordHubTile(
                 title: "All",
                 count: store.activeCustomers.count,
@@ -209,7 +235,10 @@ struct CustomersView: View {
             ) {
                 CustomerRecordsListView()
             }
-
+            default:
+                EmptyView()
+            }
+        } supplement: {
             searchTile(
                 query: searchText,
                 count: matchingCustomerCount,
@@ -245,7 +274,14 @@ struct LeadsView: View {
     ]
 
     var body: some View {
-        RecordHubLayout(title: "Leads", searchText: $searchText) {
+        RecordHubLayout(
+            title: "Leads",
+            searchText: $searchText,
+            layoutKey: "pfss.tile-layout.leads.v1",
+            tileIDs: ["new", "followUp", "all"]
+        ) { tileID in
+            switch tileID {
+            case "new":
             RecordHubActionTile(
                 title: "New Lead",
                 value: "Add",
@@ -254,7 +290,7 @@ struct LeadsView: View {
             ) {
                 showingNewLead = true
             }
-
+            case "followUp":
             RecordHubTile(
                 title: "Follow Up",
                 count: store.activeLeads.filter { followUpStatuses.contains($0.status) }.count,
@@ -263,17 +299,19 @@ struct LeadsView: View {
             ) {
                 LeadRecordsListView(statuses: followUpStatuses, title: "Lead Follow Up")
             }
-
+            case "all":
             RecordHubTile(
                 title: "All",
                 count: store.activeLeads.count,
                 icon: "person.text.rectangle.fill",
-                color: .purple,
-                centered: true
+                color: .purple
             ) {
                 LeadRecordsListView()
             }
-
+            default:
+                EmptyView()
+            }
+        } supplement: {
             searchTile(
                 query: searchText,
                 count: matchingLeadCount,
@@ -305,7 +343,14 @@ struct EstimatesView: View {
     private let followUpStatuses: Set<EstimateRecordStatus> = [.sent, .expired]
 
     var body: some View {
-        RecordHubLayout(title: "Estimates", searchText: $searchText) {
+        RecordHubLayout(
+            title: "Estimates",
+            searchText: $searchText,
+            layoutKey: "pfss.tile-layout.estimates.v1",
+            tileIDs: ["new", "inProgress", "followUp", "all"]
+        ) { tileID in
+            switch tileID {
+            case "new":
             RecordHubActionTile(
                 title: "New Estimate",
                 value: "Add",
@@ -314,7 +359,7 @@ struct EstimatesView: View {
             ) {
                 showingNewEstimate = true
             }
-
+            case "inProgress":
             RecordHubTile(
                 title: "In Progress",
                 count: store.activeEstimates.filter { $0.status == .draft }.count,
@@ -323,7 +368,7 @@ struct EstimatesView: View {
             ) {
                 EstimateRecordsListView(statuses: [.draft], title: "Estimates In Progress")
             }
-
+            case "followUp":
             RecordHubTile(
                 title: "Follow Up",
                 count: store.activeEstimates.filter { followUpStatuses.contains($0.status) }.count,
@@ -332,7 +377,7 @@ struct EstimatesView: View {
             ) {
                 EstimateRecordsListView(statuses: followUpStatuses, title: "Estimate Follow Up")
             }
-
+            case "all":
             RecordHubTile(
                 title: "All",
                 count: store.activeEstimates.count,
@@ -341,7 +386,10 @@ struct EstimatesView: View {
             ) {
                 EstimateRecordsListView()
             }
-
+            default:
+                EmptyView()
+            }
+        } supplement: {
             searchTile(
                 query: searchText,
                 count: matchingEstimateCount,
@@ -367,28 +415,45 @@ struct EstimatesView: View {
     }
 }
 
-private struct RecordHubLayout<Content: View>: View {
+private struct RecordHubLayout<Tile: View, Supplement: View>: View {
     let title: String
     @Binding var searchText: String
-    let content: Content
+    let layoutKey: String
+    let tileIDs: [String]
+    let tile: (String) -> Tile
+    let supplement: Supplement
 
     init(
         title: String,
         searchText: Binding<String>,
-        @ViewBuilder content: () -> Content
+        layoutKey: String,
+        tileIDs: [String],
+        @ViewBuilder tile: @escaping (String) -> Tile,
+        @ViewBuilder supplement: () -> Supplement
     ) {
         self.title = title
         _searchText = searchText
-        self.content = content()
+        self.layoutKey = layoutKey
+        self.tileIDs = tileIDs
+        self.tile = tile
+        self.supplement = supplement()
     }
 
     var body: some View {
         ScrollView {
-            LazyVGrid(
-                columns: [GridItem(.flexible()), GridItem(.flexible())],
-                spacing: 16
-            ) {
-                content
+            VStack(spacing: 16) {
+                CustomizableTileGrid(
+                    storageKey: layoutKey,
+                    defaultTileIDs: tileIDs,
+                    tile: tile
+                )
+
+                LazyVGrid(
+                    columns: [GridItem(.flexible()), GridItem(.flexible())],
+                    spacing: 16
+                ) {
+                    supplement
+                }
             }
             .padding()
         }

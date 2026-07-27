@@ -19,6 +19,8 @@ struct DispatchTechnicianOption: Identifiable, Hashable {
     let rank: Int?
     let eligibility: OperationalRecommendationEligibility
     let evidence: [OperationalRecommendationEvidence]
+    let distanceMiles: Double?
+    let travelMinutes: Int?
 
     init(
         id: UUID,
@@ -29,7 +31,9 @@ struct DispatchTechnicianOption: Identifiable, Hashable {
         hasConflictFreeOpening: Bool,
         rank: Int? = nil,
         eligibility: OperationalRecommendationEligibility = .eligible,
-        evidence: [OperationalRecommendationEvidence] = []
+        evidence: [OperationalRecommendationEvidence] = [],
+        distanceMiles: Double? = nil,
+        travelMinutes: Int? = nil
     ) {
         self.id = id
         self.name = name
@@ -40,6 +44,8 @@ struct DispatchTechnicianOption: Identifiable, Hashable {
         self.rank = rank
         self.eligibility = eligibility
         self.evidence = evidence
+        self.distanceMiles = distanceMiles
+        self.travelMinutes = travelMinutes
     }
 }
 
@@ -101,6 +107,14 @@ struct DispatchQueueCard: View {
         technicianOptions.first(where: \.isRecommended)
     }
 
+    private var tiedLeaders: [DispatchTechnicianOption] {
+        technicianOptions.filter { $0.rank == 1 && $0.eligibility != .ineligible }
+    }
+
+    private var hasTopTie: Bool {
+        recommendedOption == nil && tiedLeaders.count > 1
+    }
+
     private var selectedOption: DispatchTechnicianOption? {
         guard let selectedTechnicianID else { return nil }
         return technicianOptions.first { $0.id == selectedTechnicianID }
@@ -108,6 +122,10 @@ struct DispatchQueueCard: View {
 
     private var isOverrideSelection: Bool {
         guard let selectedTechnicianID else {
+            return false
+        }
+        if hasTopTie,
+           tiedLeaders.contains(where: { $0.id == selectedTechnicianID }) {
             return false
         }
         guard let recommendedID = recommendedOption?.id else {
@@ -168,7 +186,14 @@ struct DispatchQueueCard: View {
 
     private var technicianSelection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let recommendedOption {
+            if hasTopTie {
+                Label(
+                    "Top candidates tied: \(tiedLeaders.map(\.name).joined(separator: ", "))",
+                    systemImage: "equal.circle.fill"
+                )
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.blue)
+            } else if let recommendedOption {
                 HStack(spacing: 10) {
                     Image(systemName: "star.circle.fill")
                         .font(.title3)
@@ -210,11 +235,38 @@ struct DispatchQueueCard: View {
 
             if let selectedOption {
                 VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "calendar.badge.clock")
+                            .font(.title2)
+                            .foregroundStyle(.blue)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Suggested Start")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(selectedOption.proposedStart.formatted(date: .abbreviated, time: .shortened))
+                                .font(.title3.weight(.bold))
+                                .foregroundStyle(.primary)
+                        }
+                        Spacer()
+                    }
+                    .padding(12)
+                    .background(Color.blue.opacity(0.10))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+
                     HStack(spacing: 6) {
                         Image(systemName: selectionSymbol(selectedOption))
                         Text(selectionDetail(selectedOption))
                     }
                     .foregroundStyle(selectionColor(selectedOption))
+
+                    if let miles = selectedOption.distanceMiles,
+                       let minutes = selectedOption.travelMinutes {
+                        Label(
+                            String(format: "%.1f miles · %d min by Apple Maps", miles, minutes),
+                            systemImage: "car.fill"
+                        )
+                        .foregroundStyle(.secondary)
+                    }
 
                     if let evidence = selectedOption.evidence.first(where: {
                         $0.impact == .blocking || $0.impact == .warning
@@ -237,6 +289,31 @@ struct DispatchQueueCard: View {
                         )
                         .textFieldStyle(.roundedBorder)
                         .lineLimit(2...4)
+                    }
+
+                    DisclosureGroup("Full score breakdown") {
+                        VStack(alignment: .leading, spacing: 9) {
+                            ForEach(selectedOption.evidence) { item in
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: evidenceSymbol(item.impact))
+                                        .foregroundStyle(evidenceColor(item.impact))
+                                        .frame(width: 18)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        HStack {
+                                            Text(item.category.rawValue)
+                                                .fontWeight(.semibold)
+                                            Spacer()
+                                            Text(scoreText(item.scoreContribution))
+                                                .monospacedDigit()
+                                        }
+                                        Text(item.title)
+                                        Text(item.detail)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.top, 8)
                     }
                 }
                 .font(.caption)
@@ -313,13 +390,39 @@ struct DispatchQueueCard: View {
         let confidence = confidenceText(option.confidence)
 
         if option.hasConflictFreeOpening && option.eligibility != .ineligible {
-            return "\(rankText)\(confidence) · Proposed \(option.proposedStart.formatted(date: .abbreviated, time: .shortened))"
+            return "\(rankText)\(confidence) · Conflict-free opening"
         }
         return "\(rankText)\(confidence) · Manual override; review warnings."
     }
 
     private var normalizedOverrideReason: String {
         overrideReason.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func scoreText(_ value: Double) -> String {
+        value > 0 ? String(format: "+%.1f", value) : "—"
+    }
+
+    private func evidenceSymbol(
+        _ impact: OperationalRecommendationEvidenceImpact
+    ) -> String {
+        switch impact {
+        case .blocking: return "xmark.octagon.fill"
+        case .warning: return "exclamationmark.triangle.fill"
+        case .supporting: return "checkmark.circle.fill"
+        case .informational: return "info.circle.fill"
+        }
+    }
+
+    private func evidenceColor(
+        _ impact: OperationalRecommendationEvidenceImpact
+    ) -> Color {
+        switch impact {
+        case .blocking: return .red
+        case .warning: return .orange
+        case .supporting: return .green
+        case .informational: return .secondary
+        }
     }
 
     private func selectionSymbol(_ option: DispatchTechnicianOption) -> String {

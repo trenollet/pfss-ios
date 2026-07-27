@@ -25,6 +25,7 @@ struct SiteNewView: View {
     @State private var newPropertyType = ""
     @State private var accessNotes = ""
     @State private var workNotes = ""
+    @State private var showingUnsavedChangesAlert = false
     @FocusState private var isInputFocused: Bool
 
     init(
@@ -83,7 +84,9 @@ struct SiteNewView: View {
                     .focused($isInputFocused)
             }
         }
+        .scrollDismissesKeyboard(.interactively)
         .navigationTitle("New Site")
+        .interactiveDismissDisabled(hasUnsavedChanges)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { cancel() }
@@ -92,17 +95,40 @@ struct SiteNewView: View {
                 Button("Save") { saveSite() }
                     .disabled(!canSave)
             }
-            if isInputFocused {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        isInputFocused = false
-                    } label: {
-                        Image(systemName: "keyboard.chevron.compact.down")
-                    }
-                    .accessibilityLabel("Dismiss Keyboard")
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    isInputFocused = false
                 }
             }
         }
+        .alert(
+            "Unsaved Site",
+            isPresented: $showingUnsavedChangesAlert
+        ) {
+            Button("Save") {
+                saveSite()
+            }
+            .disabled(!canSave)
+
+            Button("Discard Changes", role: .destructive) {
+                completeCancellation()
+            }
+
+            Button("Continue Editing", role: .cancel) { }
+        } message: {
+            Text("Save this site before leaving, or discard the information entered on this page.")
+        }
+    }
+
+    private var hasUnsavedChanges: Bool {
+        selectedCustomerNumber != (preselectedCustomerNumber ?? "") ||
+        !siteName.isEmpty ||
+        !serviceAddress.isEmpty ||
+        !selectedPropertyType.isEmpty ||
+        !newPropertyType.isEmpty ||
+        !accessNotes.isEmpty ||
+        !workNotes.isEmpty
     }
 
     private var availablePropertyTypes: [String] {
@@ -164,6 +190,15 @@ struct SiteNewView: View {
     }
 
     private func cancel() {
+        isInputFocused = false
+        if hasUnsavedChanges {
+            showingUnsavedChangesAlert = true
+        } else {
+            completeCancellation()
+        }
+    }
+
+    private func completeCancellation() {
         if let onCancel {
             onCancel()
         } else {

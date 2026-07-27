@@ -12,8 +12,15 @@ struct CustomerDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State var customer: Customer
+    private let originalCustomer: Customer
     @State private var showingNewSite = false
+    @State private var showingUnsavedChangesAlert = false
     @FocusState private var isInputFocused: Bool
+
+    init(customer: Customer) {
+        originalCustomer = customer
+        _customer = State(initialValue: customer)
+    }
 
     private var associatedSites: [CustomerSite] {
         store.sites(for: customer.customerNumber).sorted {
@@ -136,7 +143,9 @@ struct CustomerDetailView: View {
                 }
             }
         }
+        .scrollDismissesKeyboard(.interactively)
         .navigationTitle("Edit Customer")
+        .navigationBarBackButtonHidden(true)
         .sheet(isPresented: $showingNewSite) {
             NavigationStack {
                 SiteNewView(
@@ -148,25 +157,68 @@ struct CustomerDetailView: View {
             .environmentObject(store)
         }
         .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Save") {
-                    isInputFocused = false
-                    store.updateCustomer(customer)
-                    dismiss()
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    requestDismissal()
+                } label: {
+                    Label("Back", systemImage: "chevron.left")
                 }
             }
 
-            if isInputFocused {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        isInputFocused = false
-                    } label: {
-                        Image(systemName: "keyboard.chevron.compact.down")
-                    }
-                    .accessibilityLabel("Dismiss Keyboard")
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    saveChanges()
+                }
+            }
+
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    isInputFocused = false
                 }
             }
         }
+        .alert(
+            "Unsaved Changes",
+            isPresented: $showingUnsavedChangesAlert
+        ) {
+            Button("Save Changes") {
+                saveChanges()
+            }
+
+            Button("Discard Changes", role: .destructive) {
+                dismiss()
+            }
+
+            Button("Continue Editing", role: .cancel) { }
+        } message: {
+            Text("This customer has changes that have not been saved.")
+        }
+    }
+
+    private var hasUnsavedChanges: Bool {
+        encodedCustomer(customer) != encodedCustomer(originalCustomer)
+    }
+
+    private func saveChanges() {
+        isInputFocused = false
+        store.updateCustomer(customer)
+        dismiss()
+    }
+
+    private func requestDismissal() {
+        isInputFocused = false
+        if hasUnsavedChanges {
+            showingUnsavedChangesAlert = true
+        } else {
+            dismiss()
+        }
+    }
+
+    private func encodedCustomer(_ customer: Customer) -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(customer)
     }
 
     private func siteDisplayName(_ site: CustomerSite) -> String {

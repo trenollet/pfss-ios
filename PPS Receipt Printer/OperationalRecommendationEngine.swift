@@ -39,11 +39,20 @@ struct OperationalRecommendationEngine {
             .filter(\.isSelectable)
             .sorted(by: candidateOrder)
 
-        let rankedByEmployeeID = Dictionary(
-            uniqueKeysWithValues: selectable.enumerated().map {
-                ($0.element.employeeID, $0.offset + 1)
+        var rankedByEmployeeID: [UUID: Int] = [:]
+        var previous: OperationalRecommendationCandidate?
+        var currentRank = 0
+        for (index, candidate) in selectable.enumerated() {
+            if let previous,
+               abs(candidate.score - previous.score) <= 0.5 {
+                // Keep the same rank when evidence cannot meaningfully
+                // distinguish two candidates.
+            } else {
+                currentRank = index + 1
             }
-        )
+            rankedByEmployeeID[candidate.employeeID] = currentRank
+            previous = candidate
+        }
 
         let ranked = evaluated
             .map { candidate in
