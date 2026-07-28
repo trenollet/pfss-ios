@@ -180,7 +180,7 @@ struct EmployeeDailyJobsView: View {
                         .font(.title3)
                         .fontWeight(.semibold)
 
-                    Text(employee.role.rawValue)
+                    Text(employee.roleDisplayText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

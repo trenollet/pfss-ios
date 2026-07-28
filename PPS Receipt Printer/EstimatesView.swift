@@ -1,274 +1,201 @@
-//
-//  EstimatesView.swift
-//  PPS Receipt Printer
-//
-//  Created by Timothy Renollet on 6/24/26.
-//
-
 import SwiftUI
 
-struct EstimatesView: View {
-    @EnvironmentObject var store: AppDataStore
-
-    @State private var selectedLeadNumber = ""
-    @State private var selectedCustomerNumber = ""
-    @State private var selectedSiteID: UUID?
-
-    @State private var lineItems: [ServiceLineItem] = []
-    @State private var discount = ""
-
-    @State private var salesperson = ""
-    @State private var status: EstimateRecordStatus = .draft
-    @State private var expirationDate = Calendar.current.date(byAdding: .day, value: 30, to: Date()) ?? Date()
+struct EstimateRecordsListView: View {
+    @EnvironmentObject private var store: AppDataStore
+    let statuses: Set<EstimateRecordStatus>?
+    let title: String
     @State private var showArchived = false
+    @State private var showingNewEstimate = false
+    @State private var searchText: String
+    @State private var showingFilters = false
+    @State private var selectedStatus: EstimateRecordStatus?
+    @State private var dateFilter: RecordDateFilter = .all
+    @State private var sortOrder: RecordListSortOrder = .dateDescending
 
-    @FocusState private var isInputFocused: Bool
-    @State private var activeSheet: ActiveSheet?
+    init(
+        statuses: Set<EstimateRecordStatus>? = nil,
+        title: String = "All Estimates",
+        initialSearchText: String = ""
+    ) {
+        self.statuses = statuses
+        self.title = title
+        _searchText = State(initialValue: initialSearchText)
+    }
 
-    private enum ActiveSheet: Identifiable {
-        case catalogPicker
-        case editLineItem(ServiceLineItem)
-
-        var id: String {
-            switch self {
-            case .catalogPicker:
-                return "catalogPicker"
-
-            case .editLineItem(let item):
-                return "editLineItem-\(item.id)"
+    private var filteredEstimates: [EstimateRecord] {
+        let lifecycleSource = showArchived ? store.archivedEstimates : store.activeEstimates
+        let source = statuses.map { accepted in
+            lifecycleSource.filter { accepted.contains($0.status) }
+        } ?? lifecycleSource
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let searched = query.isEmpty ? source : source.filter { estimate in
+            estimate.estimateNumber.localizedCaseInsensitiveContains(query) ||
+            estimate.leadNumber.localizedCaseInsensitiveContains(query) ||
+            estimate.customerNumber.localizedCaseInsensitiveContains(query) ||
+            recipientDisplayName(for: estimate).localizedCaseInsensitiveContains(query) ||
+            siteDisplayName(for: estimate.siteID).localizedCaseInsensitiveContains(query) ||
+            estimate.status.rawValue.localizedCaseInsensitiveContains(query) ||
+            estimate.salesperson.localizedCaseInsensitiveContains(query) ||
+            estimate.serviceDetails.localizedCaseInsensitiveContains(query)
+        }
+        let statusFiltered = selectedStatus.map { status in
+            searched.filter { $0.status == status }
+        } ?? searched
+        let dateFiltered = statusFiltered.filter {
+            dateFilter.includes($0.createdDate)
+        }
+        return dateFiltered.sorted { first, second in
+            switch sortOrder {
+            case .dateAscending: return first.createdDate < second.createdDate
+            case .dateDescending: return first.createdDate > second.createdDate
+            case .nameAscending:
+                return recipientDisplayName(for: first)
+                    .localizedCaseInsensitiveCompare(
+                        recipientDisplayName(for: second)
+                    ) == .orderedAscending
             }
         }
-    }
-
-    private var subtotalValue: Double {
-        PricingCalculator.subtotal(for: lineItems)
-    }
-
-    private var discountValue: Double {
-        Double(discount) ?? 0
-    }
-
-    private var totalValue: Double {
-        PricingCalculator.total(for: lineItems, discount: discountValue)
-    }
-
-    private var availableSites: [CustomerSite] {
-        store.activeSites.filter { $0.customerNumber == selectedCustomerNumber }
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("New Estimate") {
-                    Picker("Lead", selection: $selectedLeadNumber) {
-                        Text("None").tag("")
-                        ForEach(store.activeLeads) { lead in
-                            Text("\(lead.leadNumber) - \(leadName(lead))")
-                                .tag(lead.leadNumber)
-                        }
-                    }
-
-                    Picker("Customer", selection: $selectedCustomerNumber) {
-                        Text("Select Customer").tag("")
-                        ForEach(store.activeCustomers) { customer in
-                            Text(customerName(customer))
-                                .tag(customer.customerNumber)
-                        }
-                    }
-
-                    Picker("Site", selection: $selectedSiteID) {
-                        Text("Select Site").tag(UUID?.none)
-                        ForEach(availableSites) { site in
-                            Text(site.siteName.isEmpty ? site.serviceAddress : site.siteName)
-                                .tag(Optional(site.id))
-                        }
-                    }
-
-                    TextField("Salesperson", text: $salesperson)
-                        .focused($isInputFocused)
-
-                    Picker("Status", selection: $status) {
-                        ForEach(EstimateRecordStatus.allCases) { status in
-                            Text(status.rawValue).tag(status)
-                        }
-                    }
-
-                    DatePicker("Expiration Date", selection: $expirationDate, displayedComponents: .date)
-                }
-
-                WorkOrderEditorView(
-                    lineItems: $lineItems,
-                    isInputFocused: $isInputFocused,
-                    onAddLineItem: {
-                        PresentationDebug.log("New estimate requested catalog picker")
-                        activeSheet = .catalogPicker
-                    },
-                    onEditLineItem: { item in
-                        PresentationDebug.log(
-                            "New estimate requested editor for \(item.id)"
-                        )
-                        activeSheet = .editLineItem(item)
-                    }
-                )
-
-                Section("Pricing") {
-                    TextField("Discount", text: $discount)
-                        .keyboardType(.decimalPad)
-                        .focused($isInputFocused)
-
-                    HStack {
-                        Text("Subtotal")
-                        Spacer()
-                        Text(subtotalValue, format: .currency(code: "USD"))
-                            .bold()
-                    }
-
-                    HStack {
-                        Text("Total")
-                        Spacer()
-                        Text(totalValue, format: .currency(code: "USD"))
-                            .bold()
-                    }
-                }
-
-                Section {
-                    Button("Add Estimate") {
-                        isInputFocused = false
-                        addEstimate()
-                    }
-                    .disabled(selectedCustomerNumber.isEmpty || lineItems.isEmpty)
-                }
-
-                Section("Estimates") {
-                    Toggle("Show Archived", isOn: $showArchived)
-
-                    ForEach(showArchived ? store.archivedEstimates : store.activeEstimates) { estimate in
-                        NavigationLink {
-                            EstimateDetailView(estimate: estimate)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(estimate.estimateNumber)
-                                    .font(.headline)
-
-                                Text("Customer: \(customerDisplayName(for: estimate.customerNumber))")
+        List {
+            Section {
+                Button("Add New Estimate") { showingNewEstimate = true }
+                Toggle("Show Archived", isOn: $showArchived)
+            }
+            Section("Estimates") {
+                ForEach(filteredEstimates) { estimate in
+                    NavigationLink { EstimateDetailView(estimate: estimate) } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(recipientDisplayName(for: estimate))
+                                .font(.headline)
+                                .fontWeight(.bold)
+                            if estimate.customerNumber.isEmpty,
+                               !estimate.leadNumber.isEmpty {
+                                Text("Lead: \(estimate.leadNumber)")
                                     .font(.caption)
-
-                                Text("Total: \(estimate.total, format: .currency(code: "USD"))")
-                                    .font(.caption)
-
-                                Text("Status: \(estimate.status.rawValue)")
-                                    .font(.caption)
-
-                                if estimate.lifecycleStatus == .archived {
-                                    Text("Archived")
-                                        .foregroundStyle(.red)
-                                        .font(.caption)
-                                }
+                                    .foregroundStyle(.secondary)
                             }
-                            .padding(.vertical, 4)
+                            Text("Estimate: \(estimate.estimateNumber)").font(.caption)
+                            Text("Site: \(siteDisplayName(for: estimate.siteID))").font(.caption)
+                            Text("Total: \(estimate.total, format: .currency(code: "USD"))").font(.caption)
+                            Text("Status: \(estimate.status.rawValue)").font(.caption)
+                            Text("Sales Rep: \(estimate.salesperson.isEmpty ? "Unassigned" : estimate.salesperson)")
+                                .font(.caption)
+                            if estimate.lifecycleStatus == .archived {
+                                Text("Archived").foregroundStyle(.red).font(.caption)
+                            }
+                        }.padding(.vertical, 4)
+                    }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        if estimate.lifecycleStatus != .archived {
+                            Button(role: .destructive) {
+                                store.archiveEstimate(estimate)
+                            } label: {
+                                Label("Archive", systemImage: "archivebox.fill")
+                            }
                         }
                     }
                 }
             }
-            .navigationTitle("Estimates")
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") {
-                        isInputFocused = false
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "Search estimates")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showingFilters = true } label: {
+                    Label(
+                        "Filter",
+                        systemImage: hasActiveFilters
+                            ? "line.3.horizontal.decrease.circle.fill"
+                            : "line.3.horizontal.decrease.circle"
+                    )
+                }
+            }
+        }
+        .sheet(isPresented: $showingFilters) {
+            NavigationStack {
+                Form {
+                    Picker("Date", selection: $dateFilter) {
+                        ForEach(RecordDateFilter.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Picker("Status", selection: $selectedStatus) {
+                        Text("All Statuses").tag(EstimateRecordStatus?.none)
+                        ForEach(EstimateRecordStatus.allCases) { Text($0.rawValue).tag(Optional($0)) }
+                    }
+                    Picker("Order", selection: $sortOrder) {
+                        ForEach(RecordListSortOrder.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                }
+                .navigationTitle("Filter Estimates")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Reset") {
+                            selectedStatus = nil
+                            dateFilter = .all
+                            sortOrder = .dateDescending
+                        }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showingFilters = false }
                     }
                 }
             }
-            .sheet(item: $activeSheet) { sheet in
-                switch sheet {
-                case .catalogPicker:
-                    ServiceCatalogPickerView(
-                        lineItems: $lineItems,
-                        onFinished: {
-                            activeSheet = nil
-                        }
-                    )
-                    .environmentObject(store)
-
-                case .editLineItem(let item):
-                    EditableLineItemView(
-                        lineItems: $lineItems,
-                        catalogItem: nil,
-                        existingLineItem: item
-                    )
-                    .environmentObject(store)
-                }
+        }
+        .sheet(isPresented: $showingNewEstimate) {
+            NavigationStack {
+                EstimateNewView().environmentObject(store)
             }
         }
     }
 
-    private func addEstimate() {
-        let firstItem = lineItems.first
-
-        let estimate = EstimateRecord(
-            estimateNumber: store.generateEstimateNumber(),
-            leadNumber: selectedLeadNumber,
-            customerNumber: selectedCustomerNumber,
-            siteID: selectedSiteID,
-            serviceType: firstItem?.serviceType ?? .other,
-            otherService: firstItem?.otherService ?? "",
-            serviceDetails: lineItems.map { item in
-                item.description.isEmpty ? serviceName(for: item) : item.description
-            }.joined(separator: "\n"),
-            lineItems: lineItems,
-            subtotal: subtotalValue,
-            discount: discountValue,
-            total: totalValue,
-            salesperson: salesperson,
-            status: status,
-            createdDate: Date(),
-            expirationDate: expirationDate
-        )
-
-        store.addEstimate(estimate)
-
-        selectedLeadNumber = ""
-        selectedCustomerNumber = ""
-        selectedSiteID = nil
-        lineItems = []
-        discount = ""
-        salesperson = ""
-        status = .draft
-        expirationDate = Calendar.current.date(byAdding: .day, value: 30, to: Date()) ?? Date()
+    private var hasActiveFilters: Bool {
+        selectedStatus != nil || dateFilter != .all || sortOrder != .dateDescending
     }
 
-    private func customerName(_ customer: Customer) -> String {
-        let name = customer.businessName.isEmpty ? customer.contactName : customer.businessName
-        return "\(name) - \(customer.customerNumber)"
-    }
-
-    private func leadName(_ lead: Lead) -> String {
-        if !lead.businessName.isEmpty { return lead.businessName }
-        if !lead.contactName.isEmpty { return lead.contactName }
-        return "Unnamed Lead"
-    }
     private func customerDisplayName(for customerNumber: String) -> String {
-        guard let customer = store.customers.first(where: {
-            $0.customerNumber == customerNumber
-        }) else {
+        guard let customer = store.customers.first(where: { $0.customerNumber == customerNumber }) else {
             return customerNumber
         }
-
-        if !customer.businessName.isEmpty {
-            return customer.businessName
-        }
-
-        if !customer.contactName.isEmpty {
-            return customer.contactName
-        }
-
+        if !customer.businessName.isEmpty { return customer.businessName }
+        if !customer.contactName.isEmpty { return customer.contactName }
         return customerNumber
     }
-    private func serviceName(for item: ServiceLineItem) -> String {
-        if item.serviceType == .other {
-            return item.otherService.isEmpty ? "Other" : item.otherService
+
+    private func recipientDisplayName(for estimate: EstimateRecord) -> String {
+        if !estimate.customerNumber.isEmpty,
+           store.customers.contains(where: {
+               $0.customerNumber == estimate.customerNumber
+           }) {
+            return customerDisplayName(for: estimate.customerNumber)
         }
 
-        return item.serviceType.rawValue
+        if !estimate.leadNumber.isEmpty,
+           let lead = store.leads.first(where: {
+               $0.leadNumber == estimate.leadNumber
+           }) {
+            if !lead.businessName.isEmpty { return lead.businessName }
+            if !lead.contactName.isEmpty { return lead.contactName }
+            return lead.leadNumber
+        }
+
+        if !estimate.customerNumber.isEmpty {
+            return estimate.customerNumber
+        }
+        if !estimate.leadNumber.isEmpty { return estimate.leadNumber }
+        return "Unknown recipient"
+    }
+
+    private func siteDisplayName(for siteID: UUID?) -> String {
+        guard let siteID,
+              let site = store.sites.first(where: { $0.id == siteID }) else {
+            return "No site selected"
+        }
+
+        if site.siteName.isEmpty { return site.serviceAddress }
+        if site.serviceAddress.isEmpty { return site.siteName }
+        return "\(site.siteName) — \(site.serviceAddress)"
     }
 }

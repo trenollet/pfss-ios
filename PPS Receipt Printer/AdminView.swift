@@ -8,9 +8,20 @@
 import SwiftUI
 
 struct AdminView: View {
+    private var appVersion: String {
+        Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "Unknown"
+    }
+
+    private var buildNumber: String {
+        Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleVersion"
+        ) as? String ?? "Unknown"
+    }
+
     var body: some View {
-        NavigationStack {
-            List {
+        List {
                 Section("Business") {
                     NavigationLink {
                         BusinessProfileView()
@@ -32,6 +43,15 @@ struct AdminView: View {
 
                 Section("Reports") {
                     NavigationLink {
+                        SitesView()
+                    } label: {
+                        Label(
+                            "Sites",
+                            systemImage: "house"
+                        )
+                    }
+
+                    NavigationLink {
                         JobHistoryReportView()
                     } label: {
                         Label(
@@ -51,23 +71,35 @@ struct AdminView: View {
                         )
                     }
                 }
+
+                Section("Catalog & Printing") {
+                    NavigationLink {
+                        ServiceCatalogView()
+                    } label: {
+                        Label("Catalog Items", systemImage: "square.grid.2x2")
+                    }
+
+                    NavigationLink {
+                        PrintView()
+                    } label: {
+                        Label("Print", systemImage: "printer")
+                    }
+                }
+
                 Section("Coming Soon") {
-                    
-
-                    Label(
-                        "Printer Settings",
-                        systemImage: "printer"
-                    )
-                    .foregroundStyle(.secondary)
-
                     Label(
                         "Data Management",
                         systemImage: "externaldrive"
                     )
                     .foregroundStyle(.secondary)
                 }
-            }
-            .navigationTitle("Admin")
+
+                Section("App Information") {
+                    LabeledContent("Version", value: appVersion)
+                    LabeledContent("Build", value: buildNumber)
+                }
         }
+        .navigationTitle("Admin")
+        .navigationBarTitleDisplayMode(.large)
     }
 }

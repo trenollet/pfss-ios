@@ -55,21 +55,31 @@ struct EditableLineItemView: View {
                         .lineLimit(2...5)
                         .focused($isInputFocused)
 
-                    TextField("Quantity", text: $quantity)
-                        .keyboardType(.decimalPad)
+                    LabeledContent("Quantity") {
+                        SelectAllTextField(
+                            placeholder: "1",
+                            text: $quantity
+                        )
+                        .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
+                    }
 
-                    TextField("Unit Price", text: $unitPrice)
-                        .keyboardType(.decimalPad)
+                    LabeledContent("Unit Price") {
+                        SelectAllTextField(
+                            placeholder: "0.00",
+                            text: $unitPrice
+                        )
+                        .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
+                    }
                     
                     LabeledContent("Estimated Minutes Per Unit") {
-                        TextField(
-                            "Minutes",
-                            text: $estimatedMinutesPerUnit
+                        SelectAllTextField(
+                            placeholder: "Minutes",
+                            text: $estimatedMinutesPerUnit,
+                            keyboardType: .numberPad
                         )
-                        .multilineTextAlignment(.trailing)
-                        .keyboardType(.numberPad)
+                        .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
                     }
 
@@ -81,13 +91,6 @@ struct EditableLineItemView: View {
                     }
                 }
 
-                Section {
-                    Button(isEditingExisting ? "Save Changes" : "Save Line Item") {
-                        saveLineItem()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(itemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
             }
             .navigationTitle(isEditingExisting ? "Edit Line Item" : "New Line Item")
             .onAppear {
@@ -100,10 +103,21 @@ struct EditableLineItemView: View {
                     }
                 }
 
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") {
-                        isInputFocused = false
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saveLineItem()
+                    }
+                    .disabled(itemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                if isInputFocused {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            isInputFocused = false
+                        } label: {
+                            Image(systemName: "keyboard.chevron.compact.down")
+                        }
+                        .accessibilityLabel("Dismiss Keyboard")
                     }
                 }
             }
@@ -165,6 +179,11 @@ struct EditableLineItemView: View {
             }
         }
 
+        // Close the complete add-item flow when the caller supplied a finish
+        // handler (for example New Job -> Choose Service -> New Line Item).
+        // This returns the user to the work order instead of exposing the
+        // catalog picker again after every saved item.
+        onFinished?()
         dismiss()
     }
 }

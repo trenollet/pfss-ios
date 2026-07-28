@@ -33,35 +33,26 @@ struct ServiceCatalogDetailView: View {
                     .focused($isInputFocused)
 
                 LabeledContent("Quantity") {
-                    TextField(
-                        "Quantity",
-                        value: $item.defaultQuantity,
-                        format: .number
+                    SelectAllDecimalField(
+                        placeholder: "Quantity",
+                        value: $item.defaultQuantity
                     )
-                    .multilineTextAlignment(.trailing)
-                    .keyboardType(.decimalPad)
                     .focused($isInputFocused)
                 }
 
                 LabeledContent("Price") {
-                    TextField(
-                        "Price",
-                        value: $item.defaultPrice,
-                        format: .currency(code: "USD")
+                    SelectAllDecimalField(
+                        placeholder: "Price",
+                        value: $item.defaultPrice
                     )
-                    .multilineTextAlignment(.trailing)
-                    .keyboardType(.decimalPad)
                     .focused($isInputFocused)
                 }
 
                 LabeledContent("Estimated Minutes Per Unit") {
-                    TextField(
-                        "Minutes",
-                        value: $item.estimatedMinutesPerUnit,
-                        format: .number
+                    SelectAllIntegerField(
+                        placeholder: "Minutes",
+                        value: $item.estimatedMinutesPerUnit
                     )
-                    .multilineTextAlignment(.trailing)
-                    .keyboardType(.numberPad)
                     .focused($isInputFocused)
                 }
 
@@ -87,33 +78,43 @@ struct ServiceCatalogDetailView: View {
             }
 
             Section {
-                Button("Save Changes") {
-                    isInputFocused = false
-                    store.updateServiceCatalogItem(item)
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-
                 if item.lifecycleStatus == .archived {
-                    Button("Restore Catalog Item") {
+                    Button {
                         store.restoreServiceCatalogItem(item)
                         dismiss()
+                    } label: {
+                        Label("Restore Catalog Item", systemImage: "arrow.uturn.backward.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button("Archive Catalog Item", role: .destructive) {
+                    Button(role: .destructive) {
                         store.archiveServiceCatalogItem(item)
                         dismiss()
+                    } label: {
+                        Label("Archive Catalog Item", systemImage: "archivebox.fill")
                     }
+                    .buttonStyle(.borderedProminent)
                 }
             }
         }
         .navigationTitle("Edit Catalog Item")
         .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
                     isInputFocused = false
+                    store.updateServiceCatalogItem(item)
+                    dismiss()
+                }
+            }
+
+            if isInputFocused {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isInputFocused = false
+                    } label: {
+                        Image(systemName: "keyboard.chevron.compact.down")
+                    }
+                    .accessibilityLabel("Dismiss Keyboard")
                 }
             }
         }

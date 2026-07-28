@@ -2,38 +2,121 @@
 //  DashboardView.swift
 //  PPS Receipt Printer
 //
-//  Created by Timothy Renollet on 6/24/26.
+//  Phase 15 Step 4.6 – Primary application navigation hub.
 //
 
 import SwiftUI
 
 struct DashboardView: View {
-    @EnvironmentObject var store: AppDataStore
+    @EnvironmentObject private var store: AppDataStore
+    @Binding var selectedSection: AppSection
+
+    private var todaysJobCount: Int {
+        store.activeJobs.filter {
+            Calendar.current.isDate($0.scheduledDate, inSameDayAs: Date())
+        }.count
+    }
+
+    private var dispatchQueueCount: Int {
+        store.assignmentEngine.unassignedAssignments.count
+    }
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("Sales") {
-                    statRow("Customers", "\(store.customers.count)")
-                    statRow("Sites", "\(store.sites.count)")
-                    statRow("New Leads", "\(store.customers.filter { $0.estimateStatus == .newLead }.count)")
-                    statRow("Approved", "\(store.customers.filter { $0.estimateStatus == .approved }.count)")
+            ScrollView {
+                CustomizableTileGrid(
+                    storageKey: "pfss.tile-layout.dashboard.v1",
+                    defaultTileIDs: [
+                        "sales", "service", "myDay", "operations", "admin"
+                    ]
+                ) { tileID in
+                    switch tileID {
+                    case "sales":
+                        dashboardTile(
+                            title: "Sales",
+                            value: "\(store.activeLeads.count + store.activeEstimates.count)",
+                            icon: "chart.line.uptrend.xyaxis",
+                            subtitle: "Leads and estimates",
+                            color: .blue,
+                            section: .sales
+                        )
+                    case "service":
+                        dashboardTile(
+                            title: "Service",
+                            value: "\(store.activeJobs.count)",
+                            icon: "wrench.and.screwdriver.fill",
+                            subtitle: "Jobs and customers",
+                            color: .orange,
+                            section: .service
+                        )
+                    case "myDay":
+                    dashboardTile(
+                        title: "My Day",
+                        value: "\(todaysJobCount)",
+                        icon: "calendar.day.timeline.left",
+                        subtitle: "Today's technician work",
+                        color: .cyan,
+                        section: .myDay
+                    )
+                    case "operations":
+                        NavigationLink {
+                            OperationsView()
+                        } label: {
+                            DashboardStatCard(
+                                title: "Operations",
+                                value: "\(dispatchQueueCount)",
+                                icon: "person.3.sequence.fill",
+                                subtitle: "Awaiting dispatch",
+                                accentColor: .purple,
+                                trend: .neutral,
+                                navigationIndicator: true
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Opens Operations")
+                    case "admin":
+                        dashboardTile(
+                            title: "Admin",
+                            value: "Manage",
+                            icon: "gearshape.2.fill",
+                            subtitle: "Business settings",
+                            color: .gray,
+                            section: .admin
+                        )
+                    default:
+                        EmptyView()
+                    }
                 }
-
-                Section("Next Steps") {
-                    Text("Add customers, add work sites, then create printable estimates, invoices, and receipts.")
-                }
+                .padding()
             }
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("Dashboard")
+            .navigationBarTitleDisplayMode(.large)
         }
     }
 
-    private func statRow(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label)
-            Spacer()
-            Text(value).bold()
+    private func dashboardTile(
+        title: String,
+        value: String,
+        icon: String,
+        subtitle: String,
+        color: Color,
+        section: AppSection
+    ) -> some View {
+        Button {
+            selectedSection = section
+        } label: {
+            DashboardStatCard(
+                title: title,
+                value: value,
+                icon: icon,
+                subtitle: subtitle,
+                accentColor: color,
+                trend: .neutral,
+                navigationIndicator: true
+            )
         }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens \(title)")
     }
 }
-

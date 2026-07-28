@@ -22,6 +22,7 @@ struct DashboardStatCard: View {
     var subtitle: String? = nil
     var accentColor: Color = .blue
     var trend: Trend = .neutral
+    var navigationIndicator = false
 
     private var trendIcon: String {
         switch trend {
@@ -57,9 +58,17 @@ struct DashboardStatCard: View {
 
                 Spacer()
 
-                Image(systemName: trendIcon)
-                    .foregroundStyle(trendColor)
-                    .font(.caption)
+                Image(
+                    systemName: navigationIndicator
+                        ? "chevron.right.circle.fill"
+                        : trendIcon
+                )
+                .foregroundStyle(
+                    navigationIndicator
+                        ? accentColor
+                        : trendColor
+                )
+                .font(.caption)
             }
 
             Text(value)

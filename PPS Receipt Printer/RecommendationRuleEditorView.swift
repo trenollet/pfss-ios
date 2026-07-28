@@ -57,14 +57,6 @@ struct RecommendationRuleEditorView: View {
                     .lineLimit(2...5)
             }
             
-            Section {
-                Button("Save Recommendation Rule") {
-                    saveRule()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(selectedTriggerID == nil || selectedRecommendedIDs.isEmpty)
-            }
-            
             Section("Existing Rules") {
                 ForEach(store.recommendationRules) { rule in
                     VStack(alignment: .leading, spacing: 4) {
@@ -86,6 +78,14 @@ struct RecommendationRuleEditorView: View {
             }
         }
         .navigationTitle("Recommendation Rules")
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    saveRule()
+                }
+                .disabled(selectedTriggerID == nil || selectedRecommendedIDs.isEmpty)
+            }
+        }
     }
     
     private func saveRule() {

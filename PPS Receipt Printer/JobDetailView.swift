@@ -8,10 +8,12 @@
 import SwiftUI
 
 struct JobDetailView: View {
-    private let showWorkflow = false
-    private let showTimeline = false
+    private let showServiceDetails = false
     private let showCapacity = false
-    private let showWorkOrder = false
+    // Field technicians may add requested work to the existing Job while on
+    // site. The same work-order editor is reused so pricing and labor duration
+    // remain consistent with office-created line items.
+    private let showWorkOrder = true
 
     @EnvironmentObject var store: AppDataStore
     @Environment(\.dismiss) private var dismiss
@@ -26,6 +28,8 @@ struct JobDetailView: View {
     @State private var scheduledDurationMinutes = 0
     @State private var technicianNoteDraft = ""
     @State private var presentedInvoice: InvoiceRecord?
+    @State private var showingRecurrencePicker = false
+    @State private var timelineCorrectionEvent: JobTimelineEvent?
     
     private enum ActiveSheet: Identifiable {
         case catalogPicker
@@ -63,6 +67,30 @@ struct JobDetailView: View {
     
     private var hasScheduledDurationOverride: Bool {
         enteredScheduledDurationMinutes > 0
+    }
+
+    private var arrivalWindowEndBinding: Binding<Date> {
+        Binding(
+            get: {
+                job.arrivalWindowEnd ?? Calendar.current.date(
+                    byAdding: .hour,
+                    value: 2,
+                    to: job.scheduledDate
+                ) ?? job.scheduledDate
+            },
+            set: { job.arrivalWindowEnd = $0 }
+        )
+    }
+
+    private var completionDeadlineBinding: Binding<Date> {
+        Binding(
+            get: {
+                job.completionDeadline ?? QuarterHourDatePicker.normalized(
+                    job.scheduledDate
+                )
+            },
+            set: { job.completionDeadline = $0 }
+        )
     }
     private var assignableEmployees: [EmployeeRecord] {
         store.activeEmployees.sorted {
@@ -115,65 +143,30 @@ struct JobDetailView: View {
     }
 
     private var workflowContext: JobWorkflowContext {
-        store.workflowContext(for: job.id)
-        ?? FieldOperationsEngine().context(for: storedJob)
-    }
-
-    private var jobLogEvents: [JobTimelineEvent] {
-        job.timelineEvents.sorted {
-            $0.timestamp > $1.timestamp
-        }
+        workflowCoordinator().workflowContext(for: storedJob)
     }
 
     private var selectedTechnicianID: UUID? {
         UUID(uuidString: selectedTechnicianIDString)
     }
 
-    private var linkedInvoice: InvoiceRecord? {
-        store.invoice(for: storedJob)
-    }
-
-    private var primaryActionTitle: String {
-        if linkedInvoice != nil {
-            return "Invoice Complete"
-        }
-
-        switch storedJob.status {
-        case .toBeScheduled, .scheduled, .assigned:
-            return "Start Setup"
-        case .inProgress:
-            return storedJob.workflowState == .settingUp
-                ? "Start Job"
-                : "Complete Job"
-        case .completed:
-            return "Create Invoice"
-        case .cancelled:
-            return "Job Cancelled"
+    private var timelineCorrectionActor: EmployeeRecord? {
+        guard let selectedTechnicianID else { return nil }
+        return store.employees.first {
+            $0.id == selectedTechnicianID && $0.canOverrideScheduling
         }
     }
 
-    private var primaryActionSystemImage: String {
-        if linkedInvoice != nil {
-            return "doc.text.magnifyingglass"
-        }
-
-        switch storedJob.status {
-        case .toBeScheduled, .scheduled, .assigned:
-            return "wrench.and.screwdriver.fill"
-        case .inProgress:
-            return storedJob.workflowState == .settingUp
-                ? "play.fill"
-                : "checkmark.circle.fill"
-        case .completed:
-            return "doc.text.fill"
-        case .cancelled:
-            return "xmark.circle.fill"
-        }
+    @MainActor
+    private func workflowCoordinator() -> FieldOperationsWorkflowCoordinator {
+        FieldOperationsWorkflowCoordinator(store: store)
     }
 
-    private var isPrimaryActionDisabled: Bool {
-        storedJob.status == .cancelled ||
-        storedJob.lifecycleStatus == .archived
+    private var availableSites: [CustomerSite] {
+        store.sites.filter {
+            $0.customerNumber == job.customerNumber &&
+            ($0.lifecycleStatus == .active || $0.id == job.siteID)
+        }
     }
     
     var body: some View {
@@ -183,6 +176,13 @@ struct JobDetailView: View {
                     .font(.headline)
                 
                 Text("Customer #: \(job.customerNumber)")
+
+                Picker("Site", selection: $job.siteID) {
+                    Text("No site selected").tag(UUID?.none)
+                    ForEach(availableSites) { site in
+                        Text(siteDisplayName(site)).tag(Optional(site.id))
+                    }
+                }
                 
                 if !job.estimateNumber.isEmpty {
                     Text("Estimate: \(job.estimateNumber)")
@@ -190,19 +190,20 @@ struct JobDetailView: View {
                 
                 LabeledContent(
                     "Status",
-                    value: workflowContext.currentState.rawValue
+                    value: workflowContext.presentation.statusTitle
                 )
             }
 
-            Section("Job Log") {
-                if jobLogEvents.isEmpty {
-                    Text("No job activity has been recorded yet.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(jobLogEvents) { event in
-                        jobLogRow(event)
-                    }
-                }
+            Section("Job Timeline") {
+                JobTimelineView(
+                    events: workflowContext.timeline,
+                    employeeName: { employeeID in
+                        employeeName(for: employeeID)
+                    },
+                    onCorrect: timelineCorrectionActor == nil
+                        ? nil
+                        : { event in timelineCorrectionEvent = event }
+                )
 
                 TextField(
                     "Add a technician note",
@@ -258,25 +259,18 @@ struct JobDetailView: View {
                 .disabled(job.primaryTechnicianID == nil)
             }
 
-            if showWorkflow {
             Section("Field Workflow") {
                 JobWorkflowStatusCard(
-                    context: workflowContext
-                ) {
-                    performPrimaryWorkflowAction()
-                }
+                    context: workflowContext,
+                    action: {
+                        performPrimaryWorkflowAction()
+                    },
+                    performAction: { action in
+                        performWorkflowAction(action)
+                    }
+                )
             }
-
-            }
-            if showTimeline {
-            Section("Job Timeline") {
-                JobTimelineView(
-                    events: workflowContext.timeline
-                ) { employeeID in
-                    employeeName(for: employeeID)
-                }
-            }
-            
+            if showServiceDetails {
             Section("Service") {
                 Picker("Service Type", selection: $job.serviceType) {
                     ForEach(ServiceType.allCases) { service in
@@ -339,9 +333,13 @@ struct JobDetailView: View {
             
             }
             Section("Pricing") {
-                TextField("Discount", value: $job.discount, format: .number)
-                    .keyboardType(.decimalPad)
+                LabeledContent("Discount") {
+                    SelectAllDecimalField(
+                        placeholder: "Discount",
+                        value: $job.discount
+                    )
                     .focused($isInputFocused)
+                }
                 
                 HStack {
                     Text("Subtotal")
@@ -359,7 +357,23 @@ struct JobDetailView: View {
             }
             
             Section("Schedule") {
-                DatePicker("Scheduled Date", selection: $job.scheduledDate, displayedComponents: [.date, .hourAndMinute])
+                Picker(
+                    "Scheduling Mode",
+                    selection: $job.assignmentSchedulingMode
+                ) {
+                    ForEach(AssignmentSchedulingMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+
+                schedulingControls
+
+                Picker("Priority", selection: $job.assignmentPriority) {
+                    ForEach(AssignmentPriority.allCases) { priority in
+                        Text(priority.rawValue).tag(priority)
+                    }
+                }
+
                 HStack {
                     Text("Estimated Labor")
                     Spacer()
@@ -441,6 +455,17 @@ struct JobDetailView: View {
             }
             
             Toggle("Recurring Job", isOn: $job.isRecurring)
+
+            if job.isRecurring {
+                Button {
+                    showingRecurrencePicker = true
+                } label: {
+                    LabeledContent(
+                        "Frequency",
+                        value: job.recurrenceFrequency?.rawValue ?? "Select"
+                    )
+                }
+            }
             
             if job.completedDate != nil {
                 DatePicker(
@@ -454,37 +479,23 @@ struct JobDetailView: View {
             }
             
             
-            Section("Next Step") {
-                Button {
-                    performGuidedPrimaryAction()
-                } label: {
-                    Label(
-                        primaryActionTitle,
-                        systemImage: primaryActionSystemImage
-                    )
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isPrimaryActionDisabled)
-            }
-
             Section {
-                Button("Save Changes") {
-                    saveJobChanges(shouldDismiss: true)
-                }
-                .buttonStyle(.borderedProminent)
-                
                 if job.lifecycleStatus == .archived {
-                    Button("Restore Job") {
+                    Button {
                         store.restoreJob(job)
                         dismiss()
+                    } label: {
+                        Label("Restore Job", systemImage: "arrow.uturn.backward.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button("Archive Job", role: .destructive) {
+                    Button(role: .destructive) {
                         store.archiveJob(job)
                         dismiss()
+                    } label: {
+                        Label("Archive Job", systemImage: "archivebox.fill")
                     }
+                    .buttonStyle(.borderedProminent)
                 }
             }
         }
@@ -506,8 +517,37 @@ struct JobDetailView: View {
                 to: remainingMinutes
             )
         }
+        .onChange(of: job.isRecurring) {
+            if job.isRecurring {
+                showingRecurrencePicker = true
+            } else {
+                job.recurrenceFrequency = nil
+            }
+        }
+        .onChange(of: job.assignmentSchedulingMode) {
+            prepareSchedulingFields(for: job.assignmentSchedulingMode)
+        }
         .scrollDismissesKeyboard(.interactively)
         .navigationTitle("Edit Job")
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    saveJobChanges(shouldDismiss: true)
+                }
+                .disabled(job.isRecurring && job.recurrenceFrequency == nil)
+            }
+
+            if isInputFocused {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isInputFocused = false
+                    } label: {
+                        Image(systemName: "keyboard.chevron.compact.down")
+                    }
+                    .accessibilityLabel("Dismiss Keyboard")
+                }
+            }
+        }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .catalogPicker:
@@ -530,9 +570,121 @@ struct JobDetailView: View {
         }
         .sheet(item: $presentedInvoice) { invoice in
             NavigationStack {
-                InvoiceDetailView(invoice: invoice)
+                InvoiceDetailView(
+                    invoice: invoice,
+                    showsDismissButton: true
+                )
                     .environmentObject(store)
             }
+        }
+        .sheet(isPresented: $showingRecurrencePicker) {
+            JobRecurrencePickerView(selection: $job.recurrenceFrequency)
+        }
+        .sheet(item: $timelineCorrectionEvent) { event in
+            if let actor = timelineCorrectionActor {
+                TimelineCorrectionEditorView(
+                    event: event,
+                    actorName: actor.displayName
+                ) { correctedTimestamp, reason in
+                    let saved = store.correctTimelineTimestamp(
+                        jobID: job.id,
+                        eventID: event.id,
+                        correctedTimestamp: correctedTimestamp,
+                        reason: reason,
+                        actorEmployeeID: actor.id
+                    )
+                    if saved != nil {
+                        refreshJobFromStore()
+                    }
+                    return saved != nil
+                }
+            }
+        }
+    }
+
+    private func siteDisplayName(_ site: CustomerSite) -> String {
+        if site.siteName.isEmpty { return site.serviceAddress }
+        if site.serviceAddress.isEmpty { return site.siteName }
+        return "\(site.siteName) — \(site.serviceAddress)"
+    }
+
+    @ViewBuilder
+    private var schedulingControls: some View {
+        switch job.assignmentSchedulingMode {
+        case .fixedTime:
+            QuarterHourDatePicker(
+                selection: $job.scheduledDate,
+                dateLabel: "Service Date",
+                timeLabel: "Fixed Start"
+            )
+
+        case .arrivalWindow:
+            QuarterHourDatePicker(
+                selection: $job.scheduledDate,
+                dateLabel: "Service Date",
+                timeLabel: "Earliest Arrival"
+            )
+            QuarterHourDatePicker(
+                selection: arrivalWindowEndBinding,
+                dateLabel: "Window End Date",
+                timeLabel: "Latest Arrival"
+            )
+
+        case .flexibleDay:
+            DatePicker(
+                "Service Date",
+                selection: $job.scheduledDate,
+                displayedComponents: .date
+            )
+
+        case .deadline:
+            QuarterHourDatePicker(
+                selection: completionDeadlineBinding,
+                dateLabel: "Deadline Date",
+                timeLabel: "Complete By"
+            )
+        }
+    }
+
+    private func prepareSchedulingFields(
+        for mode: AssignmentSchedulingMode
+    ) {
+        switch mode {
+        case .fixedTime:
+            job.scheduledDate = QuarterHourDatePicker.normalized(
+                job.scheduledDate
+            )
+            job.arrivalWindowEnd = nil
+            job.completionDeadline = nil
+
+        case .arrivalWindow:
+            job.scheduledDate = QuarterHourDatePicker.normalized(
+                job.scheduledDate
+            )
+            if job.arrivalWindowEnd == nil ||
+                job.arrivalWindowEnd! <= job.scheduledDate {
+                job.arrivalWindowEnd = Calendar.current.date(
+                    byAdding: .hour,
+                    value: 2,
+                    to: job.scheduledDate
+                )
+            }
+            job.completionDeadline = nil
+
+        case .flexibleDay:
+            job.scheduledDate = Calendar.current.startOfDay(
+                for: job.scheduledDate
+            )
+            job.arrivalWindowEnd = nil
+            job.completionDeadline = nil
+
+        case .deadline:
+            if job.completionDeadline == nil {
+                job.completionDeadline = QuarterHourDatePicker.normalized(
+                    job.scheduledDate
+                )
+            }
+            job.arrivalWindowEnd = nil
         }
     }
     @ViewBuilder
@@ -577,7 +729,7 @@ struct JobDetailView: View {
 
                 Spacer()
 
-                Text(employee.role.rawValue)
+                Text(employee.roleDisplayText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -664,6 +816,40 @@ struct JobDetailView: View {
     private func saveJobChanges(shouldDismiss: Bool) {
         isInputFocused = false
 
+        switch job.assignmentSchedulingMode {
+        case .fixedTime:
+            job.scheduledDate = QuarterHourDatePicker.normalized(
+                job.scheduledDate
+            )
+            job.arrivalWindowEnd = nil
+            job.completionDeadline = nil
+
+        case .arrivalWindow:
+            job.scheduledDate = QuarterHourDatePicker.normalized(
+                job.scheduledDate
+            )
+            job.arrivalWindowEnd = QuarterHourDatePicker.normalized(
+                arrivalWindowEndBinding.wrappedValue
+            )
+            job.completionDeadline = nil
+
+        case .flexibleDay:
+            job.scheduledDate = Calendar.current.startOfDay(
+                for: job.scheduledDate
+            )
+            job.arrivalWindowEnd = nil
+            job.completionDeadline = nil
+
+        case .deadline:
+            job.completionDeadline = QuarterHourDatePicker.normalized(
+                completionDeadlineBinding.wrappedValue
+            )
+            job.scheduledDate = Calendar.current.startOfDay(
+                for: job.completionDeadline ?? job.scheduledDate
+            )
+            job.arrivalWindowEnd = nil
+        }
+
         if job.status == .completed && job.completedDate == nil {
             job.completedDate = Date()
         }
@@ -693,73 +879,34 @@ struct JobDetailView: View {
         job = refreshed
     }
 
-    private func performGuidedPrimaryAction() {
-        saveJobChanges(shouldDismiss: false)
-
-        if let invoice = store.invoice(forJobID: job.id) {
-            presentedInvoice = invoice
-            return
-        }
-
-        switch storedJob.status {
-        case .toBeScheduled, .scheduled, .assigned:
-            guard store.startSetup(
-                jobID: job.id,
-                employeeID: job.primaryTechnicianID
-            ) else {
-                return
-            }
-            refreshJobFromStore()
-
-        case .inProgress:
-            if storedJob.workflowState == .settingUp {
-                guard store.startJob(
-                    jobID: job.id,
-                    employeeID: job.primaryTechnicianID
-                ) else {
-                    return
-                }
-            } else {
-                guard store.completeJob(
-                    jobID: job.id,
-                    employeeID: job.primaryTechnicianID
-                ) else {
-                    return
-                }
-            }
-            refreshJobFromStore()
-
-        case .completed:
-            guard let invoice = store.createInvoiceFromJob(job) else {
-                presentedInvoice = store.invoice(forJobID: job.id)
-                return
-            }
-
-            presentedInvoice = invoice
-            refreshJobFromStore()
-
-        case .cancelled:
-            return
-        }
+    private func performPrimaryWorkflowAction() {
+        performWorkflowAction(workflowContext.nextAction)
     }
 
-    private func performPrimaryWorkflowAction() {
-        let action = workflowContext.nextAction
+    private func performWorkflowAction(_ action: JobWorkflowAction) {
+        saveJobChanges(shouldDismiss: false)
 
-        if action == .viewDetails {
+        if action == .recordPayment,
+           let invoice = store.invoice(forJobID: job.id) {
+            presentedInvoice = invoice
             return
         }
 
-        _ = store.performWorkflowAction(
+        let succeeded = workflowCoordinator().performWorkflowAction(
             jobID: job.id,
             action: action,
             employeeID: job.primaryTechnicianID
         )
 
-        if let refreshed = store.jobs.first(where: {
-            $0.id == job.id
-        }) {
-            job = refreshed
+        guard succeeded else {
+            return
+        }
+
+        refreshJobFromStore()
+
+        if action == .createInvoice,
+           let invoice = store.invoice(forJobID: job.id) {
+            presentedInvoice = invoice
         }
     }
 
@@ -797,84 +944,6 @@ struct JobDetailView: View {
         job.timelineEvents.append(event)
         technicianNoteDraft = ""
         isInputFocused = false
-    }
-
-    @ViewBuilder
-    private func jobLogRow(
-        _ event: JobTimelineEvent
-    ) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: jobLogIcon(for: event.type))
-                .foregroundStyle(
-                    event.type == .note
-                        ? .blue
-                        : .secondary
-                )
-                .frame(width: 22)
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(event.title)
-                        .fontWeight(.semibold)
-
-                    Spacer()
-
-                    Text(
-                        event.timestamp.formatted(
-                            date: .abbreviated,
-                            time: .shortened
-                        )
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-
-                if let note = event.note,
-                   !note.isEmpty {
-                    Text(note)
-                }
-
-                if let author = employeeName(
-                    for: event.employeeID
-                ) {
-                    Text(author)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    private func jobLogIcon(
-        for type: JobTimelineEventType
-    ) -> String {
-        switch type {
-        case .note:
-            return "text.bubble.fill"
-        case .assigned:
-            return "person.crop.circle.badge.checkmark"
-        case .travelStarted:
-            return "car.fill"
-        case .arrived:
-            return "mappin.circle.fill"
-        case .setupStarted:
-            return "wrench.and.screwdriver.fill"
-        case .workStarted:
-            return "play.circle.fill"
-        case .packUpStarted:
-            return "shippingbox.fill"
-        case .workCompleted:
-            return "checkmark.circle.fill"
-        case .invoiceCreated:
-            return "doc.text.fill"
-        case .paymentReceived:
-            return "dollarsign.circle.fill"
-        case .jobCompleted:
-            return "checkmark.seal.fill"
-        case .cancelled:
-            return "xmark.circle.fill"
-        }
     }
 
     private func closestQuarterHour(

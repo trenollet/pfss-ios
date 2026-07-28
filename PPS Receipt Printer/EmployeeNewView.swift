@@ -15,8 +15,10 @@ struct EmployeeNewView: View {
     @State private var lastName = ""
     @State private var phone = ""
     @State private var email = ""
+    @State private var baseAddress = ""
 
-    @State private var role: EmployeeRole = .technician
+    @State private var roles: Set<EmployeeRole> = [.technician]
+    @State private var showingRoleSelection = false
 
     @State private var startTime =
         EmployeeNewView.dateFromMinutes(480)
@@ -31,6 +33,8 @@ struct EmployeeNewView: View {
 
     @State private var colorName = "blue"
     @State private var isActive = true
+    @State private var workforceProfile = WorkforceOperationalProfile()
+    @State private var showingUnsavedChangesAlert = false
 
     @FocusState private var isInputFocused: Bool
 
@@ -100,20 +104,40 @@ struct EmployeeNewView: View {
                     .autocorrectionDisabled()
                     .focused($isInputFocused)
 
-                    Picker(
-                        "Role",
-                        selection: $role
-                    ) {
-                        ForEach(EmployeeRole.allCases) { role in
-                            Text(role.rawValue)
-                                .tag(role)
+                    Button {
+                        showingRoleSelection = true
+                    } label: {
+                        LabeledContent("Roles") {
+                            HStack(spacing: 6) {
+                                Text(roleDisplayText)
+                                    .multilineTextAlignment(.trailing)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
                     }
+                    .foregroundStyle(.primary)
 
                     Toggle(
                         "Active Employee",
                         isOn: $isActive
                     )
+                }
+
+                Section {
+                    TextField(
+                        "Street, City, State ZIP",
+                        text: $baseAddress,
+                        axis: .vertical
+                    )
+                    .textContentType(.fullStreetAddress)
+                    .lineLimit(2...4)
+                    .focused($isInputFocused)
+                } header: {
+                    Text("Home / Base Address")
+                } footer: {
+                    Text("Used as the employee's route starting point when a current or previous-stop location is unavailable.")
                 }
 
                 Section("Normal Workday") {
@@ -184,40 +208,127 @@ struct EmployeeNewView: View {
                 }
 
                 Section {
-                    Button("Save Employee") {
-                        saveEmployee()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(
-                        firstName
-                            .trimmingCharacters(
-                                in: .whitespacesAndNewlines
+                    NavigationLink {
+                        WorkforceProfileEditorView(
+                            profile: $workforceProfile,
+                            employeeName: employeeDraftName
+                        )
+                    } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label(
+                                "Workforce Profile",
+                                systemImage: "person.text.rectangle"
                             )
-                            .isEmpty
-                    )
+                            .fontWeight(.semibold)
+
+                            Text(workforceProfileSummary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 3)
+                    }
+                } header: {
+                    Text("Workforce Intelligence")
+                } footer: {
+                    Text("Optional. Add skills, certifications, equipment, availability exceptions, and planning preferences now or later.")
                 }
+
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("New Employee")
+            .interactiveDismissDisabled(hasUnsavedChanges)
+            .sheet(isPresented: $showingRoleSelection) {
+                EmployeeRoleSelectionView(selectedRoles: $roles)
+            }
             .toolbar {
                 ToolbarItem(
                     placement: .cancellationAction
                 ) {
                     Button("Cancel") {
-                        dismiss()
+                        requestDismissal()
                     }
                 }
 
-                ToolbarItemGroup(
-                    placement: .keyboard
-                ) {
-                    Spacer()
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saveEmployee()
+                    }
+                    .disabled(
+                        firstName
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                            .isEmpty
+                    )
+                }
 
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
                     Button("Done") {
                         isInputFocused = false
                     }
                 }
             }
+            .alert(
+                "Unsaved Employee",
+                isPresented: $showingUnsavedChangesAlert
+            ) {
+                Button("Save") {
+                    saveEmployee()
+                }
+                .disabled(!canSave)
+
+                Button("Discard Changes", role: .destructive) {
+                    dismiss()
+                }
+
+                Button("Continue Editing", role: .cancel) { }
+            } message: {
+                Text("Save this employee before leaving, or discard the information entered on this page.")
+            }
         }
+    }
+
+    private var canSave: Bool {
+        !firstName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var hasUnsavedChanges: Bool {
+        !firstName.isEmpty ||
+        !lastName.isEmpty ||
+        !phone.isEmpty ||
+        !email.isEmpty ||
+        !baseAddress.isEmpty ||
+        roles != [.technician] ||
+        minutesFromDate(startTime) != 480 ||
+        minutesFromDate(endTime) != 1020 ||
+        lunchDurationMinutes != 30 ||
+        workingDays != Workday.standardWorkweek ||
+        colorName != "blue" ||
+        !isActive ||
+        encodedProfile(workforceProfile) != encodedProfile(
+            WorkforceOperationalProfile()
+        )
+    }
+
+    private var employeeDraftName: String {
+        let name = "\(firstName) \(lastName)"
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return name.isEmpty ? "New Employee" : name
+    }
+
+    private var roleDisplayText: String {
+        EmployeeRole.allCases
+            .filter(roles.contains)
+            .map(\.displayName)
+            .joined(separator: ", ")
+    }
+
+    private var workforceProfileSummary: String {
+        guard workforceProfile.hasIntelligenceData else {
+            return "Optional operational profile"
+        }
+
+        return "\(workforceProfile.skills.count) skills · \(workforceProfile.certifications.count) certifications · \(workforceProfile.resourceAccess.count) resources"
     }
 
     private func workingDayBinding(
@@ -251,7 +362,11 @@ struct EmployeeNewView: View {
             email: email.trimmingCharacters(
                 in: .whitespacesAndNewlines
             ),
-            role: role,
+            baseAddress: baseAddress.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ),
+            role: EmployeeRole.allCases.first(where: roles.contains) ?? .technician,
+            roles: roles,
             defaultStartMinutes:
                 minutesFromDate(startTime),
             defaultEndMinutes:
@@ -261,11 +376,29 @@ struct EmployeeNewView: View {
             workingDays: workingDays,
             colorName: colorName,
             isActive: isActive,
-            lifecycleStatus: .active
+            lifecycleStatus: .active,
+            workforceProfile: workforceProfile
         )
 
         store.addEmployee(employee)
         dismiss()
+    }
+
+    private func requestDismissal() {
+        isInputFocused = false
+        if hasUnsavedChanges {
+            showingUnsavedChangesAlert = true
+        } else {
+            dismiss()
+        }
+    }
+
+    private func encodedProfile(
+        _ profile: WorkforceOperationalProfile
+    ) -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(profile)
     }
 
     private func minutesFromDate(

@@ -14,9 +14,11 @@ struct InvoiceDetailView: View {
     @EnvironmentObject var printer: BluetoothPrinter
 
     @State var invoice: InvoiceRecord
+    var showsDismissButton = false
     @State private var sharedPDFURL: URL?
     @State private var pdfErrorMessage: String?
     @State private var isShowingPDFError = false
+    @State private var isShowingReceiptPrinter = false
     @FocusState private var isInputFocused: Bool
 
     private var customerDisplayName: String {
@@ -35,6 +37,13 @@ struct InvoiceDetailView: View {
         }
 
         return invoice.customerNumber
+    }
+
+    private var displayedBalanceDue: Double {
+        max(
+            0,
+            invoice.total - max(invoice.amountPaid, 0)
+        )
     }
 
     var body: some View {
@@ -150,15 +159,27 @@ struct InvoiceDetailView: View {
                 }
 
                 LabeledContent("Amount Paid") {
-                    Text(
-                        invoice.amountPaid,
-                        format: .currency(code: "USD")
-                    )
+                    HStack(spacing: 3) {
+                        Text("$")
+                            .foregroundStyle(.secondary)
+
+                        TextField(
+                            "0.00",
+                            value: $invoice.amountPaid,
+                            format: .number.precision(
+                                .fractionLength(2)
+                            )
+                        )
+                        .keyboardType(.decimalPad)
+                        .multilineTextAlignment(.trailing)
+                        .focused($isInputFocused)
+                    }
+                    .frame(maxWidth: 150)
                 }
 
                 LabeledContent("Balance Due") {
                     Text(
-                        invoice.balanceDue,
+                        displayedBalanceDue,
                         format: .currency(code: "USD")
                     )
                     .fontWeight(.bold)
@@ -192,7 +213,8 @@ struct InvoiceDetailView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 Button {
-                    printThermalReceipt()
+                    isInputFocused = false
+                    isShowingReceiptPrinter = true
                 } label: {
                     HStack {
                         Spacer()
@@ -206,47 +228,54 @@ struct InvoiceDetailView: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!printer.isReadyToPrint)
                 
-                Button("Save Changes") {
-                    saveInvoice()
-                }
-                .buttonStyle(.borderedProminent)
-
                 if invoice.lifecycleStatus == .archived {
-                    Button("Restore Invoice") {
+                    Button {
                         store.restoreInvoice(invoice)
                         dismiss()
+                    } label: {
+                        Label("Restore Invoice", systemImage: "arrow.uturn.backward.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button(
-                        "Archive Invoice",
-                        role: .destructive
-                    ) {
+                    Button(role: .destructive) {
                         store.archiveInvoice(invoice)
                         dismiss()
+                    } label: {
+                        Label("Archive Invoice", systemImage: "archivebox.fill")
                     }
+                    .buttonStyle(.borderedProminent)
                 }
             }
         }
         .navigationTitle("Invoice")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    isInputFocused = false
-                    dismiss()
-                } label: {
-                    Label("Back", systemImage: "chevron.left")
+            if showsDismissButton {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        isInputFocused = false
+                        dismiss()
+                    } label: {
+                        Label("Close", systemImage: "xmark")
+                    }
                 }
             }
 
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    saveInvoice()
+                }
+            }
 
-                Button("Done") {
-                    isInputFocused = false
+            if isInputFocused {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isInputFocused = false
+                    } label: {
+                        Image(systemName: "keyboard.chevron.compact.down")
+                    }
+                    .accessibilityLabel("Dismiss Keyboard")
                 }
             }
         }
@@ -265,6 +294,12 @@ struct InvoiceDetailView: View {
                     activityItems: [sharedPDFURL]
                 )
             }
+        }
+        .sheet(isPresented: $isShowingReceiptPrinter) {
+            ReceiptPrinterSelectionView(
+                receiptText: thermalReceiptText()
+            )
+            .environmentObject(printer)
         }
         .alert(
             "Unable to Share Invoice",
@@ -295,21 +330,10 @@ struct InvoiceDetailView: View {
             discount: invoice.discount
         )
 
-        invoice.balanceDue = max(
-            0,
-            invoice.total - invoice.amountPaid
+        invoice.amountPaid = min(
+            max(invoice.amountPaid, 0),
+            max(invoice.total, 0)
         )
-
-        if invoice.status == .paid {
-            invoice.amountPaid = invoice.total
-            invoice.balanceDue = 0
-
-            if invoice.paidDate == nil {
-                invoice.paidDate = Date()
-            }
-        } else if invoice.balanceDue > 0 {
-            invoice.paidDate = nil
-        }
 
         store.updateInvoice(invoice)
         dismiss()
@@ -347,9 +371,7 @@ struct InvoiceDetailView: View {
         }
     }
 
-    private func printThermalReceipt() {
-        isInputFocused = false
-
+    private func thermalReceiptText() -> String {
         let customer = store.customers.first(where: {
             $0.customerNumber == invoice.customerNumber
         })
@@ -364,7 +386,7 @@ struct InvoiceDetailView: View {
             site = nil
         }
 
-        let receiptText = ThermalReceiptRenderer.render(
+        return ThermalReceiptRenderer.render(
             invoice: invoice,
             businessProfile: store.businessProfile,
             customer: customer,
@@ -372,7 +394,6 @@ struct InvoiceDetailView: View {
             catalogItems: store.serviceCatalogItems
         )
 
-        printer.printReceiptText(receiptText)
     }
     
     

@@ -24,8 +24,7 @@ struct ServiceCatalogView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
+        List {
                 Section {
                     Button("Add New Catalog Item") {
                         showingNewItemForm = true
@@ -92,7 +91,6 @@ struct ServiceCatalogView: View {
             .sheet(isPresented: $showingNewItemForm) {
                 ServiceCatalogNewItemView()
                     .environmentObject(store)
-            }
         }
     }
     private func symbolName(for itemType: CatalogItemType) -> String {

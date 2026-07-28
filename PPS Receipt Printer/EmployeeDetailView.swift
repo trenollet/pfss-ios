@@ -12,9 +12,12 @@ struct EmployeeDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State var employee: EmployeeRecord
+    private let originalEmployee: EmployeeRecord
 
     @State private var startTime: Date
     @State private var endTime: Date
+    @State private var showingRoleSelection = false
+    @State private var showingUnsavedChangesAlert = false
 
     @FocusState private var isInputFocused: Bool
 
@@ -37,6 +40,7 @@ struct EmployeeDetailView: View {
     ]
 
     init(employee: EmployeeRecord) {
+        originalEmployee = employee
         _employee = State(initialValue: employee)
 
         _startTime = State(
@@ -66,181 +70,192 @@ struct EmployeeDetailView: View {
 
     var body: some View {
         Form {
-            Section("Employee") {
-                TextField(
-                    "First Name",
-                    text: $employee.firstName
-                )
-                .textContentType(.givenName)
-                .focused($isInputFocused)
-
-                TextField(
-                    "Last Name",
-                    text: $employee.lastName
-                )
-                .textContentType(.familyName)
-                .focused($isInputFocused)
-
-                TextField(
-                    "Phone",
-                    text: $employee.phone
-                )
-                .keyboardType(.phonePad)
-                .textContentType(.telephoneNumber)
-                .focused($isInputFocused)
-
-                TextField(
-                    "Email",
-                    text: $employee.email
-                )
-                .keyboardType(.emailAddress)
-                .textContentType(.emailAddress)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .focused($isInputFocused)
-
-                Picker(
-                    "Role",
-                    selection: $employee.role
+            Section("Employee Setup") {
+                employeeSectionLink(
+                    title: "Employee",
+                    subtitle: employee.roleDisplayText,
+                    symbol: "person.crop.circle.fill"
                 ) {
-                    ForEach(EmployeeRole.allCases) { role in
-                        Text(role.rawValue)
-                            .tag(role)
-                    }
+                    EmployeeIdentityEditorView(employee: $employee)
                 }
 
-                Toggle(
-                    "Active Employee",
-                    isOn: $employee.isActive
-                )
-            }
-
-            Section("Normal Workday") {
-                DatePicker(
-                    "Start Time",
-                    selection: $startTime,
-                    displayedComponents: .hourAndMinute
-                )
-
-                DatePicker(
-                    "End Time",
-                    selection: $endTime,
-                    displayedComponents: .hourAndMinute
-                )
-
-                Picker(
-                    "Lunch Duration",
-                    selection: $employee.lunchDurationMinutes
+                employeeSectionLink(
+                    title: "Home / Base Address",
+                    subtitle: employee.normalizedBaseAddress ?? "Not set",
+                    symbol: "house.fill"
                 ) {
-                    ForEach(
-                        lunchOptions,
-                        id: \.self
-                    ) { minutes in
-                        Text(lunchLabel(for: minutes))
-                            .tag(minutes)
-                    }
+                    EmployeeBaseAddressEditorView(baseAddress: $employee.baseAddress)
                 }
 
-                LabeledContent("Daily Capacity") {
-                    Text(
-                        SchedulingCalculator.formattedDuration(
-                            minutes: dailyCapacityMinutes
-                        )
-                    )
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.blue)
+                employeeSectionLink(
+                    title: "Working Days",
+                    subtitle: "\(employee.workingDays.count) days selected",
+                    symbol: "calendar"
+                ) {
+                    EmployeeWorkingDaysEditorView(workingDays: $employee.workingDays)
                 }
-            }
 
-            Section("Working Days") {
-                ForEach(Workday.allCases) { day in
-                    Toggle(
-                        day.name,
-                        isOn: workingDayBinding(for: day)
+                employeeSectionLink(
+                    title: "Normal Work Day",
+                    subtitle: SchedulingCalculator.formattedDuration(minutes: dailyCapacityMinutes),
+                    symbol: "clock.fill"
+                ) {
+                    EmployeeNormalWorkdayEditorView(
+                        startTime: $startTime,
+                        endTime: $endTime,
+                        lunchMinutes: $employee.lunchDurationMinutes
                     )
                 }
-            }
 
-            Section("Schedule Color") {
-                Picker(
-                    "Employee Color",
-                    selection: $employee.colorName
+                employeeSectionLink(
+                    title: "Time Off",
+                    subtitle: "\(employee.workforceProfile.availabilityExceptions.filter { $0.kind == .unavailable }.count) scheduled",
+                    symbol: "calendar.badge.minus"
                 ) {
-                    ForEach(
-                        colorOptions,
-                        id: \.self
-                    ) { color in
-                        HStack {
-                            Circle()
-                                .fill(displayColor(for: color))
-                                .frame(width: 12, height: 12)
-
-                            Text(color.capitalized)
-                        }
-                        .tag(color)
-                    }
+                    EmployeeTimeOffView(
+                        exceptions: $employee.workforceProfile.availabilityExceptions,
+                        employeeName: employee.displayName
+                    )
                 }
 
-                HStack {
-                    Text("Calendar Preview")
-
-                    Spacer()
-
-                    Circle()
-                        .fill(
-                            displayColor(
-                                for: employee.colorName
-                            )
+                NavigationLink {
+                    WorkforceProfileEditorView(
+                        profile: $employee.workforceProfile,
+                        employeeName: employee.displayName
+                    )
+                } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label(
+                            "Workforce Profile",
+                            systemImage: "person.text.rectangle"
                         )
-                        .frame(width: 18, height: 18)
-
-                    Text(employee.displayName)
                         .fontWeight(.semibold)
+
+                        Text(workforceProfileSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 3)
                 }
             }
 
             Section {
-                Button("Save Changes") {
-                    saveChanges()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(
-                    employee.firstName
-                        .trimmingCharacters(
-                            in: .whitespacesAndNewlines
-                        )
-                        .isEmpty
-                )
-
                 if employee.lifecycleStatus == .archived {
-                    Button("Restore Employee") {
+                    Button {
                         store.restoreEmployee(employee)
                         dismiss()
+                    } label: {
+                        Label("Restore Employee", systemImage: "arrow.uturn.backward.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button(
-                        "Archive Employee",
-                        role: .destructive
-                    ) {
+                    Button(role: .destructive) {
                         store.archiveEmployee(employee)
                         dismiss()
+                    } label: {
+                        Label("Archive Employee", systemImage: "archivebox.fill")
                     }
+                    .buttonStyle(.borderedProminent)
                 }
             }
         }
+        .scrollDismissesKeyboard(.interactively)
         .navigationTitle(employee.displayName)
+        .navigationBarBackButtonHidden(true)
+        .sheet(isPresented: $showingRoleSelection) {
+            EmployeeRoleSelectionView(selectedRoles: $employee.roles)
+        }
         .toolbar {
-            ToolbarItemGroup(
-                placement: .keyboard
-            ) {
-                Spacer()
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    requestDismissal()
+                } label: {
+                    Label("Back", systemImage: "chevron.left")
+                }
+            }
 
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    saveChanges()
+                }
+                .disabled(
+                    employee.firstName
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty
+                )
+            }
+
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
                 Button("Done") {
                     isInputFocused = false
                 }
             }
         }
+        .alert(
+            "Unsaved Changes",
+            isPresented: $showingUnsavedChangesAlert
+        ) {
+            Button("Save Changes") {
+                saveChanges()
+            }
+
+            Button("Discard Changes", role: .destructive) {
+                dismiss()
+            }
+
+            Button("Continue Editing", role: .cancel) { }
+        } message: {
+            Text("This employee has changes that have not been saved.")
+        }
+    }
+
+    private func employeeSectionLink<Destination: View>(
+        title: String,
+        subtitle: String,
+        symbol: String,
+        @ViewBuilder destination: () -> Destination
+    ) -> some View {
+        NavigationLink(destination: destination()) {
+            Label {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).fontWeight(.semibold)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            } icon: {
+                Image(systemName: symbol)
+                    .font(.title2)
+                    .foregroundStyle(.blue)
+                    .frame(width: 32)
+            }
+            .padding(.vertical, 5)
+        }
+    }
+
+    private var hasUnsavedChanges: Bool {
+        encodedEmployee(employeeForComparison) !=
+            encodedEmployee(originalEmployee)
+    }
+
+    private var employeeForComparison: EmployeeRecord {
+        var candidate = employee
+        candidate.defaultStartMinutes = minutesFromDate(startTime)
+        candidate.defaultEndMinutes = minutesFromDate(endTime)
+        candidate.normalizeRoles()
+        return candidate
+    }
+
+    private var workforceProfileSummary: String {
+        let profile = employee.workforceProfile
+
+        guard profile.hasIntelligenceData else {
+            return "No operational profile information entered"
+        }
+
+        return "\(profile.skills.count) skills · \(profile.certifications.count) certifications · \(profile.resourceAccess.count) resources"
     }
 
     private func saveChanges() {
@@ -266,14 +281,38 @@ struct EmployeeDetailView: View {
                 in: .whitespacesAndNewlines
             )
 
+        employee.baseAddress =
+            employee.baseAddress.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+
         employee.defaultStartMinutes =
             minutesFromDate(startTime)
 
         employee.defaultEndMinutes =
             minutesFromDate(endTime)
 
+        employee.normalizeRoles()
+
         store.updateEmployee(employee)
         dismiss()
+    }
+
+    private func requestDismissal() {
+        isInputFocused = false
+        if hasUnsavedChanges {
+            showingUnsavedChangesAlert = true
+        } else {
+            dismiss()
+        }
+    }
+
+    private func encodedEmployee(
+        _ employee: EmployeeRecord
+    ) -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(employee)
     }
 
     private func workingDayBinding(

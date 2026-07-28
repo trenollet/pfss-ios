@@ -12,6 +12,8 @@ struct WorkforceCapacityDashboardView: View {
 
     @State private var selectedDate = Date()
 
+    private let forecastDayCount = 4
+
     private var activeEmployees: [EmployeeRecord] {
         store.activeEmployees.sorted {
             $0.displayName.localizedCaseInsensitiveCompare(
@@ -30,8 +32,53 @@ struct WorkforceCapacityDashboardView: View {
         }
     }
 
+    private var capacityForecasts: [CapacityForecast] {
+        let calendar = Calendar.current
+        let startDate = calendar.startOfDay(for: selectedDate)
+        let technicians = activeEmployees.filter { $0.hasRole(.technician) }
+
+        return (0..<forecastDayCount).compactMap { dayOffset in
+            guard let date = calendar.date(
+                byAdding: .day,
+                value: dayOffset,
+                to: startDate
+            ) else { return nil }
+
+            let daySummaries = technicians.map {
+                SchedulingEngine.capacitySummary(
+                    for: $0,
+                    on: date,
+                    from: store.jobs
+                )
+            }
+            let workingSummaries = daySummaries.filter(\.isWorkingDay)
+            let utilization = workingSummaries.isEmpty
+                ? 0
+                : workingSummaries.reduce(0.0) {
+                    $0 + min(max($1.utilizationFraction, 0), 1)
+                } / Double(workingSummaries.count)
+
+            return CapacityForecast(
+                day: forecastDayName(
+                    for: date,
+                    dayOffset: dayOffset
+                ),
+                utilization: utilization
+            )
+        }
+    }
+
     var body: some View {
         List {
+            Section("Capacity Forecast") {
+                CapacityForecastCard(
+                    forecasts: capacityForecasts,
+                    subtitle: "Next \(forecastDayCount) operating days"
+                )
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+            }
+
             Section("Date") {
                 HStack {
                     Button {
@@ -114,6 +161,7 @@ struct WorkforceCapacityDashboardView: View {
             }
         }
         .navigationTitle("Capacity Dashboard")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     @ViewBuilder
@@ -140,7 +188,7 @@ struct WorkforceCapacityDashboardView: View {
                     Text(summary.employee.displayName)
                         .font(.headline)
 
-                    Text(summary.employee.role.rawValue)
+                    Text(summary.employee.roleDisplayText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -342,5 +390,23 @@ struct WorkforceCapacityDashboardView: View {
                 value: dayOffset,
                 to: selectedDate
             ) ?? selectedDate
+    }
+
+    private func forecastDayName(
+        for date: Date,
+        dayOffset: Int
+    ) -> String {
+        switch dayOffset {
+        case 0:
+            return Calendar.current.isDateInToday(date)
+                ? "Today"
+                : date.formatted(.dateTime.weekday(.wide))
+        case 1:
+            return Calendar.current.isDateInToday(selectedDate)
+                ? "Tomorrow"
+                : date.formatted(.dateTime.weekday(.wide))
+        default:
+            return date.formatted(.dateTime.weekday(.wide))
+        }
     }
 }

@@ -123,9 +123,11 @@ enum JobStatus: String, CaseIterable, Identifiable, Codable {
 enum JobWorkflowState: String, CaseIterable, Identifiable, Codable {
     case notStarted = "Not Started"
     case traveling = "Traveling"
+    case travelPaused = "Travel Paused"
     case arrived = "Arrived"
     case settingUp = "Setting Up"
     case working = "Working"
+    case paused = "Paused"
     case packingUp = "Packing Up"
     case workComplete = "Work Complete"
     case invoiceCreated = "Invoice Created"
@@ -139,16 +141,22 @@ enum JobWorkflowState: String, CaseIterable, Identifiable, Codable {
 enum JobTimelineEventType: String, Codable {
     case assigned
     case travelStarted
+    case travelPaused
+    case travelResumed
     case arrived
     case setupStarted
     case workStarted
+    case workPaused
+    case workResumed
     case packUpStarted
     case workCompleted
     case invoiceCreated
+    case invoiceSent
     case paymentReceived
     case jobCompleted
     case cancelled
     case note
+    case timelineCorrected
 }
 
 struct JobTimelineEvent: Identifiable, Codable, Equatable {
@@ -158,6 +166,9 @@ struct JobTimelineEvent: Identifiable, Codable, Equatable {
     var timestamp: Date
     var employeeID: UUID?
     var note: String?
+    var correctedEventID: UUID?
+    var originalTimestamp: Date?
+    var correctedTimestamp: Date?
 
     init(
         id: UUID = UUID(),
@@ -165,7 +176,10 @@ struct JobTimelineEvent: Identifiable, Codable, Equatable {
         title: String,
         timestamp: Date = Date(),
         employeeID: UUID? = nil,
-        note: String? = nil
+        note: String? = nil,
+        correctedEventID: UUID? = nil,
+        originalTimestamp: Date? = nil,
+        correctedTimestamp: Date? = nil
     ) {
         self.id = id
         self.type = type
@@ -173,6 +187,9 @@ struct JobTimelineEvent: Identifiable, Codable, Equatable {
         self.timestamp = timestamp
         self.employeeID = employeeID
         self.note = note
+        self.correctedEventID = correctedEventID
+        self.originalTimestamp = originalTimestamp
+        self.correctedTimestamp = correctedTimestamp
     }
 }
 
@@ -184,6 +201,15 @@ enum EmployeeRole: String, CaseIterable, Identifiable, Codable {
     case technician = "Technician"
 
     var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .salesperson:
+            return "Sales"
+        default:
+            return rawValue
+        }
+    }
 
     var canOverrideScheduling: Bool {
         switch self {
@@ -248,7 +274,16 @@ struct EmployeeRecord: Identifiable, Codable {
     var phone: String
     var email: String
 
+    /// The employee's normal starting location when PFSS does not have a
+    /// dependable operational location. This may be a home, shop, yard, or
+    /// other business-approved base address.
+    var baseAddress: String
+
     var role: EmployeeRole
+
+    /// Every business role this employee may perform. `role` remains the
+    /// compatibility/authorization primary role for older saved records.
+    var roles: Set<EmployeeRole>
 
     // Stored as minutes after midnight.
     var defaultStartMinutes: Int
@@ -266,13 +301,19 @@ struct EmployeeRecord: Identifiable, Codable {
     var createdDate: Date
     var lifecycleStatus: RecordLifecycleStatus
 
+    /// Operational capabilities and preferences used by Workforce Intelligence.
+    /// Existing employees decode with an empty profile.
+    var workforceProfile: WorkforceOperationalProfile
+
     init(
         id: UUID = UUID(),
         firstName: String,
         lastName: String,
         phone: String = "",
         email: String = "",
+        baseAddress: String = "",
         role: EmployeeRole = .technician,
+        roles: Set<EmployeeRole>? = nil,
         defaultStartMinutes: Int = 480,
         defaultEndMinutes: Int = 1020,
         lunchDurationMinutes: Int = 30,
@@ -280,14 +321,20 @@ struct EmployeeRecord: Identifiable, Codable {
         colorName: String = "blue",
         isActive: Bool = true,
         createdDate: Date = Date(),
-        lifecycleStatus: RecordLifecycleStatus = .active
+        lifecycleStatus: RecordLifecycleStatus = .active,
+        workforceProfile: WorkforceOperationalProfile = WorkforceOperationalProfile()
     ) {
         self.id = id
         self.firstName = firstName
         self.lastName = lastName
         self.phone = phone
         self.email = email
-        self.role = role
+        self.baseAddress = baseAddress
+        let selectedRoles = Self.validRoles(roles, fallback: role)
+        self.roles = selectedRoles
+        self.role = selectedRoles.contains(role)
+            ? role
+            : Self.preferredPrimaryRole(in: selectedRoles)
         self.defaultStartMinutes = defaultStartMinutes
         self.defaultEndMinutes = defaultEndMinutes
         self.lunchDurationMinutes = lunchDurationMinutes
@@ -296,6 +343,7 @@ struct EmployeeRecord: Identifiable, Codable {
         self.isActive = isActive
         self.createdDate = createdDate
         self.lifecycleStatus = lifecycleStatus
+        self.workforceProfile = workforceProfile
     }
 
     var displayName: String {
@@ -317,6 +365,131 @@ struct EmployeeRecord: Identifiable, Codable {
             workdayMinutes - lunchDurationMinutes,
             0
         )
+    }
+
+    func hasRole(_ role: EmployeeRole) -> Bool {
+        roles.contains(role) || (roles.isEmpty && self.role == role)
+    }
+
+    var roleDisplayText: String {
+        EmployeeRole.allCases
+            .filter(hasRole)
+            .map(\.displayName)
+            .joined(separator: ", ")
+    }
+
+    var normalizedBaseAddress: String? {
+        let address = baseAddress.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        return address.isEmpty ? nil : address
+    }
+
+    var canOverrideScheduling: Bool {
+        roles.contains { $0.canOverrideScheduling } || role.canOverrideScheduling
+    }
+
+    mutating func normalizeRoles() {
+        roles = Self.validRoles(roles, fallback: role)
+        role = Self.preferredPrimaryRole(in: roles)
+    }
+
+    private static func validRoles(
+        _ roles: Set<EmployeeRole>?,
+        fallback: EmployeeRole
+    ) -> Set<EmployeeRole> {
+        guard let roles, roles.isEmpty == false else { return [fallback] }
+        return roles
+    }
+
+    private static func preferredPrimaryRole(
+        in roles: Set<EmployeeRole>
+    ) -> EmployeeRole {
+        EmployeeRole.allCases.first(where: roles.contains) ?? .technician
+    }
+}
+
+extension EmployeeRecord {
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case firstName
+        case lastName
+        case phone
+        case email
+        case baseAddress
+        case role
+        case roles
+        case defaultStartMinutes
+        case defaultEndMinutes
+        case lunchDurationMinutes
+        case workingDays
+        case colorName
+        case isActive
+        case createdDate
+        case lifecycleStatus
+        case workforceProfile
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        firstName = try container.decodeIfPresent(String.self, forKey: .firstName) ?? ""
+        lastName = try container.decodeIfPresent(String.self, forKey: .lastName) ?? ""
+        phone = try container.decodeIfPresent(String.self, forKey: .phone) ?? ""
+        email = try container.decodeIfPresent(String.self, forKey: .email) ?? ""
+        baseAddress = try container.decodeIfPresent(
+            String.self,
+            forKey: .baseAddress
+        ) ?? ""
+        let legacyRole = try container.decodeIfPresent(
+            EmployeeRole.self,
+            forKey: .role
+        ) ?? .technician
+        roles = try container.decodeIfPresent(
+            Set<EmployeeRole>.self,
+            forKey: .roles
+        ) ?? [legacyRole]
+        roles = Self.validRoles(roles, fallback: legacyRole)
+        role = roles.contains(legacyRole)
+            ? legacyRole
+            : Self.preferredPrimaryRole(in: roles)
+        defaultStartMinutes = try container.decodeIfPresent(
+            Int.self,
+            forKey: .defaultStartMinutes
+        ) ?? 480
+        defaultEndMinutes = try container.decodeIfPresent(
+            Int.self,
+            forKey: .defaultEndMinutes
+        ) ?? 1020
+        lunchDurationMinutes = try container.decodeIfPresent(
+            Int.self,
+            forKey: .lunchDurationMinutes
+        ) ?? 30
+        workingDays = try container.decodeIfPresent(
+            Set<Workday>.self,
+            forKey: .workingDays
+        ) ?? Workday.standardWorkweek
+        colorName = try container.decodeIfPresent(
+            String.self,
+            forKey: .colorName
+        ) ?? "blue"
+        isActive = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .isActive
+        ) ?? true
+        createdDate = try container.decodeIfPresent(
+            Date.self,
+            forKey: .createdDate
+        ) ?? Date()
+        lifecycleStatus = try container.decodeIfPresent(
+            RecordLifecycleStatus.self,
+            forKey: .lifecycleStatus
+        ) ?? .active
+        workforceProfile = try container.decodeIfPresent(
+            WorkforceOperationalProfile.self,
+            forKey: .workforceProfile
+        ) ?? WorkforceOperationalProfile()
     }
 }
 
@@ -543,6 +716,12 @@ struct JobRecord: Identifiable, Codable, WorkOrder {
     var secondaryTechnicianID: UUID?
     var scheduledDate: Date
     var scheduledDurationOverrideMinutes: Int? = nil
+    /// Dispatch constraints selected while the Job is created. Keeping these
+    /// on the business record allows recurring occurrences to inherit them.
+    var assignmentSchedulingMode: AssignmentSchedulingMode = .fixedTime
+    var arrivalWindowEnd: Date? = nil
+    var completionDeadline: Date? = nil
+    var assignmentPriority: AssignmentPriority = .normal
     var setupStartDate: Date? = nil
     var completedDate: Date?
 
@@ -552,6 +731,9 @@ struct JobRecord: Identifiable, Codable, WorkOrder {
     var workNotes: String
 
     var isRecurring: Bool
+    var recurrenceFrequency: JobRecurrenceFrequency? = nil
+    var recurrenceSeriesID: UUID? = nil
+    var recurrenceSequence: Int = 0
     var createdDate: Date
 
     var lifecycleStatus: RecordLifecycleStatus = .active
@@ -574,6 +756,10 @@ extension JobRecord {
         case secondaryTechnicianID
         case scheduledDate
         case scheduledDurationOverrideMinutes
+        case assignmentSchedulingMode
+        case arrivalWindowEnd
+        case completionDeadline
+        case assignmentPriority
         case setupStartDate
         case completedDate
         case status
@@ -581,6 +767,9 @@ extension JobRecord {
         case timelineEvents
         case workNotes
         case isRecurring
+        case recurrenceFrequency
+        case recurrenceSeriesID
+        case recurrenceSequence
         case createdDate
         case lifecycleStatus
     }
@@ -666,6 +855,26 @@ extension JobRecord {
                 forKey: .scheduledDurationOverrideMinutes
             )
 
+        assignmentSchedulingMode = try container.decodeIfPresent(
+            AssignmentSchedulingMode.self,
+            forKey: .assignmentSchedulingMode
+        ) ?? .fixedTime
+
+        arrivalWindowEnd = try container.decodeIfPresent(
+            Date.self,
+            forKey: .arrivalWindowEnd
+        )
+
+        completionDeadline = try container.decodeIfPresent(
+            Date.self,
+            forKey: .completionDeadline
+        )
+
+        assignmentPriority = try container.decodeIfPresent(
+            AssignmentPriority.self,
+            forKey: .assignmentPriority
+        ) ?? .normal
+
         setupStartDate = try container.decodeIfPresent(
             Date.self,
             forKey: .setupStartDate
@@ -700,6 +909,21 @@ extension JobRecord {
             Bool.self,
             forKey: .isRecurring
         ) ?? false
+
+        recurrenceFrequency = try container.decodeIfPresent(
+            JobRecurrenceFrequency.self,
+            forKey: .recurrenceFrequency
+        )
+
+        recurrenceSeriesID = try container.decodeIfPresent(
+            UUID.self,
+            forKey: .recurrenceSeriesID
+        )
+
+        recurrenceSequence = try container.decodeIfPresent(
+            Int.self,
+            forKey: .recurrenceSequence
+        ) ?? 0
 
         createdDate = try container.decodeIfPresent(
             Date.self,
@@ -1011,4 +1235,3 @@ extension WorkOrder {
         )
     }
 }
-

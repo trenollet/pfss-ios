@@ -60,6 +60,7 @@ enum TechnicianStatus: String, CaseIterable {
     case available
     case working
     case traveling
+    case travelPaused
     case lunch
     case offline
     case overtime
@@ -76,6 +77,9 @@ enum TechnicianStatus: String, CaseIterable {
 
         case .traveling:
             return "Traveling"
+
+        case .travelPaused:
+            return "Travel Paused"
 
         case .lunch:
             return "Lunch"

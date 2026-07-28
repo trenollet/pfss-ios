@@ -53,32 +53,30 @@ struct ServiceCatalogNewItemView: View {
                 
 
                     LabeledContent("Default Quantity") {
-                        TextField(
-                            "Quantity",
+                        SelectAllTextField(
+                            placeholder: "Quantity",
                             text: $defaultQuantity
                         )
-                        .multilineTextAlignment(.trailing)
-                        .keyboardType(.decimalPad)
+                        .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
                     }
 
                     LabeledContent("Price") {
-                        TextField(
-                            "Price",
+                        SelectAllTextField(
+                            placeholder: "Price",
                             text: $defaultPrice
                         )
-                        .multilineTextAlignment(.trailing)
-                        .keyboardType(.decimalPad)
+                        .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
                     }
                     
                     LabeledContent("Estimated Minutes Per Unit") {
-                        TextField(
-                            "Minutes",
-                            text: $estimatedMinutesPerUnit
+                        SelectAllTextField(
+                            placeholder: "Minutes",
+                            text: $estimatedMinutesPerUnit,
+                            keyboardType: .numberPad
                         )
-                        .multilineTextAlignment(.trailing)
-                        .keyboardType(.numberPad)
+                        .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
                     }
                     
@@ -90,24 +88,6 @@ struct ServiceCatalogNewItemView: View {
                     }
                 }
 
-                Section {
-                    Button("Save Catalog Item") {
-                        let item = ServiceCatalogItem(
-                            itemName: itemName,
-                            itemDescription: itemDescription,
-                            defaultQuantity: quantityValue,
-                            defaultPrice: priceValue,
-                            estimatedMinutesPerUnit: estimatedMinutesValue,
-                            itemType: itemType,
-                            taxTreatment: taxTreatment
-                        )
-
-                        store.addServiceCatalogItem(item)
-                        dismiss()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(itemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
             }
             .navigationTitle("New Catalog Item")
             .onAppear {
@@ -122,13 +102,39 @@ struct ServiceCatalogNewItemView: View {
                     }
                 }
 
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") {
-                        isInputFocused = false
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saveCatalogItem()
+                    }
+                    .disabled(itemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                if isInputFocused {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            isInputFocused = false
+                        } label: {
+                            Image(systemName: "keyboard.chevron.compact.down")
+                        }
+                        .accessibilityLabel("Dismiss Keyboard")
                     }
                 }
             }
         }
+    }
+
+    private func saveCatalogItem() {
+        let item = ServiceCatalogItem(
+            itemName: itemName,
+            itemDescription: itemDescription,
+            defaultQuantity: quantityValue,
+            defaultPrice: priceValue,
+            estimatedMinutesPerUnit: estimatedMinutesValue,
+            itemType: itemType,
+            taxTreatment: taxTreatment
+        )
+
+        store.addServiceCatalogItem(item)
+        dismiss()
     }
 }

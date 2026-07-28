@@ -8,8 +8,19 @@
 import Foundation
 import Combine
 
+@MainActor
 final class AppDataStore: ObservableObject {
     private let fieldOperationsEngine = FieldOperationsEngine()
+    let assignmentStore: AssignmentStore
+    let assignmentEngine: AssignmentEngine
+    let dispatchEngine: DispatchEngine
+    let offlineOperationQueue: OfflineOperationQueue
+    let offlineSynchronizationMode: OfflineSynchronizationMode
+    let offlineConnectivityMonitor: OfflineConnectivityMonitor
+    let offlineSynchronizationService: OfflineSynchronizationService?
+    private var assignmentObservation: AnyCancellable?
+    private var offlineQueueObservation: AnyCancellable?
+    @Published var lastOfflineOperationError: String?
     @Published var customers: [Customer] = [] {
         didSet { saveData() }
     }
@@ -40,6 +51,10 @@ final class AppDataStore: ObservableObject {
     @Published var employees: [EmployeeRecord] = [] {
         didSet { saveData() }
     }
+    /// Accepted or freshly refreshed road routes for the current app session.
+    /// Assignment.routeSequence remains the durable source of route order;
+    /// these plans retain MapKit leg timing for Timeline presentation.
+    @Published var acceptedRoutePlans: [String: RoutePlan] = [:]
     
     var activeCustomers: [Customer] {
         customers.filter { $0.lifecycleStatus == .active }
@@ -115,9 +130,62 @@ final class AppDataStore: ObservableObject {
     }
 
     private let saveFileName = "pps-field-manager-data.json"
+    private let persistenceEnabled: Bool
 
-    init() {
+    init(
+        offlineOperationQueue: OfflineOperationQueue? = nil,
+        offlineSynchronizationMode: OfflineSynchronizationMode = .localOnly,
+        offlineConnectivityMonitor: OfflineConnectivityMonitor? = nil,
+        offlineSynchronizationAdapter: (any OfflineSynchronizationAdapter)? = nil,
+        persistenceEnabled: Bool = true
+    ) {
+        let assignmentStore = AssignmentStore()
+        let assignmentEngine = AssignmentEngine(store: assignmentStore)
+        let operationQueue = offlineOperationQueue ?? OfflineOperationQueue()
+        let connectivityMonitor = offlineConnectivityMonitor
+            ?? OfflineConnectivityMonitor()
+        self.assignmentStore = assignmentStore
+        self.assignmentEngine = assignmentEngine
+        self.offlineOperationQueue = operationQueue
+        self.offlineSynchronizationMode = offlineSynchronizationMode
+        self.offlineConnectivityMonitor = connectivityMonitor
+        self.persistenceEnabled = persistenceEnabled
+        if offlineSynchronizationMode.requiresRemoteQueue,
+           let offlineSynchronizationAdapter {
+            self.offlineSynchronizationService = OfflineSynchronizationService(
+                queue: operationQueue,
+                connectivity: connectivityMonitor,
+                adapter: offlineSynchronizationAdapter
+            )
+        } else {
+            self.offlineSynchronizationService = nil
+        }
+        self.dispatchEngine = DispatchEngine(
+            assignmentEngine: assignmentEngine,
+            policy: DispatchPolicy(operatingMode: .hybrid)
+        )
+
         loadData()
+        removeLeakedOfflineTestFixturesIfNeeded()
+        materializePendingRecurringJobs()
+        synchronizeAssignmentsFromJobs()
+
+        assignmentStore.onAssignmentsChanged = { [weak self] assignments in
+            self?.synchronizeJobsFromAssignments(assignments)
+            self?.saveData()
+        }
+        assignmentObservation = assignmentStore.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        offlineQueueObservation = operationQueue.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        synchronizeJobsFromAssignments(assignmentStore.assignments)
+    }
+
+    func startOfflineServices() {
+        offlineConnectivityMonitor.start()
+        offlineSynchronizationService?.start()
     }
 
     func generateCustomerNumber() -> String {
@@ -295,12 +363,494 @@ final class AppDataStore: ObservableObject {
     }
     
     func addJob(_ job: JobRecord) {
-        jobs.append(job)
+        var storedJob = job
+        prepareRecurrenceIdentity(for: &storedJob)
+        jobs.append(storedJob)
+        ensureNextOccurrence(after: storedJob, includeInitialOccurrence: true)
+        synchronizeAssignmentsFromJobs()
     }
 
     func updateJob(_ job: JobRecord) {
+        if let originalIndex = jobs.firstIndex(where: { $0.id == job.id }) {
+            let previousJob = jobs[originalIndex]
+
+            if previousJob.isRecurring && !job.isRecurring {
+                removeUnstartedFutureOccurrences(after: previousJob)
+            }
+
+            var storedJob = job
+            prepareRecurrenceIdentity(for: &storedJob)
+
+            guard let currentIndex = jobs.firstIndex(where: {
+                $0.id == storedJob.id
+            }) else {
+                return
+            }
+
+            jobs[currentIndex] = storedJob
+            ensureNextOccurrence(
+                after: storedJob,
+                includeInitialOccurrence: storedJob.recurrenceSequence == 0
+            )
+            synchronizeAssignmentsFromJobs()
+        }
+    }
+
+    // MARK: - Assignment Integration
+
+    func assignment(forJobID jobID: UUID) -> Assignment? {
+        assignmentEngine.assignmentsForJob(jobID)
+            .first { $0.lifecycleStatus == .active }
+    }
+
+    /// Creates the V1 operational record for eligible legacy and new jobs.
+    /// Phase 14 intentionally maintains one active Assignment per Job.
+    @discardableResult
+    func synchronizeAssignmentsFromJobs() -> Int {
+        var createdCount = 0
+
+        for job in jobs where isAssignmentEligible(job) {
+            if let existingAssignment = assignment(forJobID: job.id) {
+                synchronizeAssignmentPlanning(
+                    from: job,
+                    to: existingAssignment
+                )
+                continue
+            }
+
+            do {
+                _ = try assignmentEngine.createAssignment(
+                    jobID: job.id,
+                    jobNumber: job.jobNumber,
+                    customerNumber: job.customerNumber,
+                    siteID: job.siteID,
+                    scheduling: assignmentScheduling(for: job),
+                    primaryTechnicianID: job.primaryTechnicianID,
+                    supportingTechnicianIDs: [job.secondaryTechnicianID].compactMap { $0 },
+                    priority: assignmentPriority(for: job),
+                    source: job.isRecurring ? .recurringWork : .jobConversion,
+                    note: "Created from the existing PFSS job workflow."
+                )
+                createdCount += 1
+            } catch {
+                print("Failed to create assignment for \(job.jobNumber): \(error.localizedDescription)")
+            }
+        }
+
+        return createdCount
+    }
+
+    /// A generated recurring Job can be moved off a weekend after its
+    /// Assignment already exists in persisted data. Keep the unstarted
+    /// recurring Assignment aligned so the Dispatch Queue and My Day use the
+    /// corrected business-day date instead of restoring the old weekend date.
+    private func synchronizeAssignmentPlanning(
+        from job: JobRecord,
+        to assignment: Assignment
+    ) {
+        guard assignment.status == .scheduled || assignment.status == .dispatched else {
+            return
+        }
+
+        let scheduling = assignmentScheduling(for: job)
+
+        if assignment.scheduling != scheduling {
+            do {
+                _ = try assignmentEngine.reschedule(
+                    assignmentID: assignment.id,
+                    scheduling: scheduling,
+                    note: "Assignment planning synchronized from Job \(job.jobNumber)."
+                )
+            } catch {
+                print(
+                    "Failed to align assignment \(assignment.assignmentNumber): " +
+                    error.localizedDescription
+                )
+            }
+        }
+
+        if assignment.priority != job.assignmentPriority {
+            do {
+                _ = try assignmentEngine.updatePriority(
+                    assignmentID: assignment.id,
+                    priority: job.assignmentPriority,
+                    note: "Priority synchronized from Job \(job.jobNumber)."
+                )
+            } catch {
+                print(
+                    "Failed to align priority for \(assignment.assignmentNumber): " +
+                    error.localizedDescription
+                )
+            }
+        }
+    }
+
+    /// Applies a Dispatch Board decision through AssignmentEngine and mirrors
+    /// the operational owner/start time to the related Job record.
+    @discardableResult
+    func assignTechnician(
+        _ technicianID: UUID,
+        toJobID jobID: UUID,
+        scheduledStart: Date? = nil,
+        isHumanOverride: Bool = false
+    ) throws -> Assignment {
+        guard var job = jobs.first(where: { $0.id == jobID }) else {
+            throw AssignmentIntegrationError.jobNotFound(jobID)
+        }
+
+        if assignment(forJobID: jobID) == nil {
+            synchronizeAssignmentsFromJobs()
+        }
+
+        guard let assignment = assignment(forJobID: jobID) else {
+            throw AssignmentIntegrationError.assignmentUnavailable(jobID)
+        }
+
+        guard let technician = activeEmployees.first(where: {
+            $0.id == technicianID
+        }) else {
+            throw AssignmentIntegrationError.employeeNotFound(technicianID)
+        }
+
+        let result = try dispatchEngine.assignPrimaryTechnician(
+            assignmentID: assignment.id,
+            technician: technician,
+            actor: .system,
+            scheduledStart: scheduledStart,
+            note: assignment.primaryTechnicianID == nil
+                ? "Assigned from the Operations dispatch queue."
+                : "Dispatcher reassigned the primary technician.",
+            isHumanOverride: isHumanOverride
+        )
+
+        if let scheduledStart {
+            job.scheduledDate = scheduledStart
+        }
+
+        job.primaryTechnicianID = technicianID
+        if job.status == .toBeScheduled || job.status == .scheduled {
+            job.status = .assigned
+        }
+
         if let index = jobs.firstIndex(where: { $0.id == job.id }) {
             jobs[index] = job
+        }
+
+        return result.assignment
+    }
+
+    /// Keeps the established Job-based scheduling and My Day screens aligned
+    /// while Assignment remains the authoritative operational record.
+    private func synchronizeJobsFromAssignments(_ assignments: [Assignment]) {
+        var synchronizedJobs = jobs
+        var didChange = false
+
+        for assignment in assignments {
+            guard let index = synchronizedJobs.firstIndex(where: {
+                $0.id == assignment.jobID
+            }) else {
+                continue
+            }
+
+            var job = synchronizedJobs[index]
+            let original = job
+
+            job.primaryTechnicianID = assignment.primaryTechnicianID
+            job.secondaryTechnicianID = assignment.supportingTechnicianIDs.first
+
+            if let operationalDate = assignment.scheduling.operationalDate {
+                switch assignment.scheduling.mode {
+                case .fixedTime, .arrivalWindow:
+                    job.scheduledDate = operationalDate
+                case .flexibleDay, .deadline:
+                    job.scheduledDate = Calendar.current.startOfDay(
+                        for: operationalDate
+                    )
+                }
+            }
+
+            job.assignmentSchedulingMode = assignment.scheduling.mode
+            job.arrivalWindowEnd = assignment.scheduling.arrivalWindowEnd
+            job.completionDeadline = assignment.scheduling.completionDeadline
+            job.assignmentPriority = assignment.priority
+
+            switch assignment.status {
+            case .scheduled:
+                job.status = assignment.primaryTechnicianID == nil
+                    ? .scheduled
+                    : .assigned
+                job.workflowState = .notStarted
+
+            case .dispatched:
+                job.status = .assigned
+                job.workflowState = .notStarted
+
+            case .enRoute:
+                job.status = .inProgress
+                // Assignment deliberately models travel at a broader level
+                // than the field workflow. Preserve a technician's paused
+                // travel state instead of flattening it back to Traveling
+                // whenever another Assignment publishes a store update.
+                if job.workflowState != .travelPaused {
+                    job.workflowState = .traveling
+                }
+
+            case .onSite:
+                job.status = .inProgress
+                // Setup, active work, pauses, and pack-up are all legitimate
+                // refinements of Assignment's On Site state.
+                let onSiteStates: Set<JobWorkflowState> = [
+                    .arrived,
+                    .settingUp,
+                    .working,
+                    .paused,
+                    .packingUp
+                ]
+                if !onSiteStates.contains(job.workflowState) {
+                    job.workflowState = .arrived
+                }
+
+            case .workComplete:
+                job.status = .inProgress
+                job.workflowState = .workComplete
+
+            case .invoiceReady:
+                job.status = .inProgress
+                job.workflowState = .invoiceCreated
+
+            case .closed:
+                job.status = .completed
+                job.workflowState = .completed
+                job.completedDate = assignment.closedDate ?? job.completedDate
+
+            case .cancelled:
+                job.status = .cancelled
+                job.workflowState = .cancelled
+            }
+
+            if job.primaryTechnicianID != original.primaryTechnicianID ||
+                job.secondaryTechnicianID != original.secondaryTechnicianID ||
+                job.scheduledDate != original.scheduledDate ||
+                job.assignmentSchedulingMode != original.assignmentSchedulingMode ||
+                job.arrivalWindowEnd != original.arrivalWindowEnd ||
+                job.completionDeadline != original.completionDeadline ||
+                job.assignmentPriority != original.assignmentPriority ||
+                job.status != original.status ||
+                job.workflowState != original.workflowState ||
+                job.completedDate != original.completedDate {
+                synchronizedJobs[index] = job
+                didChange = true
+            }
+        }
+
+        if didChange {
+            jobs = synchronizedJobs
+        }
+    }
+
+    private func isAssignmentEligible(_ job: JobRecord) -> Bool {
+        job.lifecycleStatus == .active &&
+            job.status != .completed &&
+            job.status != .cancelled
+    }
+
+    private func assignmentScheduling(for job: JobRecord) -> AssignmentScheduling {
+        let duration = max(
+            SchedulingEngine.scheduledMinutes(for: job),
+            15
+        )
+
+        let serviceDate: Date?
+        let fixedStart: Date?
+        let windowStart: Date?
+        let windowEnd: Date?
+        let deadline: Date?
+
+        switch job.assignmentSchedulingMode {
+        case .fixedTime:
+            serviceDate = job.scheduledDate
+            fixedStart = job.scheduledDate
+            windowStart = nil
+            windowEnd = nil
+            deadline = nil
+        case .arrivalWindow:
+            serviceDate = job.scheduledDate
+            fixedStart = nil
+            windowStart = job.scheduledDate
+            windowEnd = job.arrivalWindowEnd ?? Calendar.current.date(
+                byAdding: .hour,
+                value: 2,
+                to: job.scheduledDate
+            )
+            deadline = nil
+        case .flexibleDay:
+            serviceDate = Calendar.current.startOfDay(
+                for: job.scheduledDate
+            )
+            fixedStart = nil
+            windowStart = nil
+            windowEnd = nil
+            deadline = nil
+        case .deadline:
+            serviceDate = Calendar.current.startOfDay(
+                for: job.completionDeadline ?? job.scheduledDate
+            )
+            fixedStart = nil
+            windowStart = nil
+            windowEnd = nil
+            deadline = job.completionDeadline ?? job.scheduledDate
+        }
+
+        return AssignmentScheduling(
+            mode: job.assignmentSchedulingMode,
+            serviceDate: serviceDate,
+            fixedStartDate: fixedStart,
+            arrivalWindowStart: windowStart,
+            arrivalWindowEnd: windowEnd,
+            completionDeadline: deadline,
+            estimatedDurationMinutes: duration,
+            isCustomerConfirmed: true,
+            schedulingNotes: "Imported from Job \(job.jobNumber)."
+        )
+    }
+
+    private func assignmentPriority(for job: JobRecord) -> AssignmentPriority {
+        job.assignmentPriority
+    }
+
+    private func removeUnstartedFutureOccurrences(after job: JobRecord) {
+        guard let seriesID = job.recurrenceSeriesID else { return }
+
+        jobs.removeAll {
+            $0.id != job.id &&
+            $0.recurrenceSeriesID == seriesID &&
+            $0.recurrenceSequence > job.recurrenceSequence &&
+            ($0.status == .toBeScheduled || $0.status == .scheduled)
+        }
+    }
+
+    /// Keeps one upcoming occurrence available for dispatch without generating
+    /// an unlimited series of future jobs.
+    private func ensureNextOccurrence(
+        after job: JobRecord,
+        includeInitialOccurrence: Bool
+    ) {
+        guard job.lifecycleStatus == .active,
+              job.isRecurring,
+              let frequency = job.recurrenceFrequency,
+              includeInitialOccurrence || job.status == .completed else {
+            return
+        }
+
+        let seriesID = job.recurrenceSeriesID ?? job.id
+        let nextSequence = job.recurrenceSequence + 1
+        let anchorDate = jobs.first(where: {
+            $0.recurrenceSeriesID == seriesID &&
+            $0.recurrenceSequence == 0
+        })?.scheduledDate ?? job.scheduledDate
+
+        guard let nextDate = frequency.occurrenceDate(
+            from: anchorDate,
+            occurrence: nextSequence
+        ) else {
+            return
+        }
+
+        if let existingIndex = jobs.firstIndex(where: {
+            $0.recurrenceSeriesID == seriesID &&
+            $0.recurrenceSequence == nextSequence
+        }) {
+            guard jobs[existingIndex].status == .toBeScheduled ||
+                    jobs[existingIndex].status == .scheduled else {
+                return
+            }
+            jobs[existingIndex].recurrenceFrequency = frequency
+            jobs[existingIndex].scheduledDate = nextDate
+            jobs[existingIndex].arrivalWindowEnd = shiftedPlanningDate(
+                job.arrivalWindowEnd,
+                toDayContaining: nextDate
+            )
+            jobs[existingIndex].completionDeadline = shiftedPlanningDate(
+                job.completionDeadline,
+                toDayContaining: nextDate
+            )
+            return
+        }
+
+        var nextJob = job
+        nextJob.id = UUID()
+        nextJob.jobNumber = generateJobNumber(for: nextDate)
+        nextJob.primaryTechnicianID = nil
+        nextJob.secondaryTechnicianID = nil
+        nextJob.scheduledDate = nextDate
+        nextJob.arrivalWindowEnd = shiftedPlanningDate(
+            job.arrivalWindowEnd,
+            toDayContaining: nextDate
+        )
+        nextJob.completionDeadline = shiftedPlanningDate(
+            job.completionDeadline,
+            toDayContaining: nextDate
+        )
+        nextJob.setupStartDate = nil
+        nextJob.completedDate = nil
+        nextJob.status = .toBeScheduled
+        nextJob.workflowState = .notStarted
+        nextJob.timelineEvents = []
+        nextJob.createdDate = Date()
+        nextJob.lifecycleStatus = .active
+        nextJob.recurrenceSeriesID = seriesID
+        nextJob.recurrenceSequence = nextSequence
+        jobs.append(nextJob)
+    }
+
+    private func shiftedPlanningDate(
+        _ source: Date?,
+        toDayContaining target: Date
+    ) -> Date? {
+        guard let source else { return nil }
+        let calendar = Calendar.current
+        let time = calendar.dateComponents(
+            [.hour, .minute, .second],
+            from: source
+        )
+        return calendar.date(
+            bySettingHour: time.hour ?? 0,
+            minute: time.minute ?? 0,
+            second: time.second ?? 0,
+            of: target
+        )
+    }
+
+    private func prepareRecurrenceIdentity(for job: inout JobRecord) {
+        guard job.isRecurring, job.recurrenceFrequency != nil else {
+            job.recurrenceFrequency = nil
+            job.recurrenceSeriesID = nil
+            job.recurrenceSequence = 0
+            return
+        }
+
+        if job.recurrenceSeriesID == nil {
+            job.recurrenceSeriesID = job.id
+        }
+    }
+
+    private func materializePendingRecurringJobs() {
+        let candidates = jobs.filter {
+            $0.isRecurring &&
+            $0.recurrenceFrequency != nil &&
+            ($0.recurrenceSequence == 0 || $0.status == .completed)
+        }
+
+        for candidate in candidates {
+            var normalized = candidate
+            prepareRecurrenceIdentity(for: &normalized)
+            if let index = jobs.firstIndex(where: { $0.id == normalized.id }) {
+                jobs[index] = normalized
+            }
+            ensureNextOccurrence(
+                after: normalized,
+                includeInitialOccurrence: normalized.recurrenceSequence == 0
+            )
         }
     }
 
@@ -330,7 +880,72 @@ final class AppDataStore: ObservableObject {
         )
 
         jobs[index].timelineEvents.append(event)
+        enqueueTechnicianNoteOperation(
+            jobID: jobID,
+            event: event,
+            text: trimmedText
+        )
         return event
+    }
+
+    /// Corrects a lifecycle timestamp while retaining the original value in
+    /// an audit event. Only an Owner or Manager may perform this operation.
+    @discardableResult
+    func correctTimelineTimestamp(
+        jobID: UUID,
+        eventID: UUID,
+        correctedTimestamp: Date,
+        reason: String,
+        actorEmployeeID: UUID,
+        correctedAt: Date = Date()
+    ) -> JobTimelineEvent? {
+        let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedReason.isEmpty,
+              let actor = employees.first(where: { $0.id == actorEmployeeID }),
+              actor.canOverrideScheduling,
+              let jobIndex = jobs.firstIndex(where: { $0.id == jobID }),
+              let eventIndex = jobs[jobIndex].timelineEvents.firstIndex(where: {
+                  $0.id == eventID && $0.type != .timelineCorrected
+              }) else { return nil }
+
+        let correctedType = jobs[jobIndex].timelineEvents[eventIndex].type
+        let originalTimestamp = jobs[jobIndex].timelineEvents[eventIndex].timestamp
+        guard originalTimestamp != correctedTimestamp else { return nil }
+        let correctedTitle = jobs[jobIndex].timelineEvents[eventIndex].title
+        jobs[jobIndex].timelineEvents[eventIndex].timestamp = correctedTimestamp
+
+        // Keep the dedicated timestamps used by labor reporting consistent
+        // with their corrected audit events.
+        switch correctedType {
+        case .setupStarted:
+            jobs[jobIndex].setupStartDate = correctedTimestamp
+        case .workCompleted, .jobCompleted:
+            jobs[jobIndex].completedDate = correctedTimestamp
+        default:
+            break
+        }
+
+        let auditEvent = JobTimelineEvent(
+            type: .timelineCorrected,
+            title: "Timeline Corrected: \(correctedTitle)",
+            timestamp: correctedAt,
+            employeeID: actorEmployeeID,
+            note: trimmedReason,
+            correctedEventID: eventID,
+            originalTimestamp: originalTimestamp,
+            correctedTimestamp: correctedTimestamp
+        )
+        jobs[jobIndex].timelineEvents.append(auditEvent)
+        enqueueTimelineCorrectionOperation(
+            job: jobs[jobIndex],
+            eventID: eventID,
+            originalTimestamp: originalTimestamp,
+            correctedTimestamp: correctedTimestamp,
+            reason: trimmedReason,
+            actorEmployeeID: actorEmployeeID,
+            correctedAt: correctedAt
+        )
+        return auditEvent
     }
     func workflowContext(
         for jobID: UUID
@@ -356,6 +971,7 @@ final class AppDataStore: ObservableObject {
         jobID: UUID,
         action: JobWorkflowAction,
         employeeID: UUID? = nil,
+        note: String? = nil,
         at timestamp: Date = Date()
     ) -> Bool {
         guard let index = jobs.firstIndex(where: {
@@ -364,19 +980,36 @@ final class AppDataStore: ObservableObject {
             return false
         }
 
-        if action == .createInvoice {
-            return createInvoiceFromJob(jobID: jobID) != nil
+        let invoice = invoices.first {
+            $0.jobNumber == jobs[index].jobNumber
         }
 
-        if action == .recordPayment {
-            jobs[index] =
-                fieldOperationsEngine.recordPaymentReceived(
-                    for: jobs[index],
+        if action == .createInvoice {
+            guard fieldOperationsEngine.validate(
+                job: jobs[index],
+                action: action,
+                invoice: invoice
+            ).canProceed else {
+                return false
+            }
+
+            let created = createInvoiceFromJob(jobID: jobID) != nil
+            if created {
+                synchronizeAssignmentWorkflow(
+                    jobID: jobID,
+                    action: action,
                     employeeID: employeeID,
                     at: timestamp
                 )
-
-            return true
+                enqueueWorkflowOperation(
+                    jobID: jobID,
+                    action: action,
+                    employeeID: employeeID,
+                    note: note,
+                    timestamp: timestamp
+                )
+            }
+            return created
         }
 
         guard let updated =
@@ -384,6 +1017,8 @@ final class AppDataStore: ObservableObject {
                     job: jobs[index],
                     action: action,
                     employeeID: employeeID,
+                    note: note,
+                    invoice: invoice,
                     at: timestamp
                 )
         else {
@@ -391,7 +1026,96 @@ final class AppDataStore: ObservableObject {
         }
 
         jobs[index] = updated
+        synchronizeAssignmentWorkflow(
+            jobID: jobID,
+            action: action,
+            employeeID: employeeID,
+            at: timestamp
+        )
+        enqueueWorkflowOperation(
+            jobID: jobID,
+            action: action,
+            employeeID: employeeID,
+            note: note,
+            timestamp: timestamp
+        )
         return true
+    }
+
+    /// Keeps the Assignment lifecycle aligned with the established My Day
+    /// field workflow without duplicating lifecycle rules outside the engine.
+    private func synchronizeAssignmentWorkflow(
+        jobID: UUID,
+        action: JobWorkflowAction,
+        employeeID: UUID?,
+        at timestamp: Date
+    ) {
+        guard var assignment = assignment(forJobID: jobID) else { return }
+
+        do {
+            switch action {
+            case .startTravel:
+                if assignment.status == .scheduled {
+                    assignment = try assignmentEngine.dispatch(
+                        assignmentID: assignment.id,
+                        actorEmployeeID: employeeID,
+                        note: "Dispatched by the My Day workflow.",
+                        at: timestamp
+                    )
+                }
+                if assignment.status == .dispatched {
+                    _ = try assignmentEngine.beginTravel(
+                        assignmentID: assignment.id,
+                        actorEmployeeID: employeeID,
+                        at: timestamp
+                    )
+                }
+
+            case .markArrived:
+                if assignment.status == .enRoute {
+                    _ = try assignmentEngine.arrive(
+                        assignmentID: assignment.id,
+                        actorEmployeeID: employeeID,
+                        at: timestamp
+                    )
+                }
+
+            case .finishWork:
+                if assignment.status == .onSite {
+                    _ = try assignmentEngine.complete(
+                        assignmentID: assignment.id,
+                        actorEmployeeID: employeeID,
+                        at: timestamp
+                    )
+                }
+
+            case .createInvoice:
+                if assignment.status == .workComplete {
+                    _ = try assignmentEngine.markInvoiceReady(
+                        assignmentID: assignment.id,
+                        actorEmployeeID: employeeID,
+                        at: timestamp
+                    )
+                }
+
+            case .completeJob:
+                if assignment.status == .workComplete ||
+                    assignment.status == .invoiceReady {
+                    _ = try assignmentEngine.close(
+                        assignmentID: assignment.id,
+                        actorEmployeeID: employeeID,
+                        at: timestamp
+                    )
+                }
+
+            case .pauseTravel, .resumeTravel, .startSetup, .startWork,
+                 .pauseWork, .resumeWork, .startPackUp,
+                 .recordPayment, .viewDetails:
+                break
+            }
+        } catch {
+            print("Failed to synchronize Assignment workflow: \(error.localizedDescription)")
+        }
     }
 
     @discardableResult
@@ -400,38 +1124,12 @@ final class AppDataStore: ObservableObject {
         employeeID: UUID? = nil,
         startedAt: Date = Date()
     ) -> Bool {
-        guard let index = jobs.firstIndex(where: {
-            $0.id == jobID
-        }) else {
-            return false
-        }
-
-        guard jobs[index].status == .toBeScheduled ||
-              jobs[index].status == .scheduled ||
-              jobs[index].status == .assigned
-        else {
-            return false
-        }
-
-        var updated = jobs[index]
-        updated.status = .inProgress
-        updated.workflowState = .settingUp
-
-        if updated.setupStartDate == nil {
-            updated.setupStartDate = startedAt
-        }
-
-        updated.timelineEvents.append(
-            JobTimelineEvent(
-                type: .setupStarted,
-                title: "Setup Started",
-                timestamp: startedAt,
-                employeeID: employeeID
-            )
+        performWorkflowAction(
+            jobID: jobID,
+            action: .startSetup,
+            employeeID: employeeID,
+            at: startedAt
         )
-
-        jobs[index] = updated
-        return true
     }
 
     @discardableResult
@@ -440,31 +1138,12 @@ final class AppDataStore: ObservableObject {
         employeeID: UUID? = nil,
         startedAt: Date = Date()
     ) -> Bool {
-        guard let index = jobs.firstIndex(where: {
-            $0.id == jobID
-        }) else {
-            return false
-        }
-
-        guard jobs[index].status == .inProgress,
-              jobs[index].workflowState == .settingUp
-        else {
-            return false
-        }
-
-        var updated = jobs[index]
-        updated.workflowState = .working
-        updated.timelineEvents.append(
-            JobTimelineEvent(
-                type: .workStarted,
-                title: "Job Started",
-                timestamp: startedAt,
-                employeeID: employeeID
-            )
+        performWorkflowAction(
+            jobID: jobID,
+            action: .startWork,
+            employeeID: employeeID,
+            at: startedAt
         )
-
-        jobs[index] = updated
-        return true
     }
 
     @discardableResult
@@ -473,39 +1152,27 @@ final class AppDataStore: ObservableObject {
         employeeID: UUID? = nil,
         completedAt: Date = Date()
     ) -> Bool {
-        guard let index = jobs.firstIndex(where: {
-            $0.id == jobID
-        }) else {
+        guard let job = jobs.first(where: { $0.id == jobID }) else {
             return false
         }
 
-        guard jobs[index].status == .inProgress,
-              jobs[index].workflowState == .working
-        else {
-            return false
+        if job.workflowState == .working {
+            guard performWorkflowAction(
+                jobID: jobID,
+                action: .startPackUp,
+                employeeID: employeeID,
+                at: completedAt
+            ) else {
+                return false
+            }
         }
 
-        var updated = jobs[index]
-        // Field work is complete, but the overall workflow is not closed yet.
-        // Keep the job reportable as completed while leaving the workflow at
-        // workComplete so Create Invoice remains the next valid action.
-        updated.workflowState = .workComplete
-        updated.status = .completed
-
-        if updated.completedDate == nil {
-            updated.completedDate = completedAt
-        }
-
-        updated.timelineEvents.append(
-            JobTimelineEvent(
-                type: .jobCompleted,
-                title: "Job Completed",
-                timestamp: completedAt,
-                employeeID: employeeID
-            )
+        return performWorkflowAction(
+            jobID: jobID,
+            action: .finishWork,
+            employeeID: employeeID,
+            at: completedAt
         )
-        jobs[index] = updated
-        return true
     }
 
     func archiveJob(_ job: JobRecord) {
@@ -551,8 +1218,133 @@ final class AppDataStore: ObservableObject {
     }
 
     func updateInvoice(_ invoice: InvoiceRecord) {
-        if let index = invoices.firstIndex(where: { $0.id == invoice.id }) {
-            invoices[index] = invoice
+        guard let index = invoices.firstIndex(where: {
+            $0.id == invoice.id
+        }) else {
+            return
+        }
+
+        let previousStatus = invoices[index].status
+        let normalizedInvoice = normalizedPaymentState(for: invoice)
+        invoices[index] = normalizedInvoice
+        if previousStatus != normalizedInvoice.status {
+            enqueueInvoiceOperation(
+                invoice: normalizedInvoice,
+                previousStatus: previousStatus,
+                timestamp: Date()
+            )
+        }
+        synchronizeCompletedJobFromInvoice(
+            normalizedInvoice,
+            previousStatus: previousStatus
+        )
+    }
+
+    private func normalizedPaymentState(
+        for invoice: InvoiceRecord,
+        at timestamp: Date = Date()
+    ) -> InvoiceRecord {
+        var normalized = invoice
+        let total = max(normalized.total, 0)
+
+        if normalized.status == .paid {
+            normalized.amountPaid = total
+        } else {
+            normalized.amountPaid = min(
+                max(normalized.amountPaid, 0),
+                total
+            )
+
+            if total > 0 && normalized.amountPaid >= total {
+                normalized.status = .paid
+            } else if normalized.amountPaid > 0 {
+                normalized.status = .partiallyPaid
+            } else if normalized.status == .partiallyPaid {
+                normalized.status = .sent
+            }
+        }
+
+        normalized.balanceDue = max(
+            0,
+            total - normalized.amountPaid
+        )
+
+        if normalized.status == .paid {
+            normalized.paidDate = normalized.paidDate ?? timestamp
+        } else {
+            normalized.paidDate = nil
+        }
+
+        return normalized
+    }
+
+    private func synchronizeCompletedJobFromInvoice(
+        _ invoice: InvoiceRecord,
+        previousStatus: InvoiceStatus
+    ) {
+        let completesTechnicianWork: Bool
+        switch invoice.status {
+        case .sent, .partiallyPaid, .paid, .overdue:
+            completesTechnicianWork = true
+        case .draft, .void:
+            completesTechnicianWork = false
+        }
+
+        guard completesTechnicianWork,
+              let jobIndex = jobs.firstIndex(where: {
+                  $0.jobNumber == invoice.jobNumber
+              }) else {
+            return
+        }
+
+        let timestamp = invoice.status == .paid
+            ? (invoice.paidDate ?? Date())
+            : Date()
+
+        switch invoice.status {
+        case .sent, .overdue:
+            if previousStatus != invoice.status &&
+                !jobs[jobIndex].timelineEvents.contains(where: {
+                    $0.type == .invoiceSent
+                }) {
+                jobs[jobIndex].timelineEvents.append(
+                    JobTimelineEvent(
+                        type: .invoiceSent,
+                        title: "Invoice Sent",
+                        timestamp: timestamp,
+                        employeeID: jobs[jobIndex].primaryTechnicianID
+                    )
+                )
+            }
+
+        case .partiallyPaid, .paid:
+            if !jobs[jobIndex].timelineEvents.contains(where: {
+                $0.type == .paymentReceived
+            }) {
+                jobs[jobIndex].timelineEvents.append(
+                    JobTimelineEvent(
+                        type: .paymentReceived,
+                        title: "Payment Received",
+                        timestamp: timestamp,
+                        employeeID: jobs[jobIndex].primaryTechnicianID
+                    )
+                )
+            }
+
+        case .draft, .void:
+            break
+        }
+
+        if jobs[jobIndex].workflowState != .completed {
+            _ = performWorkflowAction(
+                jobID: jobs[jobIndex].id,
+                action: .completeJob,
+                employeeID: jobs[jobIndex].primaryTechnicianID,
+                note: invoice.status == .paid
+                    ? "Job completed after payment was received."
+                    : "Job completed after the invoice was sent.",
+                at: timestamp
+            )
         }
     }
 
@@ -711,7 +1503,10 @@ final class AppDataStore: ObservableObject {
 
         invoices.append(invoice)
 
-        jobs[jobIndex].status = .completed
+        // Creating a draft invoice is a billing handoff, not the end of the
+        // technician workflow. The Job becomes complete when that invoice is
+        // sent or payment is recorded through updateInvoice(_:).
+        jobs[jobIndex].status = .inProgress
         jobs[jobIndex].workflowState = .invoiceCreated
 
         if !jobs[jobIndex].timelineEvents.contains(where: {
@@ -774,6 +1569,10 @@ final class AppDataStore: ObservableObject {
     }
 
     private func saveData() {
+        guard persistenceEnabled else {
+            return
+        }
+
         let snapshot = AppDataSnapshot(
             customers: customers,
             sites: sites,
@@ -786,7 +1585,8 @@ final class AppDataStore: ObservableObject {
             nextCustomerNumber: nextCustomerNumber,
             recordSequencesByMonth: recordSequencesByMonth,
             recommendationRules: recommendationRules,
-            employees: employees
+            employees: employees,
+            assignments: assignmentStore.assignments
         )
 
         do {
@@ -798,6 +1598,10 @@ final class AppDataStore: ObservableObject {
     }
 
     private func loadData() {
+        guard persistenceEnabled else {
+            return
+        }
+
         let url = saveFileURL()
 
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -820,6 +1624,7 @@ final class AppDataStore: ObservableObject {
             recordSequencesByMonth = snapshot.recordSequencesByMonth
             recommendationRules = snapshot.recommendationRules
             employees = snapshot.employees
+            try assignmentStore.replaceAll(with: snapshot.assignments)
             seedRecommendationRulesIfNeeded()
         } catch {
             print("Failed to load app data: \(error.localizedDescription)")
@@ -829,6 +1634,76 @@ final class AppDataStore: ObservableObject {
     private func saveFileURL() -> URL {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return documents.appendingPathComponent(saveFileName)
+    }
+
+    /// Removes fixtures written by early offline integration tests before the
+    /// primary AppDataStore persistence boundary became injectable.
+    ///
+    /// The marker is intentionally exact so customer and operational data can
+    /// never be mistaken for test content.
+    private func removeLeakedOfflineTestFixturesIfNeeded() {
+        guard persistenceEnabled else {
+            return
+        }
+
+        let testCustomerNumber = "PPS-OFFLINE-TEST"
+        let leakedJobs = jobs.filter {
+            $0.customerNumber == testCustomerNumber &&
+            (
+                $0.jobNumber.hasPrefix("JOB-OFFLINE-") ||
+                $0.jobNumber == "JOB-LOCAL-ONLY"
+            )
+        }
+
+        let leakedAssignments = assignmentStore.assignments.filter {
+            $0.customerNumber == testCustomerNumber &&
+            (
+                $0.jobNumber.hasPrefix("JOB-OFFLINE-") ||
+                $0.jobNumber == "JOB-LOCAL-ONLY"
+            )
+        }
+        let hasLeakedInvoice = invoices.contains {
+            $0.customerNumber == testCustomerNumber &&
+            (
+                $0.jobNumber.hasPrefix("JOB-OFFLINE-") ||
+                $0.jobNumber == "JOB-LOCAL-ONLY"
+            )
+        }
+
+        guard !leakedJobs.isEmpty ||
+                !leakedAssignments.isEmpty ||
+                hasLeakedInvoice else {
+            return
+        }
+
+        let leakedJobIDs = Set(
+            leakedJobs.map(\.id) + leakedAssignments.map(\.jobID)
+        )
+        let leakedJobNumbers = Set(
+            leakedJobs.map(\.jobNumber) + leakedAssignments.map(\.jobNumber)
+        )
+
+        jobs.removeAll { leakedJobIDs.contains($0.id) }
+        invoices.removeAll {
+            $0.customerNumber == testCustomerNumber ||
+            leakedJobNumbers.contains($0.jobNumber)
+        }
+
+        let retainedAssignments = assignmentStore.assignments.filter {
+            !leakedJobIDs.contains($0.jobID) &&
+            !leakedJobNumbers.contains($0.jobNumber) &&
+            $0.customerNumber != testCustomerNumber
+        }
+
+        do {
+            try assignmentStore.replaceAll(with: retainedAssignments)
+            saveData()
+        } catch {
+            print(
+                "Failed to remove leaked offline test fixtures: " +
+                error.localizedDescription
+            )
+        }
     }
 }
 
@@ -845,6 +1720,7 @@ private struct AppDataSnapshot: Codable {
     var recordSequencesByMonth: [String: Int]
     var recommendationRules: [RecommendationRule]
     var employees: [EmployeeRecord] = []
+    var assignments: [Assignment] = []
 
     private enum CodingKeys: String, CodingKey {
         case customers
@@ -859,6 +1735,7 @@ private struct AppDataSnapshot: Codable {
         case recordSequencesByMonth
         case recommendationRules
         case employees
+        case assignments
     }
 
     init(
@@ -873,7 +1750,8 @@ private struct AppDataSnapshot: Codable {
         nextCustomerNumber: Int,
         recordSequencesByMonth: [String: Int],
         recommendationRules: [RecommendationRule],
-        employees: [EmployeeRecord] = []
+        employees: [EmployeeRecord] = [],
+        assignments: [Assignment] = []
     ) {
         self.customers = customers
         self.sites = sites
@@ -887,6 +1765,7 @@ private struct AppDataSnapshot: Codable {
         self.recordSequencesByMonth = recordSequencesByMonth
         self.recommendationRules = recommendationRules
         self.employees = employees
+        self.assignments = assignments
     }
 
     init(from decoder: Decoder) throws {
@@ -935,6 +1814,10 @@ private struct AppDataSnapshot: Codable {
             [EmployeeRecord].self,
             forKey: .employees
         ) ?? []
+        assignments = try container.decodeIfPresent(
+            [Assignment].self,
+            forKey: .assignments
+        ) ?? []
         nextCustomerNumber = try container.decode(
             Int.self,
             forKey: .nextCustomerNumber
@@ -949,5 +1832,22 @@ private struct AppDataSnapshot: Codable {
             [RecommendationRule].self,
             forKey: .recommendationRules
         ) ?? []
+    }
+}
+
+private enum AssignmentIntegrationError: LocalizedError {
+    case jobNotFound(UUID)
+    case assignmentUnavailable(UUID)
+    case employeeNotFound(UUID)
+
+    var errorDescription: String? {
+        switch self {
+        case .jobNotFound:
+            return "The related job could not be found."
+        case .assignmentUnavailable:
+            return "The operational assignment could not be created or loaded."
+        case .employeeNotFound:
+            return "The selected technician could not be found or is inactive."
+        }
     }
 }

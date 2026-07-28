@@ -12,6 +12,7 @@ struct ActionTile: View {
     let systemImage: String
     let tint: Color
     let isEnabled: Bool
+    let isInteractive: Bool
     let action: () -> Void
 
     init(
@@ -19,12 +20,14 @@ struct ActionTile: View {
         systemImage: String,
         tint: Color = .blue,
         isEnabled: Bool = true,
+        isInteractive: Bool = true,
         action: @escaping () -> Void
     ) {
         self.title = title
         self.systemImage = systemImage
         self.tint = tint
         self.isEnabled = isEnabled
+        self.isInteractive = isInteractive
         self.action = action
     }
 
@@ -79,7 +82,8 @@ struct ActionTile: View {
             )
         }
         .buttonStyle(.plain)
-        .disabled(!isEnabled)
+        .disabled(!isEnabled || !isInteractive)
         .accessibilityLabel(title)
+        .accessibilityAddTraits(isInteractive ? [] : .isStaticText)
     }
 }

@@ -42,6 +42,13 @@ struct EstimateDetailView: View {
         PricingCalculator.total(for: estimate)
     }
 
+    private var availableSites: [CustomerSite] {
+        store.sites.filter {
+            $0.customerNumber == estimate.customerNumber &&
+            ($0.lifecycleStatus == .active || $0.id == estimate.siteID)
+        }
+    }
+
     var body: some View {
         Form {
             Section("Estimate") {
@@ -49,6 +56,13 @@ struct EstimateDetailView: View {
                     .font(.headline)
 
                 Text("Customer #: \(estimate.customerNumber)")
+
+                Picker("Site", selection: $estimate.siteID) {
+                    Text("No site selected").tag(UUID?.none)
+                    ForEach(availableSites) { site in
+                        Text(siteDisplayName(site)).tag(Optional(site.id))
+                    }
+                }
 
                 if !estimate.leadNumber.isEmpty {
                     Text("Lead: \(estimate.leadNumber)")
@@ -79,9 +93,13 @@ struct EstimateDetailView: View {
             )
 
             Section("Pricing") {
-                TextField("Discount", value: $estimate.discount, format: .number)
-                    .keyboardType(.decimalPad)
+                LabeledContent("Discount") {
+                    SelectAllDecimalField(
+                        placeholder: "Discount",
+                        value: $estimate.discount
+                    )
                     .focused($isInputFocused)
+                }
 
                 HStack {
                     Text("Subtotal")
@@ -140,47 +158,41 @@ struct EstimateDetailView: View {
                 }
                 .disabled(estimate.lifecycleStatus == .archived)
 
-                Button("Save Changes") {
-                    isInputFocused = false
-
-                    estimate.lineItems = PricingCalculator.updatedLineItems(estimate.lineItems)
-                    estimate.subtotal = PricingCalculator.subtotal(for: estimate)
-                    estimate.total = PricingCalculator.total(for: estimate)
-
-                    if let firstItem = estimate.lineItems.first {
-                        estimate.serviceType = firstItem.serviceType
-                        estimate.otherService = firstItem.otherService
-                    }
-
-                    estimate.serviceDetails = estimate.lineItems.map { item in
-                        item.description.isEmpty ? serviceName(for: item) : item.description
-                    }.joined(separator: "\n")
-
-                    store.updateEstimate(estimate)
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-
                 if estimate.lifecycleStatus == .archived {
-                    Button("Restore Estimate") {
+                    Button {
                         store.restoreEstimate(estimate)
                         dismiss()
+                    } label: {
+                        Label("Restore Estimate", systemImage: "arrow.uturn.backward.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button("Archive Estimate", role: .destructive) {
+                    Button(role: .destructive) {
                         store.archiveEstimate(estimate)
                         dismiss()
+                    } label: {
+                        Label("Archive Estimate", systemImage: "archivebox.fill")
                     }
+                    .buttonStyle(.borderedProminent)
                 }
             }
         }
         .navigationTitle("Edit Estimate")
         .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") {
-                    isInputFocused = false
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    saveEstimate()
+                }
+            }
+
+            if isInputFocused {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isInputFocused = false
+                    } label: {
+                        Image(systemName: "keyboard.chevron.compact.down")
+                    }
+                    .accessibilityLabel("Dismiss Keyboard")
                 }
             }
         }
@@ -232,6 +244,33 @@ struct EstimateDetailView: View {
             )
         }
     }
+
+    private func siteDisplayName(_ site: CustomerSite) -> String {
+        if site.siteName.isEmpty { return site.serviceAddress }
+        if site.serviceAddress.isEmpty { return site.siteName }
+        return "\(site.siteName) — \(site.serviceAddress)"
+    }
+
+    private func saveEstimate() {
+        isInputFocused = false
+
+        estimate.lineItems = PricingCalculator.updatedLineItems(estimate.lineItems)
+        estimate.subtotal = PricingCalculator.subtotal(for: estimate)
+        estimate.total = PricingCalculator.total(for: estimate)
+
+        if let firstItem = estimate.lineItems.first {
+            estimate.serviceType = firstItem.serviceType
+            estimate.otherService = firstItem.otherService
+        }
+
+        estimate.serviceDetails = estimate.lineItems.map { item in
+            item.description.isEmpty ? serviceName(for: item) : item.description
+        }.joined(separator: "\n")
+
+        store.updateEstimate(estimate)
+        dismiss()
+    }
+
     private func createAndSharePDF() {
         isInputFocused = false
 

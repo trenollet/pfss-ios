@@ -112,3 +112,25 @@ Evaluate a reusable presentation coordinator after the stable-parent routing pat
 ### Advanced Time Reporting
 
 Support pause/resume, travel time separate from job labor, per-technician timers, editable corrections, billing use cases, time cards, and performance reporting.
+
+
+## Post v1.0
+
+### Track mileage
+
+track technician mileage in the app for job assignments
+track adhoc mileage input
+downloadable montlhy reimbursment report
+IRS mileage in admin settings
+allowed to claim option in admin for employees
+
+### Operations Page UI clean up
+
+use tiles to work into each section
+no more long lists
+
+### REvamp the Dashboard
+Use tiles to navigate Operations, Tech My Day, Leads, Customers, Estimates, and Invoices
+rename the Page to something else
+
+

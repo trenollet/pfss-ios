@@ -7,9 +7,23 @@
 
 import SwiftUI
 
+extension JobWorkflowAccent {
+    var color: Color {
+        switch self {
+        case .secondary: return .secondary
+        case .blue: return .blue
+        case .orange: return .orange
+        case .purple: return .purple
+        case .green: return .green
+        case .red: return .red
+        }
+    }
+}
+
 struct JobWorkflowStatusCard: View {
     let context: JobWorkflowContext
     let action: () -> Void
+    var performAction: ((JobWorkflowAction) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -21,8 +35,8 @@ struct JobWorkflowStatusCard: View {
                         .foregroundStyle(.secondary)
 
                     Label(
-                        context.currentState.rawValue,
-                        systemImage: stateIcon
+                        context.presentation.statusTitle,
+                        systemImage: context.presentation.statusSystemImage
                     )
                     .font(.headline)
                 }
@@ -50,7 +64,7 @@ struct JobWorkflowStatusCard: View {
                         )
 
                     Capsule()
-                        .fill(stateColor)
+                        .fill(context.presentation.accent.color)
                         .frame(
                             width: max(progressWidth, 0)
                         )
@@ -67,7 +81,22 @@ struct JobWorkflowStatusCard: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .tint(actionColor)
+            .tint(context.nextAction.presentation.accent.color)
+
+            if let secondaryAction,
+               let performAction {
+                Button {
+                    performAction(secondaryAction)
+                } label: {
+                    Label(
+                        secondaryAction.title,
+                        systemImage: secondaryAction.systemImage
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(secondaryAction.presentation.accent.color)
+            }
         }
         .padding(.vertical, 4)
     }
@@ -86,54 +115,9 @@ struct JobWorkflowStatusCard: View {
         )
     }
 
-    private var stateIcon: String {
-        switch context.currentState {
-        case .notStarted: return "clock"
-        case .traveling: return "car.fill"
-        case .arrived: return "mappin.circle.fill"
-        case .settingUp:
-            return "wrench.and.screwdriver.fill"
-        case .working: return "hammer.fill"
-        case .packingUp: return "shippingbox.fill"
-        case .workComplete:
-            return "checkmark.circle.fill"
-        case .invoiceCreated: return "doc.text.fill"
-        case .paymentReceived:
-            return "creditcard.fill"
-        case .completed: return "flag.checkered"
-        case .cancelled: return "xmark.circle.fill"
-        }
-    }
-
-    private var stateColor: Color {
-        switch context.currentState {
-        case .completed, .paymentReceived:
-            return .green
-        case .cancelled:
-            return .red
-        case .traveling, .arrived:
-            return .blue
-        case .settingUp, .working, .packingUp:
-            return .orange
-        case .workComplete, .invoiceCreated:
-            return .purple
-        case .notStarted:
-            return .secondary
-        }
-    }
-
-    private var actionColor: Color {
-        switch context.nextAction {
-        case .completeJob:
-            return .green
-        case .recordPayment:
-            return .purple
-        case .createInvoice:
-            return .blue
-        case .viewDetails:
-            return .secondary
-        default:
-            return .orange
+    private var secondaryAction: JobWorkflowAction? {
+        context.availableActions.first {
+            $0 != context.nextAction && $0 != .viewDetails
         }
     }
 }
@@ -141,6 +125,7 @@ struct JobWorkflowStatusCard: View {
 struct JobTimelineView: View {
     let events: [JobTimelineEvent]
     let employeeName: (UUID?) -> String?
+    var onCorrect: ((JobTimelineEvent) -> Void)? = nil
 
     var body: some View {
         if events.isEmpty {
@@ -197,12 +182,139 @@ struct JobTimelineView: View {
                                 Text(note)
                                     .font(.caption)
                             }
+
+                            if event.type == .timelineCorrected,
+                               let original = event.originalTimestamp,
+                               let corrected = event.correctedTimestamp {
+                                Text(
+                                    "\(original.formatted(date: .abbreviated, time: .shortened)) → \(corrected.formatted(date: .abbreviated, time: .shortened))"
+                                )
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.orange)
+                            }
                         }
 
                         Spacer()
+
+                        if let onCorrect,
+                           event.type != .note,
+                           event.type != .timelineCorrected {
+                            Button {
+                                onCorrect(event)
+                            } label: {
+                                Image(systemName: "clock.arrow.trianglehead.2.counterclockwise.rotate.90")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Correct \(event.title) time")
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+struct TimelineCorrectionEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let event: JobTimelineEvent
+    let actorName: String
+    let onSave: (Date, String) -> Bool
+
+    @State private var correctedTimestamp: Date
+    @State private var reason = ""
+    @State private var showingSaveError = false
+
+    init(
+        event: JobTimelineEvent,
+        actorName: String,
+        onSave: @escaping (Date, String) -> Bool
+    ) {
+        self.event = event
+        self.actorName = actorName
+        self.onSave = onSave
+        _correctedTimestamp = State(initialValue: event.timestamp)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Timeline Event") {
+                    LabeledContent("Event", value: event.title)
+                    LabeledContent(
+                        "Original Time",
+                        value: event.timestamp.formatted(
+                            date: .abbreviated,
+                            time: .shortened
+                        )
+                    )
+                }
+
+                Section {
+                    DatePicker(
+                        "Corrected Date",
+                        selection: $correctedTimestamp,
+                        displayedComponents: [.date]
+                    )
+
+                    DatePicker(
+                        "Corrected Time",
+                        selection: $correctedTimestamp,
+                        displayedComponents: [.hourAndMinute]
+                    )
+
+                    TextField(
+                        "Reason for correction (required)",
+                        text: $reason,
+                        axis: .vertical
+                    )
+                        .lineLimit(2...5)
+                } header: {
+                    Text("Correction")
+                } footer: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(
+                            "Change the corrected date or time and enter a reason to enable Save."
+                        )
+                        Text(
+                            "The original time will remain in the audit history. Correction recorded by \(actorName)."
+                        )
+                    }
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle("Correct Timeline")
+            .navigationBarTitleDisplayMode(.inline)
+            .alert("Correction Not Saved", isPresented: $showingSaveError) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(
+                    "Confirm that the selected employee has the Owner or Manager role, then try again."
+                )
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        if onSave(correctedTimestamp, trimmedReason) {
+                            dismiss()
+                        } else {
+                            showingSaveError = true
+                        }
+                    }
+                    .disabled(
+                        trimmedReason.isEmpty ||
+                        correctedTimestamp == event.timestamp
+                    )
+                }
+            }
+        }
+    }
+
+    private var trimmedReason: String {
+        reason.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

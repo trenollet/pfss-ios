@@ -42,9 +42,36 @@
 		A24644482FEB424900DFECC5 /* PPS Receipt PrinterUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "PPS Receipt PrinterUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A224FF1B30112CC200F25972 /* Exceptions for "PPS Receipt Printer" folder in "PPS Receipt Printer" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				DispatchEngineTests.swift,
+				OperationalRecommendationEngineTests.swift,
+				RouteEngineTests.swift,
+				WorkforceIntelligenceEngineTests.swift,
+			);
+			target = A24644302FEB424700DFECC5 /* PPS Receipt Printer */;
+		};
+		A224FF1D30112CD200F25972 /* Exceptions for "PPS Receipt Printer" folder in "PPS Receipt PrinterTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				DispatchEngineTests.swift,
+				OperationalRecommendationEngineTests.swift,
+				RouteEngineTests.swift,
+				WorkforceIntelligenceEngineTests.swift,
+			);
+			target = A246443D2FEB424900DFECC5 /* PPS Receipt PrinterTests */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A24644332FEB424700DFECC5 /* PPS Receipt Printer */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A224FF1B30112CC200F25972 /* Exceptions for "PPS Receipt Printer" folder in "PPS Receipt Printer" target */,
+				A224FF1D30112CD200F25972 /* Exceptions for "PPS Receipt Printer" folder in "PPS Receipt PrinterTests" target */,
+			);
 			path = "PPS Receipt Printer";
 			sourceTree = "<group>";
 		};
@@ -451,7 +478,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = GPB2DAL564;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -485,7 +512,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = GPB2DAL564;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -519,6 +546,7 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GPB2DAL564;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
 				MARKETING_VERSION = 1.0;
@@ -540,6 +568,7 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GPB2DAL564;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
 				MARKETING_VERSION = 1.0;
@@ -560,6 +589,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GPB2DAL564;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.patriot.PPS-Receipt-PrinterUITests";
@@ -579,6 +609,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GPB2DAL564;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.patriot.PPS-Receipt-PrinterUITests";

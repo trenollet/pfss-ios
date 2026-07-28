@@ -249,6 +249,33 @@ struct SchedulingCalculator {
         for employee: EmployeeRecord,
         calendar: Calendar = .current
     ) -> Bool {
+        let dayStart = calendar.startOfDay(for: date)
+        guard let nextDay = calendar.date(
+            byAdding: .day,
+            value: 1,
+            to: dayStart
+        ) else {
+            return false
+        }
+
+        let dayInterval = DateInterval(
+            start: dayStart,
+            end: nextDay
+        )
+        let exceptions = employee.workforceProfile.availabilityExceptions
+            .filter { $0.overlaps(dayInterval) }
+
+        // An explicit unavailable exception (for example PTO) remains a hard
+        // block. An available exception intentionally overrides the
+        // employee's normal weekly schedule for this one calendar day.
+        if exceptions.contains(where: { $0.kind == .unavailable }) {
+            return false
+        }
+
+        if exceptions.contains(where: { $0.kind == .available }) {
+            return true
+        }
+
         let weekdayNumber = calendar.component(
             .weekday,
             from: date

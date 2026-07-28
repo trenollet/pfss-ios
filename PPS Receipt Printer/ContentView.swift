@@ -1,17 +1,30 @@
 import SwiftUI
 
+enum AppSection: Hashable {
+    case dashboard
+    case sales
+    case myDay
+    case service
+    case admin
+}
+
 struct ContentView: View {
-    
+    @State private var selectedSection: AppSection = .dashboard
+
     var body: some View {
-        TabView {
-            DashboardView()
+        TabView(selection: $selectedSection) {
+            DashboardView(selectedSection: $selectedSection)
                 .tabItem {
                     Label("Dashboard", systemImage: "chart.bar")
                 }
-            OperationsView()
+                .tag(AppSection.dashboard)
+
+            SalesDashboardView()
                 .tabItem {
-                    Label("Operations", systemImage: "person.3.sequence")
+                    Label("Sales", systemImage: "chart.line.uptrend.xyaxis")
                 }
+                .tag(AppSection.sales)
+
             TechnicianWorkspaceView()
                 .tabItem {
                     Label(
@@ -19,45 +32,21 @@ struct ContentView: View {
                         systemImage: "calendar.day.timeline.left"
                     )
                 }
-            LeadsView()
+                .tag(AppSection.myDay)
+
+            ServiceDashboardView()
                 .tabItem {
-                    Label("Leads", systemImage: "person.crop.circle.badge.plus")
+                    Label("Service", systemImage: "wrench.and.screwdriver")
                 }
-            CustomersView()
-                .tabItem {
-                    Label("Customers", systemImage: "person.2")
-                }
-            JobsView()
-                .tabItem {
-                    Label("Jobs", systemImage: "wrench.and.screwdriver")
-                }
-            EstimatesView()
-                .tabItem {
-                    Label("Estimates", systemImage: "doc.text")
-                }
-            InvoicesView()
-                .tabItem {
-                    Label("Invoices", systemImage: "doc.text.fill")
-                }
-            ServiceCatalogView()
-                .tabItem {
-                    Label("Catalog Items", systemImage: "book.pages")
-                }
-            
-            SitesView()
-                .tabItem {
-                    Label("Sites", systemImage: "house")
-                }
-            
-            PrintView()
-                .tabItem {
-                    Label("Print", systemImage: "printer")
-                }
-            AdminView()
+                .tag(AppSection.service)
+
+            NavigationStack {
+                AdminView()
+            }
                 .tabItem {
                     Label("Admin", systemImage: "gear")
                 }
-            }
+                .tag(AppSection.admin)
         }
     }
-
+}

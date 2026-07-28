@@ -84,33 +84,43 @@ struct LeadDetailView: View {
                 }
                 .disabled(lead.status == .converted || lead.lifecycleStatus == .archived)
 
-                Button("Save Changes") {
-                    isInputFocused = false
-                    store.updateLead(lead)
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-
                 if lead.lifecycleStatus == .archived {
-                    Button("Restore Lead") {
+                    Button {
                         store.restoreLead(lead)
                         dismiss()
+                    } label: {
+                        Label("Restore Lead", systemImage: "arrow.uturn.backward.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button("Archive Lead", role: .destructive) {
+                    Button(role: .destructive) {
                         store.archiveLead(lead)
                         dismiss()
+                    } label: {
+                        Label("Archive Lead", systemImage: "archivebox.fill")
                     }
+                    .buttonStyle(.borderedProminent)
                 }
             }
         }
         .navigationTitle("Edit Lead")
         .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
                     isInputFocused = false
+                    store.updateLead(lead)
+                    dismiss()
+                }
+            }
+
+            if isInputFocused {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isInputFocused = false
+                    } label: {
+                        Image(systemName: "keyboard.chevron.compact.down")
+                    }
+                    .accessibilityLabel("Dismiss Keyboard")
                 }
             }
         }

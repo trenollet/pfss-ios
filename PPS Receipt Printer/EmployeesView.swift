@@ -35,8 +35,7 @@ struct EmployeesView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
+        List {
                 Section {
                     NavigationLink {
                         WorkforceCapacityDashboardView()
@@ -98,7 +97,7 @@ struct EmployeesView: View {
 
                                         Spacer()
 
-                                        Text(employee.role.rawValue)
+                                        Text(employee.roleDisplayText)
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
@@ -119,6 +118,15 @@ struct EmployeesView: View {
                                 }
                                 .padding(.vertical, 4)
                             }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                if employee.lifecycleStatus != .archived {
+                                    Button(role: .destructive) {
+                                        store.archiveEmployee(employee)
+                                    } label: {
+                                        Label("Archive", systemImage: "archivebox.fill")
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -133,7 +141,6 @@ struct EmployeesView: View {
             ) {
                 EmployeeNewView()
                     .environmentObject(store)
-            }
         }
     }
 }
