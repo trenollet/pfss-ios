@@ -60,6 +60,10 @@ struct InvoiceRecordsListView: View {
     let title: String
     @State private var showArchived = false
     @State private var searchText: String
+    @State private var showingFilters = false
+    @State private var selectedStatus: InvoiceStatus?
+    @State private var dateFilter: RecordDateFilter = .all
+    @State private var sortOrder: RecordListSortOrder = .dateDescending
 
     init(
         statuses: Set<InvoiceStatus>? = nil,
@@ -102,8 +106,22 @@ struct InvoiceRecordsListView: View {
             }
         }
 
-        return matchingInvoices.sorted {
-            $0.issueDate > $1.issueDate
+        let statusFiltered = selectedStatus.map { status in
+            matchingInvoices.filter { $0.status == status }
+        } ?? matchingInvoices
+        let dateFiltered = statusFiltered.filter {
+            dateFilter.includes($0.issueDate)
+        }
+        return dateFiltered.sorted { first, second in
+            switch sortOrder {
+            case .dateAscending: return first.issueDate < second.issueDate
+            case .dateDescending: return first.issueDate > second.issueDate
+            case .nameAscending:
+                return customerDisplayName(for: first.customerNumber)
+                    .localizedCaseInsensitiveCompare(
+                        customerDisplayName(for: second.customerNumber)
+                    ) == .orderedAscending
+            }
         }
     }
 
@@ -177,6 +195,15 @@ struct InvoiceRecordsListView: View {
                                 }
                                 .padding(.vertical, 4)
                             }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                if invoice.lifecycleStatus != .archived {
+                                    Button(role: .destructive) {
+                                        store.archiveInvoice(invoice)
+                                    } label: {
+                                        Label("Archive", systemImage: "archivebox.fill")
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -184,6 +211,52 @@ struct InvoiceRecordsListView: View {
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Search invoices")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showingFilters = true } label: {
+                    Label(
+                        "Filter",
+                        systemImage: hasActiveFilters
+                            ? "line.3.horizontal.decrease.circle.fill"
+                            : "line.3.horizontal.decrease.circle"
+                    )
+                }
+            }
+        }
+        .sheet(isPresented: $showingFilters) {
+            NavigationStack {
+                Form {
+                    Picker("Date", selection: $dateFilter) {
+                        ForEach(RecordDateFilter.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Picker("Status", selection: $selectedStatus) {
+                        Text("All Statuses").tag(InvoiceStatus?.none)
+                        ForEach(InvoiceStatus.allCases) { Text($0.rawValue).tag(Optional($0)) }
+                    }
+                    Picker("Order", selection: $sortOrder) {
+                        ForEach(RecordListSortOrder.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                }
+                .navigationTitle("Filter Invoices")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Reset") {
+                            selectedStatus = nil
+                            dateFilter = .all
+                            sortOrder = .dateDescending
+                        }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showingFilters = false }
+                    }
+                }
+            }
+        }
+    }
+
+    private var hasActiveFilters: Bool {
+        selectedStatus != nil || dateFilter != .all || sortOrder != .dateDescending
     }
 
     private func customerDisplayName(

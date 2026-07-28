@@ -93,9 +93,13 @@ struct EstimateDetailView: View {
             )
 
             Section("Pricing") {
-                TextField("Discount", value: $estimate.discount, format: .number)
-                    .keyboardType(.decimalPad)
+                LabeledContent("Discount") {
+                    SelectAllDecimalField(
+                        placeholder: "Discount",
+                        value: $estimate.discount
+                    )
                     .focused($isInputFocused)
+                }
 
                 HStack {
                     Text("Subtotal")
@@ -155,16 +159,21 @@ struct EstimateDetailView: View {
                 .disabled(estimate.lifecycleStatus == .archived)
 
                 if estimate.lifecycleStatus == .archived {
-                    Button("Restore Estimate") {
+                    Button {
                         store.restoreEstimate(estimate)
                         dismiss()
+                    } label: {
+                        Label("Restore Estimate", systemImage: "arrow.uturn.backward.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button("Archive Estimate", role: .destructive) {
+                    Button(role: .destructive) {
                         store.archiveEstimate(estimate)
                         dismiss()
+                    } label: {
+                        Label("Archive Estimate", systemImage: "archivebox.fill")
                     }
+                    .buttonStyle(.borderedProminent)
                 }
             }
         }

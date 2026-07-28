@@ -8,62 +8,139 @@
 import SwiftUI
 
 struct JobHistoryReportView: View {
-    @EnvironmentObject var store: AppDataStore
+    @EnvironmentObject private var store: AppDataStore
+    @State private var searchText = ""
+    @State private var showingFilters = false
+    @State private var statusFilter: JobHistoryInvoiceFilter = .all
+    @State private var dateFilter: RecordDateFilter = .all
+    @State private var sortOrder: RecordListSortOrder = .dateDescending
 
-    private var completedJobs: [JobRecord] {
-        store.jobs
+    private var filteredJobs: [JobRecord] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return store.jobs
             .filter { $0.status == .completed }
-            .sorted { reportDate(for: $0) > reportDate(for: $1) }
+            .filter { dateFilter.includes(reportDate(for: $0)) }
+            .filter { statusFilter.includes(store.invoice(for: $0)?.status) }
+            .filter { job in
+                query.isEmpty || searchableText(for: job)
+                    .localizedCaseInsensitiveContains(query)
+            }
+            .sorted { first, second in
+                switch sortOrder {
+                case .dateAscending:
+                    return reportDate(for: first) < reportDate(for: second)
+                case .dateDescending:
+                    return reportDate(for: first) > reportDate(for: second)
+                case .nameAscending:
+                    return customerName(for: first.customerNumber)
+                        .localizedCaseInsensitiveCompare(
+                            customerName(for: second.customerNumber)
+                        ) == .orderedAscending
+                }
+            }
     }
 
     var body: some View {
         List {
-            if completedJobs.isEmpty {
+            if filteredJobs.isEmpty {
                 ContentUnavailableView(
-                    "No Job History",
+                    searchText.isEmpty && !hasActiveFilters
+                        ? "No Job History"
+                        : "No Matching Job History",
                     systemImage: "clock.arrow.circlepath",
                     description: Text(
-                        "Completed jobs will appear here."
+                        searchText.isEmpty && !hasActiveFilters
+                            ? "Completed jobs will appear here."
+                            : "Try changing the search or filters."
                     )
                 )
             } else {
-                ForEach(completedJobs) { job in
-                    jobHistoryRow(job)
+                ForEach(filteredJobs) { job in
+                    NavigationLink {
+                        JobDetailView(job: job)
+                    } label: {
+                        jobHistoryRow(job)
+                    }
                 }
             }
         }
         .navigationTitle("Job History Report")
         .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "Search job history")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showingFilters = true } label: {
+                    Label(
+                        "Filter",
+                        systemImage: hasActiveFilters
+                            ? "line.3.horizontal.decrease.circle.fill"
+                            : "line.3.horizontal.decrease.circle"
+                    )
+                }
+            }
+        }
+        .sheet(isPresented: $showingFilters) {
+            NavigationStack {
+                Form {
+                    Picker("Date", selection: $dateFilter) {
+                        ForEach(RecordDateFilter.allCases) {
+                            Text($0.rawValue).tag($0)
+                        }
+                    }
+
+                    Picker("Invoice Status", selection: $statusFilter) {
+                        ForEach(JobHistoryInvoiceFilter.allCases) {
+                            Text($0.rawValue).tag($0)
+                        }
+                    }
+
+                    Picker("Order", selection: $sortOrder) {
+                        ForEach(RecordListSortOrder.allCases) {
+                            Text($0.rawValue).tag($0)
+                        }
+                    }
+                }
+                .navigationTitle("Filter Job History")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Reset") { resetFilters() }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showingFilters = false }
+                    }
+                }
+            }
+        }
     }
 
-    @ViewBuilder
-    private func jobHistoryRow(
-        _ job: JobRecord
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func jobHistoryRow(_ job: JobRecord) -> some View {
+        let status = store.invoice(for: job)?.status
+
+        return VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline) {
-                Text(job.jobNumber)
-                    .font(.headline)
+                Text(customerName(for: job.customerNumber))
+                    .font(.title3.weight(.bold))
 
                 Spacer()
 
-                Text(invoiceStatus(for: job))
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.secondary)
+                Label(
+                    status?.rawValue ?? "Not Invoiced",
+                    systemImage: invoiceStatusSymbol(status)
+                )
+                .font(.body.weight(.bold))
+                .foregroundStyle(invoiceStatusColor(status))
             }
 
-            Text(customerName(for: job.customerNumber))
-                .font(.subheadline)
+            Text("Job: \(job.jobNumber)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             LabeledContent("Date") {
-                Text(
-                    reportDate(for: job),
-                    format: .dateTime
-                        .month()
-                        .day()
-                        .year()
-                )
+                Text(reportDate(for: job).formatted(date: .abbreviated, time: .shortened))
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Color(red: 0.20, green: 0.95, blue: 0.42))
             }
 
             LabeledContent("Technician(s)") {
@@ -72,98 +149,118 @@ struct JobHistoryReportView: View {
             }
 
             LabeledContent("Time on Job") {
-                Text(formattedTimeOnJob(for: job))
-                    .fontWeight(.semibold)
+                Text(formattedTimeOnJob(for: job)).fontWeight(.semibold)
             }
         }
         .padding(.vertical, 5)
     }
 
-    private func customerName(
-        for customerNumber: String
-    ) -> String {
+    private var hasActiveFilters: Bool {
+        statusFilter != .all || dateFilter != .all || sortOrder != .dateDescending
+    }
+
+    private func resetFilters() {
+        statusFilter = .all
+        dateFilter = .all
+        sortOrder = .dateDescending
+    }
+
+    private func searchableText(for job: JobRecord) -> String {
+        [
+            job.jobNumber,
+            job.customerNumber,
+            customerName(for: job.customerNumber),
+            technicianNames(for: job),
+            store.invoice(for: job)?.status.rawValue ?? "Not Invoiced"
+        ].joined(separator: " ")
+    }
+
+    private func customerName(for customerNumber: String) -> String {
         guard let customer = store.customers.first(where: {
             $0.customerNumber == customerNumber
-        }) else {
-            return customerNumber
-        }
+        }) else { return customerNumber }
 
-        if !customer.businessName
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .isEmpty {
+        if !customer.businessName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return customer.businessName
         }
-
-        if !customer.contactName
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .isEmpty {
+        if !customer.contactName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return customer.contactName
         }
-
         return customerNumber
     }
 
-    private func technicianNames(
-        for job: JobRecord
-    ) -> String {
-        let employeeIDs = [
-            job.primaryTechnicianID,
-            job.secondaryTechnicianID
-        ].compactMap { $0 }
-
-        let names = employeeIDs.compactMap { employeeID in
-            store.employees.first(where: {
-                $0.id == employeeID
-            })?.displayName
+    private func technicianNames(for job: JobRecord) -> String {
+        let IDs = [job.primaryTechnicianID, job.secondaryTechnicianID].compactMap { $0 }
+        let names = IDs.compactMap { employeeID in
+            store.employees.first(where: { $0.id == employeeID })?.displayName
         }
-
-        return names.isEmpty
-            ? "Unassigned"
-            : names.joined(separator: ", ")
+        return names.isEmpty ? "Unassigned" : names.joined(separator: ", ")
     }
 
-    private func formattedTimeOnJob(
-        for job: JobRecord
-    ) -> String {
-        guard let duration = job.timeOnJob else {
-            return "—"
-        }
-
-        let totalMinutes = max(
-            Int(duration / 60),
-            0
-        )
+    private func formattedTimeOnJob(for job: JobRecord) -> String {
+        guard let duration = job.timeOnJob else { return "—" }
+        let totalMinutes = max(Int(duration / 60), 0)
         let hours = totalMinutes / 60
         let minutes = totalMinutes % 60
-
         switch (hours, minutes) {
-        case (0, let minutes):
-            return "\(minutes) min"
-        case (let hours, 0):
-            return hours == 1
-                ? "1 hr"
-                : "\(hours) hrs"
+        case (0, let minutes): return "\(minutes) min"
+        case (let hours, 0): return hours == 1 ? "1 hr" : "\(hours) hrs"
         default:
-            let hourText = hours == 1
-                ? "1 hr"
-                : "\(hours) hrs"
-            return "\(hourText) \(minutes) min"
+            return "\(hours == 1 ? "1 hr" : "\(hours) hrs") \(minutes) min"
         }
     }
 
-    private func invoiceStatus(
-        for job: JobRecord
-    ) -> String {
-        guard let invoice = store.invoice(for: job) else {
-            return "Not Invoiced"
+    private func invoiceStatusColor(_ status: InvoiceStatus?) -> Color {
+        switch status {
+        case .paid: return .green
+        case .overdue: return .red
+        case .sent: return .blue
+        case .partiallyPaid: return .orange
+        case .draft: return .secondary
+        case .void: return .secondary
+        case nil: return .secondary
         }
-
-        return invoice.status.rawValue
     }
 
-    private func reportDate(
-        for job: JobRecord
-    ) -> Date {
+    private func invoiceStatusSymbol(_ status: InvoiceStatus?) -> String {
+        switch status {
+        case .paid: return "checkmark.circle.fill"
+        case .overdue: return "exclamationmark.triangle.fill"
+        case .sent: return "paperplane.fill"
+        case .partiallyPaid: return "circle.lefthalf.filled"
+        case .draft: return "doc.badge.ellipsis"
+        case .void: return "xmark.circle.fill"
+        case nil: return "doc.text"
+        }
+    }
+
+    private func reportDate(for job: JobRecord) -> Date {
         job.completedDate ?? job.scheduledDate
+    }
+}
+
+private enum JobHistoryInvoiceFilter: String, CaseIterable, Identifiable {
+    case all = "All Statuses"
+    case notInvoiced = "Not Invoiced"
+    case draft = "Draft"
+    case sent = "Sent"
+    case partiallyPaid = "Partially Paid"
+    case paid = "Paid"
+    case overdue = "Overdue"
+    case void = "Void"
+
+    var id: String { rawValue }
+
+    func includes(_ status: InvoiceStatus?) -> Bool {
+        switch self {
+        case .all: return true
+        case .notInvoiced: return status == nil
+        case .draft: return status == .draft
+        case .sent: return status == .sent
+        case .partiallyPaid: return status == .partiallyPaid
+        case .paid: return status == .paid
+        case .overdue: return status == .overdue
+        case .void: return status == .void
+        }
     }
 }

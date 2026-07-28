@@ -61,6 +61,15 @@ struct SitesView: View {
                             }
                         }.padding(.vertical, 4)
                     }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        if site.lifecycleStatus != .archived {
+                            Button(role: .destructive) {
+                                store.archiveSite(site)
+                            } label: {
+                                Label("Archive", systemImage: "archivebox.fill")
+                            }
+                        }
+                    }
                 }
             }
         }

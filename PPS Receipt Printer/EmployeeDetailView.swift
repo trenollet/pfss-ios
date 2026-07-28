@@ -141,19 +141,21 @@ struct EmployeeDetailView: View {
 
             Section {
                 if employee.lifecycleStatus == .archived {
-                    Button("Restore Employee") {
+                    Button {
                         store.restoreEmployee(employee)
                         dismiss()
+                    } label: {
+                        Label("Restore Employee", systemImage: "arrow.uturn.backward.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button(
-                        "Archive Employee",
-                        role: .destructive
-                    ) {
+                    Button(role: .destructive) {
                         store.archiveEmployee(employee)
                         dismiss()
+                    } label: {
+                        Label("Archive Employee", systemImage: "archivebox.fill")
                     }
+                    .buttonStyle(.borderedProminent)
                 }
             }
         }

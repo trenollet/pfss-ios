@@ -10,7 +10,7 @@ struct JobRecordsListView: View {
     @State private var showingFilters = false
     @State private var selectedStatus: JobStatus?
     @State private var dateFilter: RecordDateFilter = .all
-    @State private var sortOrder: RecordListSortOrder = .dateAscending
+    @State private var sortOrder: RecordListSortOrder = .dateDescending
 
     init(
         statuses: Set<JobStatus>? = nil,
@@ -94,6 +94,15 @@ struct JobRecordsListView: View {
                             }
                         }.padding(.vertical, 4)
                     }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        if job.lifecycleStatus != .archived {
+                            Button(role: .destructive) {
+                                store.archiveJob(job)
+                            } label: {
+                                Label("Archive", systemImage: "archivebox.fill")
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -125,7 +134,7 @@ struct JobRecordsListView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Reset") { selectedStatus = nil; dateFilter = .all; sortOrder = .dateAscending }
+                        Button("Reset") { selectedStatus = nil; dateFilter = .all; sortOrder = .dateDescending }
                     }
                     ToolbarItem(placement: .confirmationAction) { Button("Done") { showingFilters = false } }
                 }
@@ -139,7 +148,7 @@ struct JobRecordsListView: View {
     }
 
     private var hasActiveFilters: Bool {
-        selectedStatus != nil || dateFilter != .all || sortOrder != .dateAscending
+        selectedStatus != nil || dateFilter != .all || sortOrder != .dateDescending
     }
 
     private var listDateColor: Color {

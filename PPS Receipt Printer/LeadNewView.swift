@@ -16,6 +16,15 @@ struct LeadNewView: View {
     @State private var followUpDate = Date()
     @FocusState private var isInputFocused: Bool
 
+    private var salesEmployees: [EmployeeRecord] {
+        store.activeEmployees
+            .filter { $0.hasRole(.salesperson) }
+            .sorted {
+                $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
+                    == .orderedAscending
+            }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -38,7 +47,12 @@ struct LeadNewView: View {
                     }
                     TextField("Estimated Value", text: $estimatedValue)
                         .keyboardType(.decimalPad).focused($isInputFocused)
-                    TextField("Assigned Salesperson", text: $assignedSalesperson).focused($isInputFocused)
+                    Picker("Assigned Salesperson", selection: $assignedSalesperson) {
+                        Text("Unassigned").tag("")
+                        ForEach(salesEmployees) { employee in
+                            Text(employee.displayName).tag(employee.displayName)
+                        }
+                    }
                     Picker("Status", selection: $status) {
                         ForEach(LeadStatus.allCases) { Text($0.rawValue).tag($0) }
                     }

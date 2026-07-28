@@ -159,7 +159,7 @@ struct OperationsView: View {
             .padding()
         }
         .navigationTitle("Operations")
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarTitleDisplayMode(.inline)
         .task {
             store.startOfflineServices()
         }

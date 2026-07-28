@@ -55,21 +55,31 @@ struct EditableLineItemView: View {
                         .lineLimit(2...5)
                         .focused($isInputFocused)
 
-                    TextField("Quantity", text: $quantity)
-                        .keyboardType(.decimalPad)
+                    LabeledContent("Quantity") {
+                        SelectAllTextField(
+                            placeholder: "1",
+                            text: $quantity
+                        )
+                        .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
+                    }
 
-                    TextField("Unit Price", text: $unitPrice)
-                        .keyboardType(.decimalPad)
+                    LabeledContent("Unit Price") {
+                        SelectAllTextField(
+                            placeholder: "0.00",
+                            text: $unitPrice
+                        )
+                        .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
+                    }
                     
                     LabeledContent("Estimated Minutes Per Unit") {
-                        TextField(
-                            "Minutes",
-                            text: $estimatedMinutesPerUnit
+                        SelectAllTextField(
+                            placeholder: "Minutes",
+                            text: $estimatedMinutesPerUnit,
+                            keyboardType: .numberPad
                         )
-                        .multilineTextAlignment(.trailing)
-                        .keyboardType(.numberPad)
+                        .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
                     }
 

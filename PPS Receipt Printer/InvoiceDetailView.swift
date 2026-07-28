@@ -229,19 +229,21 @@ struct InvoiceDetailView: View {
                 .disabled(!printer.isReadyToPrint)
                 
                 if invoice.lifecycleStatus == .archived {
-                    Button("Restore Invoice") {
+                    Button {
                         store.restoreInvoice(invoice)
                         dismiss()
+                    } label: {
+                        Label("Restore Invoice", systemImage: "arrow.uturn.backward.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button(
-                        "Archive Invoice",
-                        role: .destructive
-                    ) {
+                    Button(role: .destructive) {
                         store.archiveInvoice(invoice)
                         dismiss()
+                    } label: {
+                        Label("Archive Invoice", systemImage: "archivebox.fill")
                     }
+                    .buttonStyle(.borderedProminent)
                 }
             }
         }

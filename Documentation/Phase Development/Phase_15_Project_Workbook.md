@@ -1516,6 +1516,26 @@ retaining Owner authority.
   adding the same guarded navigation behavior, avoiding a regression of the
   earlier keyboard and invalid-frame fixes.
 
+### Business Profile and Job History UX Cleanup
+- Business Profile now uses the same focused-editor pattern established by
+  Employee Detail. Business Logo, Business Information, Contact Information,
+  Business Address, Document Defaults, Business Operations, and Document
+  Previews are concise icon-and-summary links to dedicated editing pages.
+- The Business Profile draft remains shared while navigating between its
+  section editors. A standard top-trailing Save action persists the complete
+  profile, and Back offers Save Changes, Discard Changes, or Continue Editing
+  whenever the draft differs from stored data.
+- Removed the long inline Business Profile form and bottom Save button so the
+  screen follows the app-wide editing and navigation pattern.
+- Job History Report now provides pull-down search plus Date, Invoice Status,
+  and Name/order filtering consistent with Jobs and Leads.
+- Job History invoice statuses are larger and color coded: Paid is green,
+  Overdue is red, Sent is blue, Partially Paid is orange, and neutral states
+  remain secondary. Report dates are highlighted consistently with the Job
+  and Lead lists, and rows open their corresponding Job Detail.
+- Product-owner validation is pending for profile draft retention, unsaved
+  change handling, document previews, report filtering, and status colors.
+
 ### Customizable Tile Workspaces (Step 6.5 Enhancement)
 - Dashboard, Operations, Sales, Service, Invoices, Jobs, Customers, Leads, and
   Estimates now share one persistent tile-arrangement system. Admin remains a

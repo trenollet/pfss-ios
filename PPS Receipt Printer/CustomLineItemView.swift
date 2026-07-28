@@ -52,13 +52,17 @@ struct CustomLineItemView: View {
                         .lineLimit(2...5)
                         .focused($isInputFocused)
 
-                    TextField("Quantity", text: $quantity)
-                        .keyboardType(.decimalPad)
-                        .focused($isInputFocused)
+                    LabeledContent("Quantity") {
+                        SelectAllTextField(placeholder: "1", text: $quantity)
+                            .frame(minWidth: 90, minHeight: 30)
+                            .focused($isInputFocused)
+                    }
 
-                    TextField("Unit Price", text: $unitPrice)
-                        .keyboardType(.decimalPad)
-                        .focused($isInputFocused)
+                    LabeledContent("Unit Price") {
+                        SelectAllTextField(placeholder: "0.00", text: $unitPrice)
+                            .frame(minWidth: 90, minHeight: 30)
+                            .focused($isInputFocused)
+                    }
 
                     HStack {
                         Text("Line Total")

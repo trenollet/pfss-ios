@@ -66,6 +66,17 @@ struct JobNewView: View {
     private var availableEstimates: [EstimateRecord] {
         store.activeEstimates.filter { $0.customerNumber == selectedCustomerNumber }
     }
+    private var customerOptions: [RecordSelectionOption] {
+        store.activeCustomers
+            .sorted { customerName($0).localizedCaseInsensitiveCompare(customerName($1)) == .orderedAscending }
+            .map {
+                RecordSelectionOption(
+                    id: $0.customerNumber,
+                    title: customerName($0),
+                    subtitle: $0.customerNumber
+                )
+            }
+    }
     private var itemQuantityValue: Double {
         Double(itemQuantity) ?? 1
     }
@@ -164,13 +175,12 @@ struct JobNewView: View {
     var body: some View {
         Form {
                 Section("New Job") {
-                    Picker("Customer", selection: $selectedCustomerNumber) {
-                        Text("Select Customer").tag("")
-                        ForEach(store.activeCustomers) { customer in
-                            Text(customerName(customer))
-                                .tag(customer.customerNumber)
-                        }
-                    }
+                    SearchableRecordSelectionField(
+                        title: "Customer",
+                        placeholder: "Select Customer",
+                        options: customerOptions,
+                        selection: $selectedCustomerNumber
+                    )
 
                     Picker("Site", selection: $selectedSiteID) {
                         Text("Select Site").tag(UUID?.none)
@@ -221,9 +231,14 @@ struct JobNewView: View {
                 )
                 
                 Section("Pricing") {
-                    TextField("Discount", text: $discount)
-                        .keyboardType(.decimalPad)
+                    LabeledContent("Discount") {
+                        SelectAllTextField(
+                            placeholder: "0.00",
+                            text: $discount
+                        )
+                        .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
+                    }
 
                     HStack {
                         Text("Total")
@@ -233,13 +248,23 @@ struct JobNewView: View {
                     }
                 }
 
-                TextField("Quantity", text: $itemQuantity)
-                    .keyboardType(.decimalPad)
+                LabeledContent("Quantity") {
+                    SelectAllTextField(
+                        placeholder: "1",
+                        text: $itemQuantity
+                    )
+                    .frame(minWidth: 90, minHeight: 30)
                     .focused($isInputFocused)
+                }
 
-                TextField("Unit Price", text: $itemUnitPrice)
-                    .keyboardType(.decimalPad)
+                LabeledContent("Unit Price") {
+                    SelectAllTextField(
+                        placeholder: "0.00",
+                        text: $itemUnitPrice
+                    )
+                    .frame(minWidth: 90, minHeight: 30)
                     .focused($isInputFocused)
+                }
 
                 HStack {
                     Text("Line Total")

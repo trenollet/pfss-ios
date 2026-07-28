@@ -130,16 +130,21 @@ struct CustomerDetailView: View {
 
             Section {
                 if customer.lifecycleStatus == .archived {
-                    Button("Restore Customer") {
+                    Button {
                         store.restoreCustomer(customer)
                         dismiss()
+                    } label: {
+                        Label("Restore Customer", systemImage: "arrow.uturn.backward.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button("Archive Customer", role: .destructive) {
+                    Button(role: .destructive) {
                         store.archiveCustomer(customer)
                         dismiss()
+                    } label: {
+                        Label("Archive Customer", systemImage: "archivebox.fill")
                     }
+                    .buttonStyle(.borderedProminent)
                 }
             }
         }

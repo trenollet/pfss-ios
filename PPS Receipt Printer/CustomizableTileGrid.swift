@@ -88,17 +88,19 @@ struct CustomizableTileGrid<Tile: View>: View {
     @ViewBuilder
     private var arrangementControls: some View {
         if isArranging {
-            HStack(spacing: 12) {
-                Label("Arrange Tiles", systemImage: "hand.draw.fill")
+            HStack(spacing: 8) {
+                Image(systemName: "hand.draw.fill")
                     .font(.headline)
+                    .accessibilityLabel("Arranging tiles")
 
                 Spacer()
 
                 Button {
                     addSpace()
                 } label: {
-                    Label("Add Space", systemImage: "square.dashed")
+                    Image(systemName: "square.dashed")
                 }
+                .accessibilityLabel("Add blank space")
 
                 Menu {
                     Button("Reset to Default", role: .destructive) {
@@ -108,11 +110,14 @@ struct CustomizableTileGrid<Tile: View>: View {
                     Image(systemName: "ellipsis.circle")
                 }
 
-                Button("Done") {
+                Button {
                     isArranging = false
                     draggedID = nil
+                } label: {
+                    Image(systemName: "checkmark")
+                        .fontWeight(.bold)
                 }
-                .fontWeight(.semibold)
+                .accessibilityLabel("Done arranging tiles")
             }
             .buttonStyle(.bordered)
 
@@ -125,9 +130,10 @@ struct CustomizableTileGrid<Tile: View>: View {
                 Button {
                     isArranging = true
                 } label: {
-                    Label("Arrange", systemImage: "square.grid.2x2")
+                    Image(systemName: "square.grid.2x2")
                 }
                 .buttonStyle(.bordered)
+                .accessibilityLabel("Arrange tiles")
                 .accessibilityHint("Reorder tiles or add blank spaces")
             }
         }
@@ -217,7 +223,9 @@ struct CustomizableTileGrid<Tile: View>: View {
     }
 
     private func resetToDefault() {
-        positions = defaultTileIDs.map(CustomizableTilePosition.tile)
+        positions = defaultTileIDs.map { tileID in
+            CustomizableTilePosition.tile(tileID)
+        }
         persist()
     }
 
@@ -257,7 +265,9 @@ struct CustomizableTileGrid<Tile: View>: View {
                 [CustomizableTilePosition].self,
                 from: data
               ) else {
-            return defaultTileIDs.map(CustomizableTilePosition.tile)
+            return defaultTileIDs.map { tileID in
+                CustomizableTilePosition.tile(tileID)
+            }
         }
         return saved
     }

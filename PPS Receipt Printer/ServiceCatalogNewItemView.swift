@@ -53,32 +53,30 @@ struct ServiceCatalogNewItemView: View {
                 
 
                     LabeledContent("Default Quantity") {
-                        TextField(
-                            "Quantity",
+                        SelectAllTextField(
+                            placeholder: "Quantity",
                             text: $defaultQuantity
                         )
-                        .multilineTextAlignment(.trailing)
-                        .keyboardType(.decimalPad)
+                        .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
                     }
 
                     LabeledContent("Price") {
-                        TextField(
-                            "Price",
+                        SelectAllTextField(
+                            placeholder: "Price",
                             text: $defaultPrice
                         )
-                        .multilineTextAlignment(.trailing)
-                        .keyboardType(.decimalPad)
+                        .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
                     }
                     
                     LabeledContent("Estimated Minutes Per Unit") {
-                        TextField(
-                            "Minutes",
-                            text: $estimatedMinutesPerUnit
+                        SelectAllTextField(
+                            placeholder: "Minutes",
+                            text: $estimatedMinutesPerUnit,
+                            keyboardType: .numberPad
                         )
-                        .multilineTextAlignment(.trailing)
-                        .keyboardType(.numberPad)
+                        .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
                     }
                     

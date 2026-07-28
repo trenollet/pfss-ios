@@ -15,6 +15,7 @@ struct SiteDetailView: View {
     @State var site: CustomerSite
     private let originalSite: CustomerSite
     @State private var createdJob: JobRecord?
+    @State private var isShowingNewEstimate = false
     @State private var isClosing = false
     @State private var showingUnsavedChangesAlert = false
     @FocusState private var isInputFocused: Bool
@@ -68,7 +69,7 @@ struct SiteDetailView: View {
             }
 
             Section {
-                Button("Create Job for This Site") {
+                Button {
                     let job = JobRecord(
                         jobNumber: store.generateJobNumber(),
                         customerNumber: site.customerNumber,
@@ -91,20 +92,44 @@ struct SiteDetailView: View {
 
                     store.addJob(job)
                     createdJob = job
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "wrench.and.screwdriver.fill")
+                        Text("Create Job for This Site")
+                    }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .buttonStyle(.borderedProminent)
+                .disabled(site.lifecycleStatus == .archived)
+
+                Button {
+                    isShowingNewEstimate = true
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "doc.text.fill")
+                        Text("Create Estimate for This Site")
+                    }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.borderedProminent)
                 .disabled(site.lifecycleStatus == .archived)
 
                 if site.lifecycleStatus == .archived {
-                    Button("Restore Site") {
+                    Button {
                         store.restoreSite(site)
                         closeSiteDetail()
+                    } label: {
+                        Label("Restore Site", systemImage: "arrow.uturn.backward.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button("Archive Site", role: .destructive) {
+                    Button(role: .destructive) {
                         store.archiveSite(site)
                         closeSiteDetail()
+                    } label: {
+                        Label("Archive Site", systemImage: "archivebox.fill")
                     }
+                    .buttonStyle(.borderedProminent)
                 }
             }
         }
@@ -118,6 +143,15 @@ struct SiteDetailView: View {
                 )
             }
             .environmentObject(store)
+        }
+        .sheet(isPresented: $isShowingNewEstimate) {
+            NavigationStack {
+                EstimateNewView(
+                    preselectedCustomerNumber: site.customerNumber,
+                    preselectedSiteID: site.id
+                )
+                .environmentObject(store)
+            }
         }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {

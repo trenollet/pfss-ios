@@ -85,16 +85,21 @@ struct LeadDetailView: View {
                 .disabled(lead.status == .converted || lead.lifecycleStatus == .archived)
 
                 if lead.lifecycleStatus == .archived {
-                    Button("Restore Lead") {
+                    Button {
                         store.restoreLead(lead)
                         dismiss()
+                    } label: {
+                        Label("Restore Lead", systemImage: "arrow.uturn.backward.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button("Archive Lead", role: .destructive) {
+                    Button(role: .destructive) {
                         store.archiveLead(lead)
                         dismiss()
+                    } label: {
+                        Label("Archive Lead", systemImage: "archivebox.fill")
                     }
+                    .buttonStyle(.borderedProminent)
                 }
             }
         }

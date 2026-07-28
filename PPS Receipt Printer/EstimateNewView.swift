@@ -25,6 +25,16 @@ struct EstimateNewView: View {
     @FocusState private var isInputFocused: Bool
     @State private var activeSheet: ActiveSheet?
 
+    init(
+        preselectedCustomerNumber: String = "",
+        preselectedSiteID: UUID? = nil
+    ) {
+        _selectedCustomerNumber = State(
+            initialValue: preselectedCustomerNumber
+        )
+        _selectedSiteID = State(initialValue: preselectedSiteID)
+    }
+
     private enum ActiveSheet: Identifiable {
         case catalogPicker
         case editLineItem(ServiceLineItem)
@@ -56,24 +66,53 @@ struct EstimateNewView: View {
         store.activeSites.filter { $0.customerNumber == selectedCustomerNumber }
     }
 
+    private var customerOptions: [RecordSelectionOption] {
+        store.activeCustomers
+            .sorted { customerName($0).localizedCaseInsensitiveCompare(customerName($1)) == .orderedAscending }
+            .map {
+                RecordSelectionOption(
+                    id: $0.customerNumber,
+                    title: customerName($0),
+                    subtitle: $0.customerNumber
+                )
+            }
+    }
+
+    private var leadOptions: [RecordSelectionOption] {
+        store.activeLeads
+            .sorted { leadName($0).localizedCaseInsensitiveCompare(leadName($1)) == .orderedAscending }
+            .map {
+                RecordSelectionOption(
+                    id: $0.leadNumber,
+                    title: leadName($0),
+                    subtitle: $0.leadNumber
+                )
+            }
+    }
+
+    private var salesEmployees: [EmployeeRecord] {
+        store.activeEmployees
+            .filter { $0.hasRole(.salesperson) }
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
     var body: some View {
         Form {
                 Section("New Estimate") {
-                    Picker("Lead", selection: $selectedLeadNumber) {
-                        Text("None").tag("")
-                        ForEach(store.activeLeads) { lead in
-                            Text(leadName(lead))
-                                .tag(lead.leadNumber)
-                        }
-                    }
+                    SearchableRecordSelectionField(
+                        title: "Lead",
+                        placeholder: "None",
+                        options: leadOptions,
+                        selection: $selectedLeadNumber,
+                        allowsNone: true
+                    )
 
-                    Picker("Customer", selection: $selectedCustomerNumber) {
-                        Text("Select Customer").tag("")
-                        ForEach(store.activeCustomers) { customer in
-                            Text(customerName(customer))
-                                .tag(customer.customerNumber)
-                        }
-                    }
+                    SearchableRecordSelectionField(
+                        title: "Customer",
+                        placeholder: "Select Customer",
+                        options: customerOptions,
+                        selection: $selectedCustomerNumber
+                    )
 
                     Picker("Site", selection: $selectedSiteID) {
                         Text("Select Site").tag(UUID?.none)
@@ -83,8 +122,12 @@ struct EstimateNewView: View {
                         }
                     }
 
-                    TextField("Salesperson", text: $salesperson)
-                        .focused($isInputFocused)
+                    Picker("Salesperson", selection: $salesperson) {
+                        Text("Unassigned").tag("")
+                        ForEach(salesEmployees) { employee in
+                            Text(employee.displayName).tag(employee.displayName)
+                        }
+                    }
 
                     Picker("Status", selection: $status) {
                         ForEach(EstimateRecordStatus.allCases) { status in
@@ -111,9 +154,14 @@ struct EstimateNewView: View {
                 )
 
                 Section("Pricing") {
-                    TextField("Discount", text: $discount)
-                        .keyboardType(.decimalPad)
+                    LabeledContent("Discount") {
+                        SelectAllTextField(
+                            placeholder: "0.00",
+                            text: $discount
+                        )
+                        .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
+                    }
 
                     HStack {
                         Text("Subtotal")

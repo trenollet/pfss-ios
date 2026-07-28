@@ -321,9 +321,13 @@ struct JobDetailView: View {
             
             }
             Section("Pricing") {
-                TextField("Discount", value: $job.discount, format: .number)
-                    .keyboardType(.decimalPad)
+                LabeledContent("Discount") {
+                    SelectAllDecimalField(
+                        placeholder: "Discount",
+                        value: $job.discount
+                    )
                     .focused($isInputFocused)
+                }
                 
                 HStack {
                     Text("Subtotal")
@@ -465,16 +469,21 @@ struct JobDetailView: View {
             
             Section {
                 if job.lifecycleStatus == .archived {
-                    Button("Restore Job") {
+                    Button {
                         store.restoreJob(job)
                         dismiss()
+                    } label: {
+                        Label("Restore Job", systemImage: "arrow.uturn.backward.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button("Archive Job", role: .destructive) {
+                    Button(role: .destructive) {
                         store.archiveJob(job)
                         dismiss()
+                    } label: {
+                        Label("Archive Job", systemImage: "archivebox.fill")
                     }
+                    .buttonStyle(.borderedProminent)
                 }
             }
         }
