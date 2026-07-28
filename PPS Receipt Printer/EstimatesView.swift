@@ -30,8 +30,9 @@ struct EstimateRecordsListView: View {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let searched = query.isEmpty ? source : source.filter { estimate in
             estimate.estimateNumber.localizedCaseInsensitiveContains(query) ||
+            estimate.leadNumber.localizedCaseInsensitiveContains(query) ||
             estimate.customerNumber.localizedCaseInsensitiveContains(query) ||
-            customerDisplayName(for: estimate.customerNumber).localizedCaseInsensitiveContains(query) ||
+            recipientDisplayName(for: estimate).localizedCaseInsensitiveContains(query) ||
             siteDisplayName(for: estimate.siteID).localizedCaseInsensitiveContains(query) ||
             estimate.status.rawValue.localizedCaseInsensitiveContains(query) ||
             estimate.salesperson.localizedCaseInsensitiveContains(query) ||
@@ -48,9 +49,9 @@ struct EstimateRecordsListView: View {
             case .dateAscending: return first.createdDate < second.createdDate
             case .dateDescending: return first.createdDate > second.createdDate
             case .nameAscending:
-                return customerDisplayName(for: first.customerNumber)
+                return recipientDisplayName(for: first)
                     .localizedCaseInsensitiveCompare(
-                        customerDisplayName(for: second.customerNumber)
+                        recipientDisplayName(for: second)
                     ) == .orderedAscending
             }
         }
@@ -66,9 +67,15 @@ struct EstimateRecordsListView: View {
                 ForEach(filteredEstimates) { estimate in
                     NavigationLink { EstimateDetailView(estimate: estimate) } label: {
                         VStack(alignment: .leading, spacing: 5) {
-                            Text(customerDisplayName(for: estimate.customerNumber))
+                            Text(recipientDisplayName(for: estimate))
                                 .font(.headline)
                                 .fontWeight(.bold)
+                            if estimate.customerNumber.isEmpty,
+                               !estimate.leadNumber.isEmpty {
+                                Text("Lead: \(estimate.leadNumber)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                             Text("Estimate: \(estimate.estimateNumber)").font(.caption)
                             Text("Site: \(siteDisplayName(for: estimate.siteID))").font(.caption)
                             Text("Total: \(estimate.total, format: .currency(code: "USD"))").font(.caption)
@@ -155,6 +162,30 @@ struct EstimateRecordsListView: View {
         if !customer.businessName.isEmpty { return customer.businessName }
         if !customer.contactName.isEmpty { return customer.contactName }
         return customerNumber
+    }
+
+    private func recipientDisplayName(for estimate: EstimateRecord) -> String {
+        if !estimate.customerNumber.isEmpty,
+           store.customers.contains(where: {
+               $0.customerNumber == estimate.customerNumber
+           }) {
+            return customerDisplayName(for: estimate.customerNumber)
+        }
+
+        if !estimate.leadNumber.isEmpty,
+           let lead = store.leads.first(where: {
+               $0.leadNumber == estimate.leadNumber
+           }) {
+            if !lead.businessName.isEmpty { return lead.businessName }
+            if !lead.contactName.isEmpty { return lead.contactName }
+            return lead.leadNumber
+        }
+
+        if !estimate.customerNumber.isEmpty {
+            return estimate.customerNumber
+        }
+        if !estimate.leadNumber.isEmpty { return estimate.leadNumber }
+        return "Unknown recipient"
     }
 
     private func siteDisplayName(for siteID: UUID?) -> String {

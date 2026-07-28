@@ -50,6 +50,96 @@ struct DispatchEngineTests {
     }
 
     @Test
+    func dispatcherManagedModeAllowsOfficeDispatchButBlocksTechnicianControl() throws {
+        let fixture = try makeFixture(
+            policy: DispatchPolicy(operatingMode: .dispatcherManaged)
+        )
+        let technician = makeEmployee(firstName: "Alex")
+        let office = EmployeeRecord(
+            firstName: "Olivia",
+            lastName: "Office",
+            role: .office,
+            roles: [.office]
+        )
+
+        let officeAuthorization = fixture.dispatchEngine.authorization(
+            for: .assignPrimaryTechnician,
+            actor: .employee(office),
+            assignmentID: fixture.assignment.id,
+            affectedTechnicianID: technician.id
+        )
+        let technicianAuthorization = fixture.dispatchEngine.authorization(
+            for: .assignPrimaryTechnician,
+            actor: .employee(technician),
+            assignmentID: fixture.assignment.id,
+            affectedTechnicianID: technician.id
+        )
+
+        #expect(officeAuthorization.isAllowed)
+        #expect(!technicianAuthorization.isAllowed)
+    }
+
+    @Test
+    func selfManagedModeAllowsTechnicianSelfAssignmentButBlocksOfficeDispatch() throws {
+        let fixture = try makeFixture(
+            policy: DispatchPolicy(operatingMode: .selfManaged)
+        )
+        let technician = makeEmployee(firstName: "Alex")
+        let office = EmployeeRecord(
+            firstName: "Olivia",
+            lastName: "Office",
+            role: .office,
+            roles: [.office]
+        )
+
+        let technicianAuthorization = fixture.dispatchEngine.authorization(
+            for: .assignPrimaryTechnician,
+            actor: .employee(technician),
+            assignmentID: fixture.assignment.id,
+            affectedTechnicianID: technician.id
+        )
+        let officeAuthorization = fixture.dispatchEngine.authorization(
+            for: .assignPrimaryTechnician,
+            actor: .employee(office),
+            assignmentID: fixture.assignment.id,
+            affectedTechnicianID: technician.id
+        )
+
+        #expect(technicianAuthorization.isAllowed)
+        #expect(!officeAuthorization.isAllowed)
+    }
+
+    @Test
+    func hybridModeAllowsOfficeDispatchAndTechnicianSelfManagement() throws {
+        let fixture = try makeFixture(
+            policy: DispatchPolicy(operatingMode: .hybrid)
+        )
+        let technician = makeEmployee(firstName: "Alex")
+        let office = EmployeeRecord(
+            firstName: "Olivia",
+            lastName: "Office",
+            role: .office,
+            roles: [.office]
+        )
+
+        let technicianAuthorization = fixture.dispatchEngine.authorization(
+            for: .assignPrimaryTechnician,
+            actor: .employee(technician),
+            assignmentID: fixture.assignment.id,
+            affectedTechnicianID: technician.id
+        )
+        let officeAuthorization = fixture.dispatchEngine.authorization(
+            for: .assignPrimaryTechnician,
+            actor: .employee(office),
+            assignmentID: fixture.assignment.id,
+            affectedTechnicianID: technician.id
+        )
+
+        #expect(technicianAuthorization.isAllowed)
+        #expect(officeAuthorization.isAllowed)
+    }
+
+    @Test
     func assignmentAndDispatchCreateDurableHistory() throws {
         let fixture = try makeFixture()
         let technician = makeEmployee(firstName: "Alex")

@@ -1615,7 +1615,8 @@ formal Part 8 regression pass.
 ## Part 8 – Regression and Acceptance Testing
 
 ### Status
-Ready to begin using the accepted Part 7 field workflow as the baseline.
+Automated consolidation coverage implemented. Product-owner device acceptance
+remains before Step 6 is closed.
 
 ### Objective
 Test My Day, Dispatch Board, Assignment Detail, Job Detail, Timeline, and Live
@@ -1623,11 +1624,38 @@ Map and confirm every shared action produces the same state transition, timeline
 event, offline operation, UI result, invoice handoff, and completion behavior.
 
 ### Resume Point
-Execute Part 8 end-to-end workflow testing from My Day, Dispatch Board,
-Assignment Detail, Job Detail, Timeline, and Live Map. Confirm each shared
-action produces the same state transition, timeline event, offline operation,
-UI result, invoice handoff, and completion behavior using Version 1.0, Build 2
-as the verified baseline.
+Run the focused Step 6 tests in Xcode, then execute the short device acceptance
+matrix below using Version 1.0, Build 2 as the verified baseline. Record any
+surface-specific presentation defect without adding a second workflow path.
+
+### Automated Consolidation Coverage
+- Two independently created workflow coordinators now prove that My Day and Job
+  Detail immediately observe the same store-backed lifecycle state.
+- Cross-entry-point travel, pause, resume, and arrival actions are verified to
+  produce one ordered timeline and one ordered offline-operation history.
+- The complete travel-to-invoice lifecycle is verified across Job state,
+  Assignment status, invoice handoff, timeline events, and offline queue data.
+- Existing engine suites continue to cover Dispatch Board ordering and actions,
+  Operations Timeline projection, Live Map projection, invalid transitions,
+  payment completion, timestamp correction, retry behavior, and conflict safety.
+
+### Device Acceptance Matrix
+- [x] My Day: run travel, pause/resume travel, arrival, setup, work,
+  pause/resume work, pack-up, completion, and invoice handoff.
+- [x] Job Detail: confirm the same next action, status, and timeline after each
+  action performed from My Day; perform at least one action from Job Detail and
+  verify My Day updates immediately.
+- [x] Dispatch Board and Assignment Detail: confirm assignment lifecycle status,
+  technician, schedule, and management actions reflect the same job.
+- [x] Timeline: confirm every successful lifecycle action appears once, in order,
+  and manager/owner corrections preserve the original audit evidence.
+- [x] Live Map: confirm active work appears with matching assignment status and
+  completed work is removed.
+- [x] Offline: repeat multiple actions without connectivity, close and reopen the
+  app, confirm local state remains correct, then reconnect and verify ordered
+  synchronization without duplicate actions.
+- [x] Invoice and completion: create the invoice, record partial and full payment,
+  print a receipt, and confirm completion behavior matches across all surfaces.
 
 ### Expected Outcomes
 - Cleaner navigation.
@@ -1647,16 +1675,126 @@ as the verified baseline.
 ## Objective
 Validate the consolidated workflow in real-world scenarios.
 
+## Status
+Complete and accepted. The complete Xcode test suite passes, field and device
+acceptance is complete, and the final planner and lead-estimate defects found
+during acceptance have been resolved.
+
+## Part 1 – Operating Mode Acceptance
+
+Validate the authority boundary for each supported operating model before
+performing longer field scenarios.
+
+### Acceptance Rules
+- **Dispatcher Managed:** Office, Manager, and Owner roles may control dispatch;
+  technicians cannot self-assign or self-dispatch.
+- **Technician Self-Managed:** Technicians may claim and manage their own work;
+  Office-only employees cannot dispatch work.
+- **Hybrid:** Office dispatch remains available while technicians may claim and
+  manage only their own eligible work.
+- Owner and Manager authority remains available in every operating mode.
+- Technician actions never allow assigning another technician, unauthorized
+  reassignment, or lifecycle overrides.
+
+### Automated Coverage
+- [x] Dispatcher-managed mode allows Office dispatch and blocks technician
+  self-management.
+- [x] Technician self-managed mode allows self-assignment and blocks Office-only
+  dispatch control.
+- [x] Hybrid mode allows both Office dispatch and technician self-assignment.
+- [x] Hybrid technicians remain unable to assign work to another technician.
+- [x] Assignment and dispatch actions retain durable audit history.
+
+### Device Acceptance
+- [x] Select each operating mode and confirm Dispatch Board controls match the
+  signed-in employee's roles.
+- [x] Confirm denied actions display an actionable explanation rather than a
+  disabled dead end.
+- [x] Confirm a multi-role Owner/Technician retains both administrative and field
+  workflow access.
+
+### Part 1 Result
+- [x] Complete Xcode test suite passed with the operating-mode acceptance matrix.
+
+## Part 2 – Field-Day and Interruption Recovery
+
+Validate realistic technician behavior when the planned day does not proceed in
+a perfectly linear sequence.
+
+### Scenarios
+- Pause travel to handle an impromptu estimate or higher-priority interruption.
+- Complete the interruption without advancing or corrupting the paused job.
+- Resume the original trip and continue its normal arrival and work lifecycle.
+- Pause and resume work without losing accumulated lifecycle evidence.
+- Correct a forgotten setup timestamp as a Manager or Owner while preserving the
+  original event and adding a durable correction audit record.
+- Keep invoice creation isolated to the job that actually reached invoice handoff.
+
+### Automated Coverage
+- [x] Two jobs assigned to one technician retain independent workflow states.
+- [x] Paused travel survives completion of an intervening job and resumes normally.
+- [x] Interleaved offline operations retain per-job action order and identity.
+- [x] The interruption may reach invoice handoff without creating an invoice for
+  the still-active scheduled job.
+- [x] Manager timestamp correction updates the operational timestamp, preserves
+  the original evidence, and queues a distinct audit operation.
+
+### Defects Resolved During Acceptance
+- Assignment-to-Job reconciliation no longer flattens **Travel Paused** back to
+  **Traveling** when another assignment publishes an update.
+- On-site reconciliation now preserves the richer Setup, Working, Work Paused,
+  and Pack-up field states represented by Assignment's broader **On Site** state.
+- Invoice handoff acceptance now verifies its dedicated offline operation type
+  rather than incorrectly treating it as a generic workflow action.
+- The arrival-window regression fixture now uses a stable future Wednesday so
+  the planner's correct refusal to schedule work in elapsed time cannot make the
+  test date-dependent.
+- The arrival-window regression no longer reserves five unrelated hours of
+  capacity, and the planner now evaluates long arrival-window work before lunch
+  so the appointment can start at the earliest valid time and lunch moves after
+  the work when necessary.
+- Estimate creation now accepts either a Lead or a complete Customer and Site
+  recipient, allowing estimates to be prepared before lead conversion.
+- Estimate cards, search, and sorting now resolve and display the Lead name when
+  no Customer or Site exists, keeping lead-originated estimates identifiable.
+
+### Device Acceptance
+- [x] Start and pause travel on Job A, complete an impromptu Job B, then resume
+  Job A and confirm both cards show the correct independent state.
+- [x] Pause and resume work on Job A and confirm elapsed work remains coherent.
+- [x] As an Owner/Manager, correct a missed setup time and confirm both the
+  corrected time and audit entry appear in the job timeline.
+
+## Parts 3–5 – Acceptance Closeout
+
+- [x] Offline persistence, restart recovery, retry ordering, duplicate prevention,
+  and conflict preservation passed the automated recovery and synchronization
+  suites.
+- [x] Invoice handoff, partial payment, full payment, receipt printing, and
+  completion behavior were validated across the shared workflow.
+- [x] Navigation, tile layouts, forms, keyboard behavior, and unsaved-change
+  protection were field-tested on iPhone and iPad layouts.
+- [x] Dispatch, Daily Planner, Live Map, Timeline, My Day, Assignment Detail, and
+  Job Detail were verified against the same store-backed lifecycle state.
+
+## Final Validation
+
+- [x] Complete Xcode test suite passed after the final planner regression repair.
+- [x] Product-owner field acceptance completed with no remaining Step 7 defects.
+- [x] Repository whitespace and patch-integrity checks passed.
+- [x] Workbook closeout completed for Phase 15 Step 7.
+- [ ] GitHub publication and release tagging remain release-management actions.
+
 ### Expected Outcomes
 - Dispatcher-managed, technician-managed, and hybrid workflows validated.
 - Known issues resolved.
 - Ready for workbook closeout and Git tagging.
 
 ### Completion Criteria
-- Acceptance testing signed off.
-- Critical defects resolved.
-- Workbook completed.
-- Release tagged.
+- [x] Acceptance testing signed off.
+- [x] Critical defects resolved.
+- [x] Workbook completed.
+- [ ] Release tagged.
 
 ---
 

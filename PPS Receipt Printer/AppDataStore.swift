@@ -587,11 +587,28 @@ final class AppDataStore: ObservableObject {
 
             case .enRoute:
                 job.status = .inProgress
-                job.workflowState = .traveling
+                // Assignment deliberately models travel at a broader level
+                // than the field workflow. Preserve a technician's paused
+                // travel state instead of flattening it back to Traveling
+                // whenever another Assignment publishes a store update.
+                if job.workflowState != .travelPaused {
+                    job.workflowState = .traveling
+                }
 
             case .onSite:
                 job.status = .inProgress
-                job.workflowState = .arrived
+                // Setup, active work, pauses, and pack-up are all legitimate
+                // refinements of Assignment's On Site state.
+                let onSiteStates: Set<JobWorkflowState> = [
+                    .arrived,
+                    .settingUp,
+                    .working,
+                    .paused,
+                    .packingUp
+                ]
+                if !onSiteStates.contains(job.workflowState) {
+                    job.workflowState = .arrived
+                }
 
             case .workComplete:
                 job.status = .inProgress

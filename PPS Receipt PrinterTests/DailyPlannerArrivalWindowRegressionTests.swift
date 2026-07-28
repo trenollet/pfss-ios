@@ -22,7 +22,11 @@ struct DailyPlannerArrivalWindowRegressionTests {
             configuration: DailyPlannerConfiguration(
                 slotIntervalMinutes: 15,
                 transitionBufferMinutes: 3,
-                dailyReserveMinutes: 300,
+                // This regression covers arrival-window placement and a
+                // movable lunch. A five-hour daily reserve leaves too little
+                // capacity for the 230-minute appointment plus lunch and is
+                // correctly rejected by the planner.
+                dailyReserveMinutes: 0,
                 preferredLunchStartMinutes: 12 * 60,
                 lunchWindowStartMinutes: 11 * 60,
                 lunchWindowEndMinutes: 14 * 60,
@@ -117,9 +121,12 @@ struct DailyPlannerArrivalWindowRegressionTests {
 
     private func makeDate(hour: Int, minute: Int = 0) -> Date {
         testCalendar.date(from: DateComponents(
-            year: 2026,
-            month: 7,
-            day: 22,
+            // Keep this regression fixture safely in the future. The planner
+            // correctly refuses to create new work in elapsed time, so a past
+            // hard-coded date makes the test depend on the day it is run.
+            year: 2030,
+            month: 1,
+            day: 2,
             hour: hour,
             minute: minute
         ))!

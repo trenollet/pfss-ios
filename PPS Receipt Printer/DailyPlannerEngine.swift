@@ -12,8 +12,8 @@ import Foundation
 ///
 /// Planning order is intentionally stable:
 /// 1. Preserve fixed commitments.
-/// 2. Place lunch around fixed work.
-/// 3. Place arrival-window work inside its promised window.
+/// 2. Place arrival-window work inside its promised window.
+/// 3. Place lunch around fixed and arrival-window work.
 /// 4. Place deadline and flexible work in a reviewed route order when one
 ///    exists, while still validating every completion deadline.
 ///
@@ -118,13 +118,6 @@ struct DailyPlannerEngine {
             )
         }
 
-        placeLunch(
-            for: technician,
-            workdayStart: workdayStart,
-            workdayEnd: workdayEnd,
-            state: &state
-        )
-
         let arrivalWindowAssignments = validAssignments
             .filter { $0.scheduling.mode == .arrivalWindow }
             .sorted(by: constrainedAssignmentOrder)
@@ -139,6 +132,13 @@ struct DailyPlannerEngine {
                 state: &state
             )
         }
+
+        placeLunch(
+            for: technician,
+            workdayStart: workdayStart,
+            workdayEnd: workdayEnd,
+            state: &state
+        )
 
         let movableAssignments = validAssignments
             .filter {

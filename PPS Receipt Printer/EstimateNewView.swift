@@ -96,6 +96,11 @@ struct EstimateNewView: View {
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
+    private var hasValidEstimateRecipient: Bool {
+        !selectedLeadNumber.isEmpty ||
+        (!selectedCustomerNumber.isEmpty && selectedSiteID != nil)
+    }
+
     var body: some View {
         Form {
                 Section("New Estimate") {
@@ -106,6 +111,11 @@ struct EstimateNewView: View {
                         selection: $selectedLeadNumber,
                         allowsNone: true
                     )
+                    .onChange(of: selectedLeadNumber) { _, leadNumber in
+                        guard !leadNumber.isEmpty else { return }
+                        selectedCustomerNumber = ""
+                        selectedSiteID = nil
+                    }
 
                     SearchableRecordSelectionField(
                         title: "Customer",
@@ -113,6 +123,16 @@ struct EstimateNewView: View {
                         options: customerOptions,
                         selection: $selectedCustomerNumber
                     )
+                    .onChange(of: selectedCustomerNumber) { _, customerNumber in
+                        guard !customerNumber.isEmpty else {
+                            selectedSiteID = nil
+                            return
+                        }
+                        selectedLeadNumber = ""
+                        if !availableSites.contains(where: { $0.id == selectedSiteID }) {
+                            selectedSiteID = nil
+                        }
+                    }
 
                     Picker("Site", selection: $selectedSiteID) {
                         Text("Select Site").tag(UUID?.none)
@@ -189,7 +209,7 @@ struct EstimateNewView: View {
                         isInputFocused = false
                         addEstimate()
                     }
-                    .disabled(selectedCustomerNumber.isEmpty || lineItems.isEmpty)
+                    .disabled(!hasValidEstimateRecipient || lineItems.isEmpty)
                 }
                 if isInputFocused {
                     ToolbarItem(placement: .topBarTrailing) {

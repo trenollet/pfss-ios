@@ -357,6 +357,274 @@ final class OfflineWorkflowIntegrationTests: XCTestCase {
         XCTAssertTrue(queue.operations.isEmpty)
     }
 
+    func testSharedScreenCoordinatorsObserveOneWorkflowAndOfflineHistory() throws {
+        let queue = OfflineOperationQueue(persistence: MemoryQueuePersistence())
+        let store = AppDataStore(
+            offlineOperationQueue: queue,
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
+        )
+        let job = makeJob(number: "JOB-CROSS-ENTRY-POINT")
+        store.addJob(job)
+
+        // My Day and Job Detail each create a coordinator, but both must read
+        // and mutate the same store-backed workflow rather than keeping their
+        // own screen-specific lifecycle state.
+        let myDayCoordinator = FieldOperationsWorkflowCoordinator(store: store)
+        let jobDetailCoordinator = FieldOperationsWorkflowCoordinator(store: store)
+        let actions: [JobWorkflowAction] = [
+            .startTravel,
+            .pauseTravel,
+            .resumeTravel,
+            .markArrived
+        ]
+
+        XCTAssertTrue(myDayCoordinator.performWorkflowAction(
+            jobID: job.id,
+            action: .startTravel,
+            employeeID: technicianID,
+            at: Date(timeIntervalSince1970: 80_000)
+        ))
+        XCTAssertEqual(
+            jobDetailCoordinator.workflowContext(for: job.id)?.currentState,
+            .traveling
+        )
+
+        XCTAssertTrue(jobDetailCoordinator.pauseTravel(
+            jobID: job.id,
+            employeeID: technicianID,
+            at: Date(timeIntervalSince1970: 80_001)
+        ))
+        XCTAssertEqual(
+            myDayCoordinator.workflowContext(for: job.id)?.currentState,
+            .travelPaused
+        )
+
+        XCTAssertTrue(myDayCoordinator.resumeTravel(
+            jobID: job.id,
+            employeeID: technicianID,
+            at: Date(timeIntervalSince1970: 80_002)
+        ))
+        XCTAssertTrue(jobDetailCoordinator.performWorkflowAction(
+            jobID: job.id,
+            action: .markArrived,
+            employeeID: technicianID,
+            at: Date(timeIntervalSince1970: 80_003)
+        ))
+
+        let savedJob = try XCTUnwrap(store.jobs.first { $0.id == job.id })
+        XCTAssertEqual(savedJob.workflowState, .arrived)
+        XCTAssertEqual(
+            myDayCoordinator.workflowContext(for: job.id)?.currentState,
+            jobDetailCoordinator.workflowContext(for: job.id)?.currentState
+        )
+        XCTAssertEqual(
+            queue.orderedOperations
+                .filter { $0.entityID == job.id }
+                .map(\.actionName),
+            actions.map(\.rawValue)
+        )
+        XCTAssertEqual(
+            savedJob.timelineEvents.suffix(actions.count).map(\.type),
+            [.travelStarted, .travelPaused, .travelResumed, .arrived]
+        )
+    }
+
+    func testFullSharedLifecycleKeepsJobAssignmentInvoiceTimelineAndQueueAligned() throws {
+        let queue = OfflineOperationQueue(persistence: MemoryQueuePersistence())
+        let store = AppDataStore(
+            offlineOperationQueue: queue,
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
+        )
+        let job = makeJob(number: "JOB-STEP-6-ACCEPTANCE")
+        store.addJob(job)
+        let coordinator = FieldOperationsWorkflowCoordinator(store: store)
+        let actions: [JobWorkflowAction] = [
+            .startTravel,
+            .pauseTravel,
+            .resumeTravel,
+            .markArrived,
+            .startSetup,
+            .startWork,
+            .pauseWork,
+            .resumeWork,
+            .startPackUp,
+            .finishWork,
+            .createInvoice
+        ]
+
+        for (offset, action) in actions.enumerated() {
+            XCTAssertTrue(
+                coordinator.performWorkflowAction(
+                    jobID: job.id,
+                    action: action,
+                    employeeID: technicianID,
+                    at: Date(timeIntervalSince1970: 90_000 + Double(offset))
+                ),
+                "Expected the shared Operations API to perform \(action.rawValue)."
+            )
+        }
+
+        let savedJob = try XCTUnwrap(store.jobs.first { $0.id == job.id })
+        let assignment = try XCTUnwrap(store.assignment(forJobID: job.id))
+        let invoice = try XCTUnwrap(store.invoice(forJobID: job.id))
+
+        XCTAssertEqual(savedJob.workflowState, .invoiceCreated)
+        XCTAssertEqual(assignment.status, .invoiceReady)
+        XCTAssertEqual(invoice.jobNumber, savedJob.jobNumber)
+        XCTAssertEqual(coordinator.workflowContext(for: job.id)?.currentState, .invoiceCreated)
+        XCTAssertEqual(
+            queue.orderedOperations
+                .filter { $0.entityID == job.id }
+                .map(\.actionName),
+            actions.map(\.rawValue)
+        )
+        XCTAssertEqual(
+            savedJob.timelineEvents.suffix(actions.count).map(\.type),
+            [
+                .travelStarted,
+                .travelPaused,
+                .travelResumed,
+                .arrived,
+                .setupStarted,
+                .workStarted,
+                .workPaused,
+                .workResumed,
+                .packUpStarted,
+                .workCompleted,
+                .invoiceCreated
+            ]
+        )
+    }
+
+    func testInterruptedFieldDayKeepsEachJobIndependentAndAuditable() throws {
+        let queue = OfflineOperationQueue(persistence: MemoryQueuePersistence())
+        let store = AppDataStore(
+            offlineOperationQueue: queue,
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
+        )
+        let manager = EmployeeRecord(
+            firstName: "Morgan",
+            lastName: "Manager",
+            role: .manager,
+            roles: [.manager]
+        )
+        store.addEmployee(manager)
+
+        let scheduledJob = makeJob(number: "JOB-FIELD-DAY-SCHEDULED")
+        let interruptionJob = makeJob(number: "JOB-FIELD-DAY-INTERRUPTION")
+        store.addJob(scheduledJob)
+        store.addJob(interruptionJob)
+        let coordinator = FieldOperationsWorkflowCoordinator(store: store)
+
+        XCTAssertTrue(coordinator.performWorkflowAction(
+            jobID: scheduledJob.id,
+            action: .startTravel,
+            employeeID: technicianID,
+            at: Date(timeIntervalSince1970: 100_000)
+        ))
+        XCTAssertTrue(coordinator.pauseTravel(
+            jobID: scheduledJob.id,
+            employeeID: technicianID,
+            note: "Paused for an impromptu estimate.",
+            at: Date(timeIntervalSince1970: 100_001)
+        ))
+
+        let interruptionActions: [JobWorkflowAction] = [
+            .startTravel,
+            .markArrived,
+            .startSetup,
+            .startWork,
+            .startPackUp,
+            .finishWork,
+            .createInvoice
+        ]
+        for (offset, action) in interruptionActions.enumerated() {
+            XCTAssertTrue(coordinator.performWorkflowAction(
+                jobID: interruptionJob.id,
+                action: action,
+                employeeID: technicianID,
+                at: Date(timeIntervalSince1970: 100_010 + Double(offset))
+            ))
+        }
+
+        let resumedActions: [JobWorkflowAction] = [
+            .resumeTravel,
+            .markArrived,
+            .startSetup,
+            .startWork,
+            .pauseWork,
+            .resumeWork
+        ]
+        for (offset, action) in resumedActions.enumerated() {
+            XCTAssertTrue(coordinator.performWorkflowAction(
+                jobID: scheduledJob.id,
+                action: action,
+                employeeID: technicianID,
+                at: Date(timeIntervalSince1970: 100_020 + Double(offset))
+            ))
+        }
+
+        var savedScheduledJob = try XCTUnwrap(
+            store.jobs.first { $0.id == scheduledJob.id }
+        )
+        let setupEvent = try XCTUnwrap(
+            savedScheduledJob.timelineEvents.first { $0.type == .setupStarted }
+        )
+        let correctedSetupTime = setupEvent.timestamp.addingTimeInterval(-300)
+        XCTAssertNotNil(store.correctTimelineTimestamp(
+            jobID: scheduledJob.id,
+            eventID: setupEvent.id,
+            correctedTimestamp: correctedSetupTime,
+            reason: "Setup began five minutes before the technician remembered to tap.",
+            actorEmployeeID: manager.id,
+            correctedAt: Date(timeIntervalSince1970: 100_030)
+        ))
+
+        savedScheduledJob = try XCTUnwrap(
+            store.jobs.first { $0.id == scheduledJob.id }
+        )
+        let savedInterruptionJob = try XCTUnwrap(
+            store.jobs.first { $0.id == interruptionJob.id }
+        )
+
+        XCTAssertEqual(savedScheduledJob.workflowState, .working)
+        XCTAssertEqual(savedScheduledJob.setupStartDate, correctedSetupTime)
+        XCTAssertTrue(savedScheduledJob.timelineEvents.contains {
+            $0.type == .timelineCorrected && $0.correctedEventID == setupEvent.id
+        })
+        XCTAssertEqual(savedInterruptionJob.workflowState, .invoiceCreated)
+        XCTAssertNotNil(store.invoice(forJobID: interruptionJob.id))
+        XCTAssertNil(store.invoice(forJobID: scheduledJob.id))
+
+        XCTAssertEqual(
+            queue.orderedOperations.filter {
+                $0.entityID == scheduledJob.id && $0.type == .workflowAction
+            }.map(\.actionName),
+            ([.startTravel, .pauseTravel] + resumedActions).map(\.rawValue)
+        )
+        XCTAssertEqual(
+            queue.orderedOperations.filter {
+                $0.entityID == interruptionJob.id && $0.type == .workflowAction
+            }.map(\.actionName),
+            interruptionActions.dropLast().map(\.rawValue)
+        )
+        XCTAssertTrue(
+            queue.orderedOperations.contains {
+                $0.entityID == interruptionJob.id &&
+                $0.type == .invoiceHandoff &&
+                $0.actionName == JobWorkflowAction.createInvoice.rawValue
+            }
+        )
+        XCTAssertTrue(queue.orderedOperations.contains {
+            $0.entityID == scheduledJob.id &&
+            $0.type == .jobTimestamp &&
+            $0.actionName == "correctTimelineTimestamp"
+        })
+    }
+
     private func makeJob(
         number: String,
         workflowState: JobWorkflowState = .notStarted,
