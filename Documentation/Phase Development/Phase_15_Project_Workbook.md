@@ -854,8 +854,8 @@ duplicate actions, inconsistent terminology, and unnecessary technician taps.
 # Step 6 – Workflow Cleanup and UI Simplification
 
 ## Status
-Parts 1–6 complete and validated. Part 7 implementation complete with
-product-owner build and workflow validation pending. Part 8 remains pending.
+Parts 1–7 complete and validated, including the field-testing follow-up package.
+Part 8 remains pending.
 
 ## Objective
 Remove redundant workflows and simplify navigation.
@@ -1347,9 +1347,9 @@ Version 1.0, Build 2 for device verification.
 ## Part 7 – Navigation and Presentation Cleanup
 
 ### Status
-Implementation complete. Multi-role employee behavior passed the product-owner
-Xcode build and complete regression suite. Explainable, route-aware Dispatch
-Queue recommendations are now pending product-owner validation.
+Complete. Multi-role employee behavior, navigation cleanup, route-aware
+Dispatch recommendations, field lifecycle refinements, and receipt printing
+passed product-owner build and workflow validation.
 
 ### Objective
 Verify one cohesive navigation and presentation system across operational
@@ -1552,10 +1552,70 @@ retaining Owner authority.
   persistence after relaunch, blank-space retention, navigation suppression
   during arrangement, and reset behavior.
 
+### Field-Testing Follow-Up Package
+
+Real field use identified four workflow gaps that were resolved before the
+formal Part 8 regression pass.
+
+#### Travel Pause and Resume
+- Added Pause Travel and Resume Travel to the shared field lifecycle rather
+  than creating a My Day-only shortcut.
+- Travel pauses and resumes update the local Job immediately, create durable
+  timeline events, and enter the Step 5 offline operation queue when remote
+  synchronization is enabled.
+- My Day and shared workflow presentation expose the same actions and status
+  vocabulary.
+
+#### Authorized Timeline Corrections
+- Owners and Managers may correct an operational timeline timestamp from Job
+  Detail or My Day without deleting or replacing the original event.
+- A correction requires both a changed date/time and a written reason.
+- The audit event preserves the original timestamp, corrected timestamp,
+  responsible employee, reason, and correction time.
+- Corrections update the applicable operational timestamp used by downstream
+  duration calculations, including setup and completion milestones.
+- Timeline corrections are represented by a dedicated offline operation so the
+  audit cannot be lost when the device is disconnected.
+
+#### Receipt-Printer Discovery
+- Bluetooth discovery now presents likely receipt printers first using the
+  advertised printer service, descriptive device names, and common thermal
+  printer identifiers.
+- Unrelated nearby Bluetooth devices are hidden from the primary list, with an
+  explicit Show Other Bluetooth Devices fallback so an unusual printer never
+  becomes inaccessible.
+- A printer that successfully exposes the supported receipt write channel is
+  remembered and remains classified as a verified printer on later scans.
+- Classification coverage verifies supported service discovery, common receipt
+  printer names, and exclusion of unrelated consumer Bluetooth devices.
+
+#### Purpose-Built Print Receipt Flow
+- Print Receipt no longer requires a technician to leave the invoice, open
+  Admin, connect a printer, and navigate back.
+- The invoice opens a focused printer-selection sheet, scans automatically,
+  waits for a genuine ready connection, and then prints the prepared receipt.
+- The flow clearly reports scanning, connecting, ready, failure, and successful
+  print states.
+- An already-connected printer offers immediate printing, and the success
+  confirmation supports printing another copy without rebuilding the receipt.
+- The existing Admin Print page remains available for configuration and test
+  printing.
+
+### Field-Testing Follow-Up Validation
+- [x] Travel can be paused and resumed without losing lifecycle history.
+- [x] Owner/Manager corrections require a changed timestamp and reason.
+- [x] Original and corrected timeline evidence remain visible and auditable.
+- [x] Receipt-printer discovery removes the overwhelming default device list.
+- [x] Unrecognized printers remain accessible through the fallback list.
+- [x] Print Receipt opens printer selection and prints after connection readiness.
+- [x] A second receipt copy can be printed from the success flow.
+- [x] Modified Swift sources pass syntax parsing and repository whitespace checks.
+- [x] Product-owner device testing accepted all four field improvements.
+
 ## Part 8 – Regression and Acceptance Testing
 
 ### Status
-Pending Part 7 acceptance.
+Ready to begin using the accepted Part 7 field workflow as the baseline.
 
 ### Objective
 Test My Day, Dispatch Board, Assignment Detail, Job Detail, Timeline, and Live
@@ -1563,10 +1623,11 @@ Map and confirm every shared action produces the same state transition, timeline
 event, offline operation, UI result, invoice handoff, and completion behavior.
 
 ### Resume Point
-Validate the Part 7 Dispatch Queue score breakdown, tied-candidate state,
-previous-stop and employee-base route evidence, and exclusion explanations in
-Xcode. After acceptance, execute Part 8 end-to-end workflow testing using
-Version 1.0, Build 2 as the verified baseline.
+Execute Part 8 end-to-end workflow testing from My Day, Dispatch Board,
+Assignment Detail, Job Detail, Timeline, and Live Map. Confirm each shared
+action produces the same state transition, timeline event, offline operation,
+UI result, invoice handoff, and completion behavior using Version 1.0, Build 2
+as the verified baseline.
 
 ### Expected Outcomes
 - Cleaner navigation.

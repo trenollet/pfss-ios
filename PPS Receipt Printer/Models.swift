@@ -123,6 +123,7 @@ enum JobStatus: String, CaseIterable, Identifiable, Codable {
 enum JobWorkflowState: String, CaseIterable, Identifiable, Codable {
     case notStarted = "Not Started"
     case traveling = "Traveling"
+    case travelPaused = "Travel Paused"
     case arrived = "Arrived"
     case settingUp = "Setting Up"
     case working = "Working"
@@ -140,6 +141,8 @@ enum JobWorkflowState: String, CaseIterable, Identifiable, Codable {
 enum JobTimelineEventType: String, Codable {
     case assigned
     case travelStarted
+    case travelPaused
+    case travelResumed
     case arrived
     case setupStarted
     case workStarted
@@ -153,6 +156,7 @@ enum JobTimelineEventType: String, Codable {
     case jobCompleted
     case cancelled
     case note
+    case timelineCorrected
 }
 
 struct JobTimelineEvent: Identifiable, Codable, Equatable {
@@ -162,6 +166,9 @@ struct JobTimelineEvent: Identifiable, Codable, Equatable {
     var timestamp: Date
     var employeeID: UUID?
     var note: String?
+    var correctedEventID: UUID?
+    var originalTimestamp: Date?
+    var correctedTimestamp: Date?
 
     init(
         id: UUID = UUID(),
@@ -169,7 +176,10 @@ struct JobTimelineEvent: Identifiable, Codable, Equatable {
         title: String,
         timestamp: Date = Date(),
         employeeID: UUID? = nil,
-        note: String? = nil
+        note: String? = nil,
+        correctedEventID: UUID? = nil,
+        originalTimestamp: Date? = nil,
+        correctedTimestamp: Date? = nil
     ) {
         self.id = id
         self.type = type
@@ -177,6 +187,9 @@ struct JobTimelineEvent: Identifiable, Codable, Equatable {
         self.timestamp = timestamp
         self.employeeID = employeeID
         self.note = note
+        self.correctedEventID = correctedEventID
+        self.originalTimestamp = originalTimestamp
+        self.correctedTimestamp = correctedTimestamp
     }
 }
 

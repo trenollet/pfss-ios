@@ -577,6 +577,9 @@ struct OperationsView: View {
         case .traveling:
             return .traveling
 
+        case .travelPaused:
+            return .travelPaused
+
         case .arrived,
              .settingUp,
              .working,

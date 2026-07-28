@@ -10,16 +10,74 @@ import CoreBluetooth
 import Combine
 import UIKit
 
+enum BluetoothPrinterConnectionState: Equatable {
+    case idle
+    case scanning
+    case connecting(String)
+    case ready(String)
+    case failed(String)
+}
+
+struct BluetoothPrinterDiscoveryClassifier {
+    static func isLikelyPrinter(
+        name: String?,
+        advertisedServiceUUIDs: [String]
+    ) -> Bool {
+        let services = Set(advertisedServiceUUIDs.map {
+            $0.uppercased().replacingOccurrences(of: "-", with: "")
+        })
+        if services.contains("18F0") { return true }
+
+        let normalizedName = (name ?? "")
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: .current
+            )
+            .uppercased()
+            .replacingOccurrences(of: "_", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !normalizedName.isEmpty else { return false }
+
+        let descriptiveTerms = [
+            "PRINTER", "THERMAL", "RECEIPT", "POS PRINTER", "BTPRINTER"
+        ]
+        if descriptiveTerms.contains(where: normalizedName.contains) {
+            return true
+        }
+
+        let commonPrinterPrefixes = [
+            "RPP", "MTP", "MPT", "RP-", "PT-", "XP-"
+        ]
+        return commonPrinterPrefixes.contains(where: normalizedName.hasPrefix)
+    }
+}
+
 final class BluetoothPrinter: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
-    @Published var devices: [CBPeripheral] = []
+    @Published private(set) var devices: [CBPeripheral] = []
     @Published var isReadyToPrint = false
+    @Published private(set) var hiddenDeviceCount = 0
+    @Published private(set) var connectionState: BluetoothPrinterConnectionState = .idle
+    @Published var showsAllNearbyDevices = false {
+        didSet { refreshVisibleDevices() }
+    }
+
+    private struct DiscoveredDevice {
+        var peripheral: CBPeripheral
+        var advertisedName: String?
+        var advertisedServiceUUIDs: [String]
+        var rssi: Int
+        var isLikelyPrinter: Bool
+    }
 
     private var centralManager: CBCentralManager!
     private var connectedPeripheral: CBPeripheral?
     private var writeCharacteristic: CBCharacteristic?
+    private var discoveredDevices: [UUID: DiscoveredDevice] = [:]
 
     private let printerServiceUUID = CBUUID(string: "18F0")
     private let printerWriteUUID = CBUUID(string: "2AF1")
+    private let verifiedPrinterIdentifierKey = "pfss.verifiedPrinterIdentifier"
 
     override init() {
         super.init()
@@ -33,23 +91,46 @@ final class BluetoothPrinter: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func startScan() {
-        isReadyToPrint = false
-        writeCharacteristic = nil
-        devices.removeAll()
+        if !isReadyToPrint {
+            connectionState = .scanning
+        }
+        discoveredDevices.removeAll()
+        refreshVisibleDevices()
         centralManager.scanForPeripherals(withServices: nil, options: nil)
+    }
+
+    func displayName(for peripheral: CBPeripheral) -> String {
+        let discoveredName = discoveredDevices[peripheral.identifier]?
+            .advertisedName?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let discoveredName, !discoveredName.isEmpty {
+            return discoveredName
+        }
+
+        let peripheralName = peripheral.name?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let peripheralName, !peripheralName.isEmpty {
+            return peripheralName
+        }
+
+        return "Unnamed Bluetooth Device"
     }
 
     func connect(to peripheral: CBPeripheral) {
         centralManager.stopScan()
+        isReadyToPrint = false
+        writeCharacteristic = nil
         connectedPeripheral = peripheral
         peripheral.delegate = self
+        connectionState = .connecting(displayName(for: peripheral))
         centralManager.connect(peripheral, options: nil)
     }
 
-    func printReceiptText(_ text: String) {
+    @discardableResult
+    func printReceiptText(_ text: String) -> Bool {
         guard let peripheral = connectedPeripheral,
               let characteristic = writeCharacteristic else {
-            return
+            return false
         }
 
         var data = Data()
@@ -75,6 +156,7 @@ final class BluetoothPrinter: NSObject, ObservableObject, CBCentralManagerDelega
         data.append(contentsOf: [0x1B, 0x64, 0x05])
 
         peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
+        return true
     }
 
     private func logoRasterData(named imageName: String) -> Data? {
@@ -160,13 +242,59 @@ final class BluetoothPrinter: NSObject, ObservableObject, CBCentralManagerDelega
         advertisementData: [String : Any],
         rssi RSSI: NSNumber
     ) {
-        if !devices.contains(where: { $0.identifier == peripheral.identifier }) {
-            devices.append(peripheral)
-        }
+        let advertisedName = advertisementData[CBAdvertisementDataLocalNameKey]
+            as? String
+        let serviceUUIDs = (advertisementData[CBAdvertisementDataServiceUUIDsKey]
+            as? [CBUUID] ?? []).map(\.uuidString)
+        let bestName = advertisedName ?? peripheral.name
+        let isRememberedPrinter = UserDefaults.standard.string(
+            forKey: verifiedPrinterIdentifierKey
+        ) == peripheral.identifier.uuidString
+        let isLikelyPrinter = isRememberedPrinter ||
+            BluetoothPrinterDiscoveryClassifier.isLikelyPrinter(
+                name: bestName,
+                advertisedServiceUUIDs: serviceUUIDs
+            )
+
+        discoveredDevices[peripheral.identifier] = DiscoveredDevice(
+            peripheral: peripheral,
+            advertisedName: advertisedName,
+            advertisedServiceUUIDs: serviceUUIDs,
+            rssi: RSSI.intValue,
+            isLikelyPrinter: isLikelyPrinter
+        )
+        refreshVisibleDevices()
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         peripheral.discoverServices([printerServiceUUID])
+    }
+
+    func centralManager(
+        _ central: CBCentralManager,
+        didFailToConnect peripheral: CBPeripheral,
+        error: Error?
+    ) {
+        isReadyToPrint = false
+        connectionState = .failed(
+            error?.localizedDescription ??
+            "PFSS could not connect to \(displayName(for: peripheral))."
+        )
+    }
+
+    func centralManager(
+        _ central: CBCentralManager,
+        didDisconnectPeripheral peripheral: CBPeripheral,
+        error: Error?
+    ) {
+        guard connectedPeripheral?.identifier == peripheral.identifier else {
+            return
+        }
+        isReadyToPrint = false
+        writeCharacteristic = nil
+        connectionState = error == nil
+            ? .idle
+            : .failed(error?.localizedDescription ?? "Printer disconnected.")
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
@@ -184,7 +312,42 @@ final class BluetoothPrinter: NSObject, ObservableObject, CBCentralManagerDelega
             if characteristic.uuid == printerWriteUUID {
                 writeCharacteristic = characteristic
                 isReadyToPrint = true
+                connectionState = .ready(displayName(for: peripheral))
+                UserDefaults.standard.set(
+                    peripheral.identifier.uuidString,
+                    forKey: verifiedPrinterIdentifierKey
+                )
+                if var device = discoveredDevices[peripheral.identifier] {
+                    device.isLikelyPrinter = true
+                    discoveredDevices[peripheral.identifier] = device
+                    refreshVisibleDevices()
+                }
             }
         }
+
+
+        if writeCharacteristic == nil {
+            isReadyToPrint = false
+            connectionState = .failed(
+                "\(displayName(for: peripheral)) does not expose the supported receipt-printer connection."
+            )
+        }
+    }
+
+    private func refreshVisibleDevices() {
+        let allDevices = Array(discoveredDevices.values)
+        let likelyPrinters = allDevices.filter(\.isLikelyPrinter)
+        hiddenDeviceCount = allDevices.count - likelyPrinters.count
+
+        let visibleDevices = showsAllNearbyDevices ? allDevices : likelyPrinters
+        devices = visibleDevices.sorted { first, second in
+            let firstName = displayName(for: first.peripheral)
+            let secondName = displayName(for: second.peripheral)
+            let comparison = firstName.localizedCaseInsensitiveCompare(secondName)
+            if comparison == .orderedSame {
+                return first.rssi > second.rssi
+            }
+            return comparison == .orderedAscending
+        }.map(\.peripheral)
     }
 }

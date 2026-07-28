@@ -870,6 +870,66 @@ final class AppDataStore: ObservableObject {
         )
         return event
     }
+
+    /// Corrects a lifecycle timestamp while retaining the original value in
+    /// an audit event. Only an Owner or Manager may perform this operation.
+    @discardableResult
+    func correctTimelineTimestamp(
+        jobID: UUID,
+        eventID: UUID,
+        correctedTimestamp: Date,
+        reason: String,
+        actorEmployeeID: UUID,
+        correctedAt: Date = Date()
+    ) -> JobTimelineEvent? {
+        let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedReason.isEmpty,
+              let actor = employees.first(where: { $0.id == actorEmployeeID }),
+              actor.canOverrideScheduling,
+              let jobIndex = jobs.firstIndex(where: { $0.id == jobID }),
+              let eventIndex = jobs[jobIndex].timelineEvents.firstIndex(where: {
+                  $0.id == eventID && $0.type != .timelineCorrected
+              }) else { return nil }
+
+        let correctedType = jobs[jobIndex].timelineEvents[eventIndex].type
+        let originalTimestamp = jobs[jobIndex].timelineEvents[eventIndex].timestamp
+        guard originalTimestamp != correctedTimestamp else { return nil }
+        let correctedTitle = jobs[jobIndex].timelineEvents[eventIndex].title
+        jobs[jobIndex].timelineEvents[eventIndex].timestamp = correctedTimestamp
+
+        // Keep the dedicated timestamps used by labor reporting consistent
+        // with their corrected audit events.
+        switch correctedType {
+        case .setupStarted:
+            jobs[jobIndex].setupStartDate = correctedTimestamp
+        case .workCompleted, .jobCompleted:
+            jobs[jobIndex].completedDate = correctedTimestamp
+        default:
+            break
+        }
+
+        let auditEvent = JobTimelineEvent(
+            type: .timelineCorrected,
+            title: "Timeline Corrected: \(correctedTitle)",
+            timestamp: correctedAt,
+            employeeID: actorEmployeeID,
+            note: trimmedReason,
+            correctedEventID: eventID,
+            originalTimestamp: originalTimestamp,
+            correctedTimestamp: correctedTimestamp
+        )
+        jobs[jobIndex].timelineEvents.append(auditEvent)
+        enqueueTimelineCorrectionOperation(
+            job: jobs[jobIndex],
+            eventID: eventID,
+            originalTimestamp: originalTimestamp,
+            correctedTimestamp: correctedTimestamp,
+            reason: trimmedReason,
+            actorEmployeeID: actorEmployeeID,
+            correctedAt: correctedAt
+        )
+        return auditEvent
+    }
     func workflowContext(
         for jobID: UUID
     ) -> JobWorkflowContext? {
@@ -1031,7 +1091,8 @@ final class AppDataStore: ObservableObject {
                     )
                 }
 
-            case .startSetup, .startWork, .pauseWork, .resumeWork, .startPackUp,
+            case .pauseTravel, .resumeTravel, .startSetup, .startWork,
+                 .pauseWork, .resumeWork, .startPackUp,
                  .recordPayment, .viewDetails:
                 break
             }

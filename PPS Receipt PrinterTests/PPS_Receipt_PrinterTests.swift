@@ -17,6 +17,39 @@ struct PPS_Receipt_PrinterTests {
         // https://developer.apple.com/documentation/testing
     }
 
+    @Test func printerServiceIdentifiesUnnamedReceiptPrinter() {
+        #expect(
+            BluetoothPrinterDiscoveryClassifier.isLikelyPrinter(
+                name: nil,
+                advertisedServiceUUIDs: ["18F0"]
+            )
+        )
+    }
+
+    @Test func commonReceiptPrinterNamesAreRecognized() {
+        #expect(
+            BluetoothPrinterDiscoveryClassifier.isLikelyPrinter(
+                name: "RPP02N",
+                advertisedServiceUUIDs: []
+            )
+        )
+        #expect(
+            BluetoothPrinterDiscoveryClassifier.isLikelyPrinter(
+                name: "80mm Thermal Printer",
+                advertisedServiceUUIDs: []
+            )
+        )
+    }
+
+    @Test func unrelatedBluetoothDevicesStayInFallbackList() {
+        #expect(
+            !BluetoothPrinterDiscoveryClassifier.isLikelyPrinter(
+                name: "Tim's AirPods",
+                advertisedServiceUUIDs: ["FFF0"]
+            )
+        )
+    }
+
     @Test func saturdayRecurrenceMovesToFriday() throws {
         let calendar = recurrenceTestCalendar
         let saturday = try #require(

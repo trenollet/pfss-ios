@@ -49,21 +49,45 @@ struct PrintView: View {
 
     var body: some View {
         Form {
-                Section("Printer") {
-                    Button("Scan for Printer") {
+                Section {
+                    Button {
                         printer.startScan()
+                    } label: {
+                        Label("Scan for Receipt Printers", systemImage: "printer.fill")
                     }
 
                     ForEach(printer.devices, id: \.identifier) { device in
                         Button {
                             printer.connect(to: device)
                         } label: {
-                            Text(device.name ?? "Unknown Device")
+                            Label(
+                                printer.displayName(for: device),
+                                systemImage: "dot.radiowaves.left.and.right"
+                            )
+                        }
+                    }
+
+                    if printer.hiddenDeviceCount > 0 || printer.showsAllNearbyDevices {
+                        Button {
+                            printer.showsAllNearbyDevices.toggle()
+                        } label: {
+                            Label(
+                                printer.showsAllNearbyDevices
+                                    ? "Hide Other Bluetooth Devices"
+                                    : "Show \(printer.hiddenDeviceCount) Other Bluetooth Devices",
+                                systemImage: printer.showsAllNearbyDevices
+                                    ? "eye.slash"
+                                    : "eye"
+                            )
                         }
                     }
 
                     Text(printer.isReadyToPrint ? "Printer Ready" : "Printer Not Connected")
                         .foregroundStyle(printer.isReadyToPrint ? .green : .red)
+                } header: {
+                    Text("Printer")
+                } footer: {
+                    Text("PFSS shows likely receipt printers first. Use Show Other Bluetooth Devices if your printer is not recognized by name.")
                 }
 
                 Section("Customer / Site") {

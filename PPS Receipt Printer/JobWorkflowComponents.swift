@@ -125,6 +125,7 @@ struct JobWorkflowStatusCard: View {
 struct JobTimelineView: View {
     let events: [JobTimelineEvent]
     let employeeName: (UUID?) -> String?
+    var onCorrect: ((JobTimelineEvent) -> Void)? = nil
 
     var body: some View {
         if events.isEmpty {
@@ -181,12 +182,139 @@ struct JobTimelineView: View {
                                 Text(note)
                                     .font(.caption)
                             }
+
+                            if event.type == .timelineCorrected,
+                               let original = event.originalTimestamp,
+                               let corrected = event.correctedTimestamp {
+                                Text(
+                                    "\(original.formatted(date: .abbreviated, time: .shortened)) → \(corrected.formatted(date: .abbreviated, time: .shortened))"
+                                )
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.orange)
+                            }
                         }
 
                         Spacer()
+
+                        if let onCorrect,
+                           event.type != .note,
+                           event.type != .timelineCorrected {
+                            Button {
+                                onCorrect(event)
+                            } label: {
+                                Image(systemName: "clock.arrow.trianglehead.2.counterclockwise.rotate.90")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Correct \(event.title) time")
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+struct TimelineCorrectionEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let event: JobTimelineEvent
+    let actorName: String
+    let onSave: (Date, String) -> Bool
+
+    @State private var correctedTimestamp: Date
+    @State private var reason = ""
+    @State private var showingSaveError = false
+
+    init(
+        event: JobTimelineEvent,
+        actorName: String,
+        onSave: @escaping (Date, String) -> Bool
+    ) {
+        self.event = event
+        self.actorName = actorName
+        self.onSave = onSave
+        _correctedTimestamp = State(initialValue: event.timestamp)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Timeline Event") {
+                    LabeledContent("Event", value: event.title)
+                    LabeledContent(
+                        "Original Time",
+                        value: event.timestamp.formatted(
+                            date: .abbreviated,
+                            time: .shortened
+                        )
+                    )
+                }
+
+                Section {
+                    DatePicker(
+                        "Corrected Date",
+                        selection: $correctedTimestamp,
+                        displayedComponents: [.date]
+                    )
+
+                    DatePicker(
+                        "Corrected Time",
+                        selection: $correctedTimestamp,
+                        displayedComponents: [.hourAndMinute]
+                    )
+
+                    TextField(
+                        "Reason for correction (required)",
+                        text: $reason,
+                        axis: .vertical
+                    )
+                        .lineLimit(2...5)
+                } header: {
+                    Text("Correction")
+                } footer: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(
+                            "Change the corrected date or time and enter a reason to enable Save."
+                        )
+                        Text(
+                            "The original time will remain in the audit history. Correction recorded by \(actorName)."
+                        )
+                    }
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle("Correct Timeline")
+            .navigationBarTitleDisplayMode(.inline)
+            .alert("Correction Not Saved", isPresented: $showingSaveError) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(
+                    "Confirm that the selected employee has the Owner or Manager role, then try again."
+                )
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        if onSave(correctedTimestamp, trimmedReason) {
+                            dismiss()
+                        } else {
+                            showingSaveError = true
+                        }
+                    }
+                    .disabled(
+                        trimmedReason.isEmpty ||
+                        correctedTimestamp == event.timestamp
+                    )
+                }
+            }
+        }
+    }
+
+    private var trimmedReason: String {
+        reason.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

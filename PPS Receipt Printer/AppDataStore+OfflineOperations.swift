@@ -56,8 +56,50 @@ struct OfflineRouteChangePayload: Codable, Equatable {
     var occurredAt: Date
 }
 
+struct OfflineTimelineCorrectionPayload: Codable, Equatable {
+    var jobID: UUID
+    var jobNumber: String
+    var eventID: UUID
+    var originalTimestamp: Date
+    var correctedTimestamp: Date
+    var reason: String
+    var actorEmployeeID: UUID
+    var correctedAt: Date
+}
+
 @MainActor
 extension AppDataStore {
+    func enqueueTimelineCorrectionOperation(
+        job: JobRecord,
+        eventID: UUID,
+        originalTimestamp: Date,
+        correctedTimestamp: Date,
+        reason: String,
+        actorEmployeeID: UUID,
+        correctedAt: Date
+    ) {
+        guard offlineSynchronizationMode.requiresRemoteQueue else { return }
+        enqueueOfflineOperation(
+            type: .jobTimestamp,
+            entityType: .job,
+            entityID: job.id,
+            actionName: "correctTimelineTimestamp",
+            actorEmployeeID: actorEmployeeID,
+            value: OfflineTimelineCorrectionPayload(
+                jobID: job.id,
+                jobNumber: job.jobNumber,
+                eventID: eventID,
+                originalTimestamp: originalTimestamp,
+                correctedTimestamp: correctedTimestamp,
+                reason: reason,
+                actorEmployeeID: actorEmployeeID,
+                correctedAt: correctedAt
+            ),
+            createdAt: correctedAt,
+            metadata: ["jobNumber": job.jobNumber]
+        )
+    }
+
     func enqueueWorkflowOperation(
         jobID: UUID,
         action: JobWorkflowAction,

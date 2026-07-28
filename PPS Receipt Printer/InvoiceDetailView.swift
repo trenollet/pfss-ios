@@ -18,6 +18,7 @@ struct InvoiceDetailView: View {
     @State private var sharedPDFURL: URL?
     @State private var pdfErrorMessage: String?
     @State private var isShowingPDFError = false
+    @State private var isShowingReceiptPrinter = false
     @FocusState private var isInputFocused: Bool
 
     private var customerDisplayName: String {
@@ -212,7 +213,8 @@ struct InvoiceDetailView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 Button {
-                    printThermalReceipt()
+                    isInputFocused = false
+                    isShowingReceiptPrinter = true
                 } label: {
                     HStack {
                         Spacer()
@@ -226,7 +228,6 @@ struct InvoiceDetailView: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!printer.isReadyToPrint)
                 
                 if invoice.lifecycleStatus == .archived {
                     Button {
@@ -293,6 +294,12 @@ struct InvoiceDetailView: View {
                     activityItems: [sharedPDFURL]
                 )
             }
+        }
+        .sheet(isPresented: $isShowingReceiptPrinter) {
+            ReceiptPrinterSelectionView(
+                receiptText: thermalReceiptText()
+            )
+            .environmentObject(printer)
         }
         .alert(
             "Unable to Share Invoice",
@@ -364,9 +371,7 @@ struct InvoiceDetailView: View {
         }
     }
 
-    private func printThermalReceipt() {
-        isInputFocused = false
-
+    private func thermalReceiptText() -> String {
         let customer = store.customers.first(where: {
             $0.customerNumber == invoice.customerNumber
         })
@@ -381,7 +386,7 @@ struct InvoiceDetailView: View {
             site = nil
         }
 
-        let receiptText = ThermalReceiptRenderer.render(
+        return ThermalReceiptRenderer.render(
             invoice: invoice,
             businessProfile: store.businessProfile,
             customer: customer,
@@ -389,7 +394,6 @@ struct InvoiceDetailView: View {
             catalogItems: store.serviceCatalogItems
         )
 
-        printer.printReceiptText(receiptText)
     }
     
     

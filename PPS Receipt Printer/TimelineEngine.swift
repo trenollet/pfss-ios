@@ -444,6 +444,8 @@ struct OperationsTimelineEngine {
         switch type {
         case .assigned: return "assigned"
         case .travelStarted: return "travel"
+        case .travelPaused: return "travelPaused"
+        case .travelResumed: return "travelResumed"
         case .arrived: return "arrived"
         case .setupStarted: return "setup"
         case .workStarted: return "workStarted"
@@ -457,6 +459,7 @@ struct OperationsTimelineEngine {
         case .jobCompleted: return "closed"
         case .cancelled: return "cancelled"
         case .note: return nil
+        case .timelineCorrected: return nil
         }
     }
 

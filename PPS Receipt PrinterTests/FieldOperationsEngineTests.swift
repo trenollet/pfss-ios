@@ -19,6 +19,8 @@ final class FieldOperationsEngineTests: XCTestCase {
     func testCanonicalWorkflowVocabularyAndPresentationMetadata() {
         let expected: [(JobWorkflowAction, String, JobWorkflowAccent)] = [
             (.startTravel, "Start Travel", .orange),
+            (.pauseTravel, "Pause Travel", .orange),
+            (.resumeTravel, "Resume Travel", .orange),
             (.markArrived, "Arrived", .orange),
             (.startSetup, "Start Setup", .orange),
             (.startWork, "Start Work", .orange),
@@ -313,6 +315,63 @@ final class FieldOperationsEngineTests: XCTestCase {
         XCTAssertEqual(job.workflowState, .working)
         XCTAssertEqual(job.timelineEvents.last?.type, .workResumed)
         XCTAssertEqual(job.timelineEvents.count, 2)
+    }
+
+    func testTravelMayPauseAndResumeWithoutInflatingActiveTravelTime() throws {
+        let engine = FieldOperationsEngine()
+        var job = makeJob()
+
+        job = try XCTUnwrap(engine.transition(
+            job: job,
+            action: .startTravel,
+            employeeID: technicianID,
+            at: date(hour: 8)
+        ))
+
+        job = try XCTUnwrap(engine.transition(
+            job: job,
+            action: .pauseTravel,
+            employeeID: technicianID,
+            note: "Stopped for an impromptu estimate.",
+            at: date(hour: 8, minute: 15)
+        ))
+        XCTAssertEqual(job.workflowState, .travelPaused)
+        XCTAssertEqual(job.timelineEvents.last?.type, .travelPaused)
+
+        job = try XCTUnwrap(engine.transition(
+            job: job,
+            action: .resumeTravel,
+            employeeID: technicianID,
+            at: date(hour: 8, minute: 45)
+        ))
+        XCTAssertEqual(job.workflowState, .traveling)
+        XCTAssertEqual(job.timelineEvents.last?.type, .travelResumed)
+
+        job = try XCTUnwrap(engine.transition(
+            job: job,
+            action: .markArrived,
+            employeeID: technicianID,
+            at: date(hour: 9)
+        ))
+
+        XCTAssertEqual(
+            engine.activeTravelDuration(for: job, through: date(hour: 10)),
+            30 * 60,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            job.timelineEvents.map(\.type),
+            [.travelStarted, .travelPaused, .travelResumed, .arrived]
+        )
+    }
+
+    func testTravelingContextKeepsArrivePrimaryAndExposesPause() {
+        let context = FieldOperationsEngine().context(
+            for: makeJob(workflowState: .traveling, status: .inProgress)
+        )
+
+        XCTAssertEqual(context.nextAction, .markArrived)
+        XCTAssertEqual(context.availableActions, [.pauseTravel, .markArrived])
     }
 
     func testWorkingContextKeepsPackUpPrimaryAndExposesPause() {

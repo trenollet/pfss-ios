@@ -24,6 +24,8 @@ struct TechnicianStatusCard: View {
             return .blue
         case .traveling:
             return .orange
+        case .travelPaused:
+            return .yellow
         case .lunch:
             return .yellow
         case .offline:
@@ -41,6 +43,8 @@ struct TechnicianStatusCard: View {
             return "hammer.fill"
         case .traveling:
             return "car.fill"
+        case .travelPaused:
+            return "pause.circle.fill"
         case .lunch:
             return "fork.knife"
         case .offline:

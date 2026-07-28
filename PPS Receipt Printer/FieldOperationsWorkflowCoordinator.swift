@@ -146,6 +146,38 @@ final class FieldOperationsWorkflowCoordinator: ObservableObject {
     // MARK: - Direct wrappers for the current workflow helpers
 
     @discardableResult
+    func pauseTravel(
+        jobID: UUID,
+        employeeID: UUID? = nil,
+        note: String? = nil,
+        at timestamp: Date = Date()
+    ) -> Bool {
+        performWorkflowAction(
+            jobID: jobID,
+            action: .pauseTravel,
+            employeeID: employeeID,
+            note: note,
+            at: timestamp
+        )
+    }
+
+    @discardableResult
+    func resumeTravel(
+        jobID: UUID,
+        employeeID: UUID? = nil,
+        note: String? = nil,
+        at timestamp: Date = Date()
+    ) -> Bool {
+        performWorkflowAction(
+            jobID: jobID,
+            action: .resumeTravel,
+            employeeID: employeeID,
+            note: note,
+            at: timestamp
+        )
+    }
+
+    @discardableResult
     func pauseWork(
         jobID: UUID,
         employeeID: UUID? = nil,

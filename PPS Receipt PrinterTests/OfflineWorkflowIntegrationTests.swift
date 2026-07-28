@@ -69,6 +69,44 @@ final class OfflineWorkflowIntegrationTests: XCTestCase {
         XCTAssertTrue(queue.operations.isEmpty)
     }
 
+    func testTravelPauseAndResumeUpdateLocallyAndRemainInOfflineOrder() throws {
+        let queue = OfflineOperationQueue(persistence: MemoryQueuePersistence())
+        let store = AppDataStore(
+            offlineOperationQueue: queue,
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
+        )
+        let job = makeJob(number: "JOB-OFFLINE-TRAVEL-PAUSE")
+        store.addJob(job)
+
+        let actions: [JobWorkflowAction] = [
+            .startTravel,
+            .pauseTravel,
+            .resumeTravel,
+            .markArrived
+        ]
+
+        for (offset, action) in actions.enumerated() {
+            XCTAssertTrue(store.performWorkflowAction(
+                jobID: job.id,
+                action: action,
+                employeeID: technicianID,
+                at: Date(timeIntervalSince1970: 15_000 + Double(offset))
+            ))
+        }
+
+        XCTAssertEqual(
+            store.jobs.first(where: { $0.id == job.id })?.workflowState,
+            .arrived
+        )
+        XCTAssertEqual(
+            queue.orderedOperations
+                .filter { $0.entityID == job.id }
+                .map(\.actionName),
+            actions.map(\.rawValue)
+        )
+    }
+
     func testTechnicianNoteUpdatesTimelineAndQueuesExactEvent() throws {
         let queue = OfflineOperationQueue(persistence: MemoryQueuePersistence())
         let store = AppDataStore(
@@ -217,6 +255,104 @@ final class OfflineWorkflowIntegrationTests: XCTestCase {
         XCTAssertEqual(
             store.jobs.first(where: { $0.id == job.id })?.workflowState,
             .traveling
+        )
+        XCTAssertTrue(queue.operations.isEmpty)
+    }
+
+    func testManagerCorrectionPreservesOriginalTimeAndQueuesAuditIntent() throws {
+        let queue = OfflineOperationQueue(persistence: MemoryQueuePersistence())
+        let store = AppDataStore(
+            offlineOperationQueue: queue,
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
+        )
+        let manager = EmployeeRecord(
+            firstName: "Pat",
+            lastName: "Manager",
+            role: .manager,
+            roles: [.manager]
+        )
+        store.addEmployee(manager)
+
+        var job = makeJob(number: "JOB-TIMELINE-CORRECTION")
+        let originalTimestamp = Date(timeIntervalSince1970: 60_000)
+        let correctedTimestamp = Date(timeIntervalSince1970: 59_100)
+        let event = JobTimelineEvent(
+            type: .setupStarted,
+            title: "Setup Started",
+            timestamp: originalTimestamp,
+            employeeID: technicianID
+        )
+        job.timelineEvents = [event]
+        store.addJob(job)
+
+        let audit = try XCTUnwrap(store.correctTimelineTimestamp(
+            jobID: job.id,
+            eventID: event.id,
+            correctedTimestamp: correctedTimestamp,
+            reason: "Technician forgot to tap after setup.",
+            actorEmployeeID: manager.id,
+            correctedAt: Date(timeIntervalSince1970: 61_000)
+        ))
+
+        let savedJob = try XCTUnwrap(store.jobs.first { $0.id == job.id })
+        XCTAssertEqual(
+            savedJob.timelineEvents.first { $0.id == event.id }?.timestamp,
+            correctedTimestamp
+        )
+        XCTAssertEqual(savedJob.setupStartDate, correctedTimestamp)
+        XCTAssertEqual(audit.type, .timelineCorrected)
+        XCTAssertEqual(audit.correctedEventID, event.id)
+        XCTAssertEqual(audit.originalTimestamp, originalTimestamp)
+        XCTAssertEqual(audit.correctedTimestamp, correctedTimestamp)
+        XCTAssertEqual(audit.employeeID, manager.id)
+
+        let operation = try XCTUnwrap(queue.orderedOperations.last)
+        XCTAssertEqual(operation.type, .jobTimestamp)
+        XCTAssertEqual(operation.actionName, "correctTimelineTimestamp")
+        let payload = try operation.payload.decode(
+            OfflineTimelineCorrectionPayload.self
+        )
+        XCTAssertEqual(payload.eventID, event.id)
+        XCTAssertEqual(payload.originalTimestamp, originalTimestamp)
+        XCTAssertEqual(payload.correctedTimestamp, correctedTimestamp)
+        XCTAssertEqual(payload.actorEmployeeID, manager.id)
+    }
+
+    func testTechnicianCannotCorrectTimeline() {
+        let queue = OfflineOperationQueue(persistence: MemoryQueuePersistence())
+        let store = AppDataStore(
+            offlineOperationQueue: queue,
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
+        )
+        let technician = EmployeeRecord(
+            firstName: "Field",
+            lastName: "Technician",
+            role: .technician,
+            roles: [.technician]
+        )
+        store.addEmployee(technician)
+
+        var job = makeJob(number: "JOB-TIMELINE-UNAUTHORIZED")
+        let event = JobTimelineEvent(
+            type: .workStarted,
+            title: "Work Started",
+            timestamp: Date(timeIntervalSince1970: 70_000)
+        )
+        job.timelineEvents = [event]
+        store.addJob(job)
+
+        XCTAssertNil(store.correctTimelineTimestamp(
+            jobID: job.id,
+            eventID: event.id,
+            correctedTimestamp: Date(timeIntervalSince1970: 69_000),
+            reason: "Unauthorized correction",
+            actorEmployeeID: technician.id
+        ))
+        XCTAssertEqual(
+            store.jobs.first { $0.id == job.id }?.timelineEvents,
+            [event]
         )
         XCTAssertTrue(queue.operations.isEmpty)
     }

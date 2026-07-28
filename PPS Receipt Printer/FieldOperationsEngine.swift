@@ -15,6 +15,8 @@ import Foundation
 /// what comes next.
 enum JobWorkflowAction: String, Identifiable, CaseIterable {
     case startTravel
+    case pauseTravel
+    case resumeTravel
     case markArrived
     case startSetup
     case startWork
@@ -33,6 +35,10 @@ enum JobWorkflowAction: String, Identifiable, CaseIterable {
         switch self {
         case .startTravel:
             return .init(title: "Start Travel", systemImage: "car.fill", accent: .orange)
+        case .pauseTravel:
+            return .init(title: "Pause Travel", systemImage: "pause.fill", accent: .orange)
+        case .resumeTravel:
+            return .init(title: "Resume Travel", systemImage: "car.fill", accent: .orange)
         case .markArrived:
             return .init(title: "Arrived", systemImage: "mappin.circle.fill", accent: .orange)
         case .startSetup:
@@ -223,6 +229,8 @@ struct FieldOperationsEngine {
             return .init(statusTitle: "Not Started", statusSystemImage: "clock", accent: .secondary, completionTitle: nil, isTechnicianComplete: false)
         case .traveling:
             return .init(statusTitle: "Traveling", statusSystemImage: "car.fill", accent: .blue, completionTitle: nil, isTechnicianComplete: false)
+        case .travelPaused:
+            return .init(statusTitle: "Travel Paused", statusSystemImage: "pause.circle.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false)
         case .arrived:
             return .init(statusTitle: "Arrived", statusSystemImage: "mappin.circle.fill", accent: .blue, completionTitle: nil, isTechnicianComplete: false)
         case .settingUp:
@@ -264,6 +272,42 @@ struct FieldOperationsEngine {
     ) -> [JobWorkflowAction] {
         let state = synchronizedState(for: job, invoice: invoice)
         return availableActions(for: state, invoice: invoice)
+    }
+
+    /// Returns actual active travel time while excluding every interval between
+    /// Travel Paused and Travel Resumed. If travel is still active, `endDate`
+    /// closes the current interval for live elapsed-time presentation.
+    func activeTravelDuration(
+        for job: JobRecord,
+        through endDate: Date = Date()
+    ) -> TimeInterval {
+        let events = job.timelineEvents.sorted { $0.timestamp < $1.timestamp }
+        var activeStart: Date?
+        var duration: TimeInterval = 0
+
+        for event in events {
+            switch event.type {
+            case .travelStarted, .travelResumed:
+                if activeStart == nil {
+                    activeStart = event.timestamp
+                }
+
+            case .travelPaused, .arrived:
+                if let start = activeStart {
+                    duration += max(0, event.timestamp.timeIntervalSince(start))
+                    activeStart = nil
+                }
+
+            default:
+                break
+            }
+        }
+
+        if let start = activeStart {
+            duration += max(0, endDate.timeIntervalSince(start))
+        }
+
+        return duration
     }
 
     func validate(
@@ -352,6 +396,7 @@ struct FieldOperationsEngine {
 
         switch transition.state {
         case .traveling,
+             .travelPaused,
              .arrived,
              .settingUp,
              .working,
@@ -498,6 +543,8 @@ struct FieldOperationsEngine {
             return .startTravel
         case .traveling:
             return .markArrived
+        case .travelPaused:
+            return .resumeTravel
         case .arrived:
             return .startSetup
         case .settingUp:
@@ -529,6 +576,8 @@ struct FieldOperationsEngine {
             return 0
         case .traveling:
             return 10
+        case .travelPaused:
+            return 10
         case .arrived:
             return 20
         case .settingUp:
@@ -558,6 +607,8 @@ struct FieldOperationsEngine {
     ) -> Bool {
         switch (state, action) {
         case (.notStarted, .startTravel),
+             (.traveling, .pauseTravel),
+             (.travelPaused, .resumeTravel),
              (.traveling, .markArrived),
              (.arrived, .startSetup),
              (.settingUp, .startWork),
@@ -586,6 +637,10 @@ struct FieldOperationsEngine {
         switch action {
         case .startTravel:
             return (.traveling, .travelStarted, "Travel Started")
+        case .pauseTravel:
+            return (.travelPaused, .travelPaused, "Travel Paused")
+        case .resumeTravel:
+            return (.traveling, .travelResumed, "Travel Resumed")
         case .markArrived:
             return (.arrived, .arrived, "Arrived On Site")
         case .startSetup:
@@ -617,7 +672,8 @@ struct FieldOperationsEngine {
     ) -> [JobWorkflowAction] {
         switch state {
         case .notStarted: return [.startTravel]
-        case .traveling: return [.markArrived]
+        case .traveling: return [.pauseTravel, .markArrived]
+        case .travelPaused: return [.resumeTravel]
         case .arrived: return [.startSetup]
         case .settingUp: return [.startWork]
         case .working: return [.pauseWork, .startPackUp]

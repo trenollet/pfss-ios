@@ -29,6 +29,7 @@ struct JobDetailView: View {
     @State private var technicianNoteDraft = ""
     @State private var presentedInvoice: InvoiceRecord?
     @State private var showingRecurrencePicker = false
+    @State private var timelineCorrectionEvent: JobTimelineEvent?
     
     private enum ActiveSheet: Identifiable {
         case catalogPicker
@@ -149,6 +150,13 @@ struct JobDetailView: View {
         UUID(uuidString: selectedTechnicianIDString)
     }
 
+    private var timelineCorrectionActor: EmployeeRecord? {
+        guard let selectedTechnicianID else { return nil }
+        return store.employees.first {
+            $0.id == selectedTechnicianID && $0.canOverrideScheduling
+        }
+    }
+
     @MainActor
     private func workflowCoordinator() -> FieldOperationsWorkflowCoordinator {
         FieldOperationsWorkflowCoordinator(store: store)
@@ -188,10 +196,14 @@ struct JobDetailView: View {
 
             Section("Job Timeline") {
                 JobTimelineView(
-                    events: workflowContext.timeline
-                ) { employeeID in
-                    employeeName(for: employeeID)
-                }
+                    events: workflowContext.timeline,
+                    employeeName: { employeeID in
+                        employeeName(for: employeeID)
+                    },
+                    onCorrect: timelineCorrectionActor == nil
+                        ? nil
+                        : { event in timelineCorrectionEvent = event }
+                )
 
                 TextField(
                     "Add a technician note",
@@ -567,6 +579,26 @@ struct JobDetailView: View {
         }
         .sheet(isPresented: $showingRecurrencePicker) {
             JobRecurrencePickerView(selection: $job.recurrenceFrequency)
+        }
+        .sheet(item: $timelineCorrectionEvent) { event in
+            if let actor = timelineCorrectionActor {
+                TimelineCorrectionEditorView(
+                    event: event,
+                    actorName: actor.displayName
+                ) { correctedTimestamp, reason in
+                    let saved = store.correctTimelineTimestamp(
+                        jobID: job.id,
+                        eventID: event.id,
+                        correctedTimestamp: correctedTimestamp,
+                        reason: reason,
+                        actorEmployeeID: actor.id
+                    )
+                    if saved != nil {
+                        refreshJobFromStore()
+                    }
+                    return saved != nil
+                }
+            }
         }
     }
 
