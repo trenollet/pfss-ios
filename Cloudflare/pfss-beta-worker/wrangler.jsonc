@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pfss-beta-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-29",
+  "workers_dev": true,
+  "triggers": {
+    "crons": ["17 3 * * *"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "pfss-beta",
+      "database_id": "1648cb57-4d75-41bb-9268-71caa9569905",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ARCHIVES",
+      "bucket_name": "pfss-beta-archives"
+    }
+  ]
+}

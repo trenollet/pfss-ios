@@ -44,7 +44,7 @@ struct ContentView: View {
                 AdminView()
             }
                 .tabItem {
-                    Label("Admin", systemImage: "gear")
+                    Label("Settings", systemImage: "gear")
                 }
                 .tag(AppSection.admin)
         }

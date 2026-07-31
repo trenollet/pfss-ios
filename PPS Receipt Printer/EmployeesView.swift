@@ -118,15 +118,6 @@ struct EmployeesView: View {
                                 }
                                 .padding(.vertical, 4)
                             }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                if employee.lifecycleStatus != .archived {
-                                    Button(role: .destructive) {
-                                        store.archiveEmployee(employee)
-                                    } label: {
-                                        Label("Archive", systemImage: "archivebox.fill")
-                                    }
-                                }
-                            }
                         }
                     }
                 }

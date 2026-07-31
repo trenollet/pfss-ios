@@ -21,14 +21,20 @@ struct DashboardView: View {
         store.assignmentEngine.unassignedAssignments.count
     }
 
+    private var dashboardTileIDs: [String] {
+        var tileIDs = ["sales", "service", "myDay", "operations"]
+        if store.shouldPresentAdminDashboardTile {
+            tileIDs.append("admin")
+        }
+        return tileIDs
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 CustomizableTileGrid(
                     storageKey: "pfss.tile-layout.dashboard.v1",
-                    defaultTileIDs: [
-                        "sales", "service", "myDay", "operations", "admin"
-                    ]
+                    defaultTileIDs: dashboardTileIDs
                 ) { tileID in
                     switch tileID {
                     case "sales":
@@ -59,30 +65,34 @@ struct DashboardView: View {
                         section: .myDay
                     )
                     case "operations":
-                        NavigationLink {
-                            OperationsView()
-                        } label: {
-                            DashboardStatCard(
-                                title: "Operations",
-                                value: "\(dispatchQueueCount)",
-                                icon: "person.3.sequence.fill",
-                                subtitle: "Awaiting dispatch",
-                                accentColor: .purple,
-                                trend: .neutral,
-                                navigationIndicator: true
+                        if store.canManageCompany {
+                            NavigationLink {
+                                OperationsView()
+                            } label: {
+                                DashboardStatCard(
+                                    title: "Operations",
+                                    value: "\(dispatchQueueCount)",
+                                    icon: "person.3.sequence.fill",
+                                    subtitle: "Awaiting dispatch",
+                                    accentColor: .purple,
+                                    trend: .neutral,
+                                    navigationIndicator: true
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityHint("Opens Operations")
+                        }
+                    case "admin":
+                        if store.shouldPresentAdminDashboardTile {
+                            dashboardTile(
+                                title: "Settings",
+                                value: "Manage",
+                                icon: "gearshape.2.fill",
+                                subtitle: "Business settings",
+                                color: .gray,
+                                section: .admin
                             )
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityHint("Opens Operations")
-                    case "admin":
-                        dashboardTile(
-                            title: "Admin",
-                            value: "Manage",
-                            icon: "gearshape.2.fill",
-                            subtitle: "Business settings",
-                            color: .gray,
-                            section: .admin
-                        )
                     default:
                         EmptyView()
                     }

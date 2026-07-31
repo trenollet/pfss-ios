@@ -8,6 +8,21 @@
 import Foundation
 import Combine
 
+enum PFSSDataPortabilityAuthorizationError: LocalizedError, Equatable {
+    case ownerRequired
+
+    var errorDescription: String? {
+        "Only the company Owner can export, inspect, restore, or clear company data."
+    }
+}
+
+enum PFSSCloudSynchronizationAccessStatus: Equatable {
+    case checking
+    case available
+    case suspended
+    case unavailable(String)
+}
+
 @MainActor
 final class AppDataStore: ObservableObject {
     private let fieldOperationsEngine = FieldOperationsEngine()
@@ -21,6 +36,13 @@ final class AppDataStore: ObservableObject {
     private var assignmentObservation: AnyCancellable?
     private var offlineQueueObservation: AnyCancellable?
     @Published var lastOfflineOperationError: String?
+    @Published private(set) var cloudRole: PFSSTenantRole = .member
+    @Published private(set) var cloudEmployeeID: UUID?
+    @Published private(set) var cloudSynchronizationAccessStatus:
+        PFSSCloudSynchronizationAccessStatus = .checking
+    var onPersistentDataSaved: (() -> Void)?
+    var onServerConflictResolutionRequested:
+        ((String, OfflineConflictResolution, String, [String]) async throws -> Void)?
     @Published var customers: [Customer] = [] {
         didSet { saveData() }
     }
@@ -131,13 +153,24 @@ final class AppDataStore: ObservableObject {
 
     private let saveFileName = "pps-field-manager-data.json"
     private let persistenceEnabled: Bool
+    private let cloudIdentityDefaults: UserDefaults
+    private let persistsCloudIdentity: Bool
+    private static let cloudRoleCacheKey = "PFSSAuthenticatedCloudRole"
+    private static let cloudEmployeeIDCacheKey =
+        "PFSSAuthenticatedCloudEmployeeID"
+    private var isApplyingRestoredSnapshot = false
+    var isApplyingRemoteSynchronization = false
+    var synchronizedRecordState: [String: Data] = [:]
+    var synchronizedRecordRevisions: [String: String] = [:]
+    private var hasInitializedSynchronizedRecordState = false
 
     init(
         offlineOperationQueue: OfflineOperationQueue? = nil,
         offlineSynchronizationMode: OfflineSynchronizationMode = .localOnly,
         offlineConnectivityMonitor: OfflineConnectivityMonitor? = nil,
         offlineSynchronizationAdapter: (any OfflineSynchronizationAdapter)? = nil,
-        persistenceEnabled: Bool = true
+        persistenceEnabled: Bool = true,
+        cloudIdentityDefaults: UserDefaults? = nil
     ) {
         let assignmentStore = AssignmentStore()
         let assignmentEngine = AssignmentEngine(store: assignmentStore)
@@ -150,6 +183,20 @@ final class AppDataStore: ObservableObject {
         self.offlineSynchronizationMode = offlineSynchronizationMode
         self.offlineConnectivityMonitor = connectivityMonitor
         self.persistenceEnabled = persistenceEnabled
+        self.cloudIdentityDefaults = cloudIdentityDefaults ?? .standard
+        self.persistsCloudIdentity = persistenceEnabled || cloudIdentityDefaults != nil
+        if self.persistsCloudIdentity,
+           let cachedRole = self.cloudIdentityDefaults.string(
+               forKey: Self.cloudRoleCacheKey
+           ).flatMap(PFSSTenantRole.init(rawValue:)) {
+            cloudRole = cachedRole
+            cloudEmployeeID = self.cloudIdentityDefaults.string(
+                forKey: Self.cloudEmployeeIDCacheKey
+            ).flatMap(UUID.init(uuidString:))
+        }
+        self.synchronizedRecordRevisions = UserDefaults.standard
+            .dictionary(forKey: "PFSSSynchronizedRecordRevisions")
+            as? [String: String] ?? [:]
         if offlineSynchronizationMode.requiresRemoteQueue,
            let offlineSynchronizationAdapter {
             self.offlineSynchronizationService = OfflineSynchronizationService(
@@ -181,11 +228,91 @@ final class AppDataStore: ObservableObject {
             self?.objectWillChange.send()
         }
         synchronizeJobsFromAssignments(assignmentStore.assignments)
+        synchronizedRecordState = makeSynchronizedRecordState()
+        hasInitializedSynchronizedRecordState = true
     }
 
     func startOfflineServices() {
         offlineConnectivityMonitor.start()
         offlineSynchronizationService?.start()
+    }
+
+    var canOverrideSynchronizationConflicts: Bool {
+        cloudRole == .owner || cloudRole == .manager
+    }
+
+    var canManageCompany: Bool {
+        cloudRole == .owner || cloudRole == .manager
+    }
+
+    var authenticatedCloudEmployee: EmployeeRecord? {
+        guard let cloudEmployeeID else { return nil }
+        return employees.first { $0.id == cloudEmployeeID }
+    }
+
+    var shouldPresentAuthenticatedUserInfo: Bool {
+        cloudRole != .owner
+    }
+
+    var usesAuthenticatedMyDayIdentity: Bool {
+        cloudRole != .owner
+    }
+
+    var authenticatedMyDayEmployee: EmployeeRecord? {
+        guard usesAuthenticatedMyDayIdentity,
+              let employee = authenticatedCloudEmployee,
+              employee.isActive,
+              employee.lifecycleStatus == .active,
+              employee.hasRole(.technician) else {
+            return nil
+        }
+        return employee
+    }
+
+    var shouldPresentAdminDashboardTile: Bool {
+        cloudRole == .owner
+    }
+
+    func updateCloudRole(_ role: PFSSTenantRole) {
+        cloudRole = role
+        removeOwnerRecoveryAccessIfNeeded(for: role)
+    }
+
+    func updateCloudIdentity(role: PFSSTenantRole, employeeID: String?) {
+        cloudRole = role
+        cloudEmployeeID = employeeID.flatMap(UUID.init(uuidString:))
+        if persistsCloudIdentity {
+            cloudIdentityDefaults.set(role.rawValue, forKey: Self.cloudRoleCacheKey)
+            if let cloudEmployeeID {
+                cloudIdentityDefaults.set(
+                    cloudEmployeeID.uuidString,
+                    forKey: Self.cloudEmployeeIDCacheKey
+                )
+            } else {
+                cloudIdentityDefaults.removeObject(
+                    forKey: Self.cloudEmployeeIDCacheKey
+                )
+            }
+        }
+        removeOwnerRecoveryAccessIfNeeded(for: role)
+    }
+
+    func clearCachedCloudIdentity() {
+        cloudRole = .member
+        cloudEmployeeID = nil
+        cloudIdentityDefaults.removeObject(forKey: Self.cloudRoleCacheKey)
+        cloudIdentityDefaults.removeObject(forKey: Self.cloudEmployeeIDCacheKey)
+    }
+
+    func updateCloudSynchronizationAccessStatus(
+        _ status: PFSSCloudSynchronizationAccessStatus
+    ) {
+        cloudSynchronizationAccessStatus = status
+    }
+
+    private func removeOwnerRecoveryAccessIfNeeded(for role: PFSSTenantRole) {
+        guard role != .owner else { return }
+        PFSSOwnerRecoverySecurity.revokeLocalAccess()
     }
 
     func generateCustomerNumber() -> String {
@@ -1569,11 +1696,11 @@ final class AppDataStore: ObservableObject {
     }
 
     private func saveData() {
-        guard persistenceEnabled else {
+        guard persistenceEnabled, !isApplyingRestoredSnapshot else {
             return
         }
 
-        let snapshot = AppDataSnapshot(
+        let snapshot = PFSSDataSnapshot(
             customers: customers,
             sites: sites,
             leads: leads,
@@ -1592,9 +1719,78 @@ final class AppDataStore: ObservableObject {
         do {
             let data = try JSONEncoder().encode(snapshot)
             try data.write(to: saveFileURL(), options: [.atomic])
+            synchronizeChangedRecordsIfNeeded()
+            onPersistentDataSaved?()
         } catch {
             print("Failed to save app data: \(error.localizedDescription)")
         }
+    }
+
+    private func synchronizeChangedRecordsIfNeeded() {
+        let current = makeSynchronizedRecordState()
+        defer { synchronizedRecordState = current }
+        guard offlineSynchronizationMode.requiresRemoteQueue,
+              !isApplyingRemoteSynchronization,
+              hasInitializedSynchronizedRecordState else { return }
+
+        enqueueChangedRecords(customers, type: .customer, current: current)
+        enqueueChangedRecords(sites, type: .site, current: current)
+        enqueueChangedRecords(leads, type: .lead, current: current)
+        enqueueChangedRecords(estimates, type: .estimate, current: current)
+        enqueueChangedRecords(jobs, type: .job, current: current)
+        enqueueChangedRecords(invoices, type: .invoice, current: current)
+        enqueueChangedRecords(employees, type: .employee, current: current)
+        enqueueChangedRecords(serviceCatalogItems, type: .catalog, current: current)
+        enqueueChangedRecords(assignmentStore.assignments, type: .assignment, current: current)
+    }
+
+    private func enqueueChangedRecords<Value: Encodable & Identifiable>(
+        _ values: [Value],
+        type: OfflineEntityType,
+        current: [String: Data]
+    ) where Value.ID == UUID {
+        for value in values {
+            let key = synchronizationKey(type: type, id: value.id)
+            guard current[key] != synchronizedRecordState[key] else { continue }
+            enqueueRecordMutation(entityType: type, entityID: value.id, value: value)
+        }
+    }
+
+    func makeSynchronizedRecordState() -> [String: Data] {
+        var result: [String: Data] = [:]
+        appendSynchronizedRecords(customers, type: .customer, to: &result)
+        appendSynchronizedRecords(sites, type: .site, to: &result)
+        appendSynchronizedRecords(leads, type: .lead, to: &result)
+        appendSynchronizedRecords(estimates, type: .estimate, to: &result)
+        appendSynchronizedRecords(jobs, type: .job, to: &result)
+        appendSynchronizedRecords(invoices, type: .invoice, to: &result)
+        appendSynchronizedRecords(employees, type: .employee, to: &result)
+        appendSynchronizedRecords(serviceCatalogItems, type: .catalog, to: &result)
+        appendSynchronizedRecords(assignmentStore.assignments, type: .assignment, to: &result)
+        return result
+    }
+
+    private func appendSynchronizedRecords<Value: Encodable & Identifiable>(
+        _ values: [Value],
+        type: OfflineEntityType,
+        to result: inout [String: Data]
+    ) where Value.ID == UUID {
+        for value in values {
+            if let data = try? Self.recordSynchronizationEncoder.encode(value) {
+                result[synchronizationKey(type: type, id: value.id)] = data
+            }
+        }
+    }
+
+    func synchronizationKey(type: OfflineEntityType, id: UUID) -> String {
+        type.rawValue + ":" + id.uuidString.lowercased()
+    }
+
+    func saveSynchronizedRecordRevisions() {
+        UserDefaults.standard.set(
+            synchronizedRecordRevisions,
+            forKey: "PFSSSynchronizedRecordRevisions"
+        )
     }
 
     private func loadData() {
@@ -1610,7 +1806,7 @@ final class AppDataStore: ObservableObject {
 
         do {
             let data = try Data(contentsOf: url)
-            let snapshot = try JSONDecoder().decode(AppDataSnapshot.self, from: data)
+            let snapshot = try JSONDecoder().decode(PFSSDataSnapshot.self, from: data)
 
             customers = snapshot.customers
             sites = snapshot.sites
@@ -1634,6 +1830,276 @@ final class AppDataStore: ObservableObject {
     private func saveFileURL() -> URL {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return documents.appendingPathComponent(saveFileName)
+    }
+
+    /// Produces a provider-neutral, integrity-checked PFSS archive. Transport
+    /// providers such as iCloud, Google Drive, or Cloudflare move this data but
+    /// do not define its schema.
+    func createPortableArchive(
+        createdAt: Date = Date(),
+        archiveService: PFSSArchiveService? = nil
+    ) throws -> Data {
+        let archiveService = archiveService ?? PFSSArchiveService()
+        let snapshot = PFSSDataSnapshot(
+            customers: customers,
+            sites: sites,
+            leads: leads,
+            estimates: estimates,
+            jobs: jobs,
+            invoices: invoices,
+            businessProfile: businessProfile,
+            serviceCatalogItems: serviceCatalogItems,
+            nextCustomerNumber: nextCustomerNumber,
+            recordSequencesByMonth: recordSequencesByMonth,
+            recommendationRules: recommendationRules,
+            employees: employees,
+            assignments: assignmentStore.assignments
+        )
+        return try archiveService.createArchive(
+            payload: PFSSArchivePayload(
+                appData: snapshot,
+                pendingOperations: offlineOperationQueue.orderedOperations
+            ),
+            businessName: businessProfile.businessName,
+            createdAt: createdAt
+        )
+    }
+
+    func createOwnerRecoveryArchive(createdAt: Date = Date()) throws -> Data {
+        try requireOwnerRecoveryAuthorization()
+        return try createPortableArchive(createdAt: createdAt)
+    }
+
+    func inspectOwnerRecoveryArchive(
+        _ archiveData: Data
+    ) throws -> PFSSValidatedArchive {
+        try requireOwnerRecoveryAuthorization()
+        return try inspectPortableArchive(archiveData)
+    }
+
+    func restoreOwnerRecoveryArchive(
+        _ archiveData: Data,
+        backupService: PFSSLocalBackupService? = nil,
+        restoredAt: Date = Date()
+    ) throws -> PFSSRestoreResult {
+        try requireOwnerRecoveryAuthorization()
+        return try restorePortableArchive(
+            archiveData,
+            backupService: backupService,
+            restoredAt: restoredAt
+        )
+    }
+
+    func clearOwnerLocalData() throws {
+        try requireOwnerRecoveryAuthorization()
+        try clearAllLocalData()
+    }
+
+    func requireOwnerRecoveryAuthorization() throws {
+        guard cloudRole == .owner else {
+            throw PFSSDataPortabilityAuthorizationError.ownerRequired
+        }
+    }
+
+    /// Validates and decodes an archive for preview without changing live data.
+    func inspectPortableArchive(
+        _ archiveData: Data,
+        archiveService: PFSSArchiveService? = nil
+    ) throws -> PFSSValidatedArchive {
+        let archiveService = archiveService ?? PFSSArchiveService()
+        return try archiveService.validateAndDecode(archiveData)
+    }
+
+    var hasLocalCompanyData: Bool {
+        !businessProfile.businessName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).isEmpty ||
+        !customers.isEmpty || !sites.isEmpty || !leads.isEmpty ||
+        !estimates.isEmpty || !jobs.isEmpty || !invoices.isEmpty ||
+        !serviceCatalogItems.isEmpty || !employees.isEmpty ||
+        !assignmentStore.assignments.isEmpty
+    }
+
+    /// Hydrates a newly enrolled, empty installation from PFSS Cloud without
+    /// copying another device's pending operation queue or creating an
+    /// exportable local recovery archive.
+    @discardableResult
+    func applySynchronizationBootstrap(
+        _ archiveData: Data,
+        archiveService: PFSSArchiveService? = nil
+    ) throws -> Bool {
+        guard !hasLocalCompanyData else { return false }
+        let archiveService = archiveService ?? PFSSArchiveService()
+        let validated = try archiveService.validateAndDecode(archiveData)
+        let currentPayload = portableArchivePayload()
+        let bootstrapPayload = PFSSArchivePayload(
+            appData: validated.payload.appData,
+            pendingOperations: []
+        )
+
+        isApplyingRestoredSnapshot = true
+        do {
+            try applyPortableArchivePayload(bootstrapPayload)
+            isApplyingRestoredSnapshot = false
+            saveData()
+            return true
+        } catch {
+            do {
+                try applyPortableArchivePayload(currentPayload)
+                isApplyingRestoredSnapshot = false
+                saveData()
+            } catch {
+                isApplyingRestoredSnapshot = false
+                throw PFSSRestoreError.rollbackFailed(
+                    error.localizedDescription
+                )
+            }
+            throw PFSSRestoreError.restoreFailed(
+                error.localizedDescription
+            )
+        }
+    }
+
+    /// Restores a fully validated archive only after saving the current state
+    /// as a durable local safety backup. A failed mutation rolls back in memory
+    /// and on disk before returning an error.
+    func restorePortableArchive(
+        _ archiveData: Data,
+        archiveService: PFSSArchiveService? = nil,
+        backupService: PFSSLocalBackupService? = nil,
+        restoredAt: Date = Date()
+    ) throws -> PFSSRestoreResult {
+        let archiveService = archiveService ?? PFSSArchiveService()
+        let backupService = backupService ?? PFSSLocalBackupService()
+        let validated = try archiveService.validateAndDecode(archiveData)
+        let currentPayload = portableArchivePayload()
+        let safetyData = try archiveService.createArchive(
+            payload: currentPayload,
+            businessName: businessProfile.businessName,
+            createdAt: restoredAt
+        )
+        let safetyBackup = try backupService.save(
+            safetyData,
+            kind: .preRestoreSafety,
+            createdAt: restoredAt
+        )
+
+        isApplyingRestoredSnapshot = true
+        do {
+            try applyPortableArchivePayload(validated.payload)
+            isApplyingRestoredSnapshot = false
+            saveData()
+        } catch {
+            do {
+                try applyPortableArchivePayload(currentPayload)
+                isApplyingRestoredSnapshot = false
+                saveData()
+            } catch {
+                isApplyingRestoredSnapshot = false
+                throw PFSSRestoreError.rollbackFailed(
+                    error.localizedDescription
+                )
+            }
+            throw PFSSRestoreError.restoreFailed(
+                error.localizedDescription
+            )
+        }
+
+        return PFSSRestoreResult(
+            restoredManifest: validated.manifest,
+            safetyBackup: safetyBackup
+        )
+    }
+
+    /// Removes all local business and operational state after the owner has
+    /// completed the Data Management view's two confirmation steps. Portable
+    /// backup files are intentionally outside this store and remain available
+    /// for recovery.
+    func clearAllLocalData() throws {
+        let currentPayload = portableArchivePayload()
+        let emptyPayload = PFSSArchivePayload(
+            appData: PFSSDataSnapshot(
+                customers: [],
+                sites: [],
+                leads: [],
+                estimates: [],
+                jobs: [],
+                invoices: [],
+                businessProfile: BusinessProfile(),
+                serviceCatalogItems: [],
+                nextCustomerNumber: 1,
+                recordSequencesByMonth: [:],
+                recommendationRules: [],
+                employees: [],
+                assignments: []
+            ),
+            pendingOperations: []
+        )
+
+        isApplyingRestoredSnapshot = true
+        do {
+            try applyPortableArchivePayload(emptyPayload)
+            acceptedRoutePlans = [:]
+            isApplyingRestoredSnapshot = false
+            saveData()
+        } catch {
+            do {
+                try applyPortableArchivePayload(currentPayload)
+                isApplyingRestoredSnapshot = false
+                saveData()
+            } catch {
+                isApplyingRestoredSnapshot = false
+                throw PFSSRestoreError.rollbackFailed(
+                    error.localizedDescription
+                )
+            }
+            throw PFSSRestoreError.restoreFailed(
+                error.localizedDescription
+            )
+        }
+    }
+
+    private func portableArchivePayload() -> PFSSArchivePayload {
+        PFSSArchivePayload(
+            appData: PFSSDataSnapshot(
+                customers: customers,
+                sites: sites,
+                leads: leads,
+                estimates: estimates,
+                jobs: jobs,
+                invoices: invoices,
+                businessProfile: businessProfile,
+                serviceCatalogItems: serviceCatalogItems,
+                nextCustomerNumber: nextCustomerNumber,
+                recordSequencesByMonth: recordSequencesByMonth,
+                recommendationRules: recommendationRules,
+                employees: employees,
+                assignments: assignmentStore.assignments
+            ),
+            pendingOperations: offlineOperationQueue.orderedOperations
+        )
+    }
+
+    private func applyPortableArchivePayload(
+        _ payload: PFSSArchivePayload
+    ) throws {
+        let snapshot = payload.appData
+        customers = snapshot.customers
+        sites = snapshot.sites
+        leads = snapshot.leads
+        estimates = snapshot.estimates
+        jobs = snapshot.jobs
+        invoices = snapshot.invoices
+        businessProfile = snapshot.businessProfile
+        serviceCatalogItems = snapshot.serviceCatalogItems
+        nextCustomerNumber = snapshot.nextCustomerNumber
+        recordSequencesByMonth = snapshot.recordSequencesByMonth
+        recommendationRules = snapshot.recommendationRules
+        employees = snapshot.employees
+        try assignmentStore.replaceAll(with: snapshot.assignments)
+        try offlineOperationQueue.replaceAll(
+            with: payload.pendingOperations
+        )
     }
 
     /// Removes fixtures written by early offline integration tests before the
@@ -1707,7 +2173,7 @@ final class AppDataStore: ObservableObject {
     }
 }
 
-private struct AppDataSnapshot: Codable {
+struct PFSSDataSnapshot: Codable {
     var customers: [Customer]
     var sites: [CustomerSite]
     var leads: [Lead]

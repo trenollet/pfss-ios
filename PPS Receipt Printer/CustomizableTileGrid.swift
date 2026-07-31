@@ -83,6 +83,9 @@ struct CustomizableTileGrid<Tile: View>: View {
             .animation(.snappy, value: positions)
         }
         .onAppear(perform: reconcileLayout)
+        .onChange(of: defaultTileIDs) { _, _ in
+            reconcileLayout()
+        }
     }
 
     @ViewBuilder

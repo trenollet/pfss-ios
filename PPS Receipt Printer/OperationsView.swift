@@ -189,12 +189,41 @@ struct OperationsView: View {
         CustomizableTileGrid(
             storageKey: "pfss.tile-layout.operations.v1",
             defaultTileIDs: [
-                "sync", "today", "technicians", "dispatchQueue",
+                "conflicts", "sync", "today", "technicians", "dispatchQueue",
                 "dispatchBoard", "dailyPlanner", "workforce", "capacity",
                 "revenue", "recommendations"
             ]
         ) { tileID in
             switch tileID {
+            case "conflicts":
+            if store.canOverrideSynchronizationConflicts {
+                operationsTile(
+                    title: "Conflict Inbox",
+                    value: "\(unresolvedConflictCount)",
+                    icon: unresolvedConflictCount == 0
+                        ? "checkmark.circle"
+                        : "tray.full.fill",
+                    subtitle: unresolvedConflictCount == 0
+                        ? "No review needed"
+                        : "Manager review required",
+                    color: unresolvedConflictCount == 0 ? .green : .purple
+                ) {
+                    PFSSConflictInboxView(
+                        queue: store.offlineOperationQueue,
+                        canOverrideConflicts:
+                            store.canOverrideSynchronizationConflicts,
+                        onResolveConflict: {
+                            operationID, resolution, reason, affectedFields in
+                            try await store.resolveInboxConflict(
+                                operationID: operationID,
+                                resolution: resolution,
+                                reason: reason,
+                                affectedFields: affectedFields
+                            )
+                        }
+                    )
+                }
+            }
             case "sync":
             operationsTile(
                 title: "Sync Status",
@@ -207,8 +236,16 @@ struct OperationsView: View {
                     queue: store.offlineOperationQueue,
                     connectivity: store.offlineConnectivityMonitor,
                     mode: store.offlineSynchronizationMode,
+                    cloudAccessStatus: store.cloudSynchronizationAccessStatus,
+                    canOverrideConflicts: store.canOverrideSynchronizationConflicts,
                     onSyncNow: store.offlineSynchronizationService.map { service in
                         { service.syncNow() }
+                    },
+                    onResolveConflict: { operationID, resolution in
+                        try store.resolveRecordConflict(
+                            operationID: operationID,
+                            resolution: resolution
+                        )
                     }
                 )
             }
@@ -318,7 +355,8 @@ struct OperationsView: View {
         OfflineSyncStatusResolver.resolve(
             mode: store.offlineSynchronizationMode,
             queue: store.offlineOperationQueue,
-            connectivity: store.offlineConnectivityMonitor.status
+            connectivity: store.offlineConnectivityMonitor.status,
+            cloudAccessStatus: store.cloudSynchronizationAccessStatus
         )
     }
 
@@ -328,6 +366,12 @@ struct OperationsView: View {
         }
         let count = store.offlineOperationQueue.pendingCount
         return count == 0 ? "Ready" : "\(count)"
+    }
+
+    private var unresolvedConflictCount: Int {
+        PFSSConflictInbox.unresolvedItems(
+            in: store.offlineOperationQueue.orderedOperations
+        ).count
     }
 
     // MARK: - Live Model Builders

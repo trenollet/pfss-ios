@@ -242,6 +242,42 @@ final class OfflineOperationQueue: ObservableObject {
         try commit(operations.filter { $0.id != id })
     }
 
+    /// Replaces the complete durable queue during a validated backup restore.
+    /// Identity and idempotency checks run before the persisted queue changes.
+    func replaceAll(
+        with restoredOperations: [PendingOfflineOperation]
+    ) throws {
+        let duplicateIDs = Dictionary(
+            grouping: restoredOperations,
+            by: \.id
+        ).filter { $0.value.count > 1 }
+        guard duplicateIDs.isEmpty else {
+            throw OfflineOperationQueueError.duplicateIdentifier(
+                duplicateIDs.keys.first!
+            )
+        }
+
+        let duplicateKeys = Dictionary(
+            grouping: restoredOperations,
+            by: \.idempotencyKey
+        ).filter { $0.value.count > 1 }
+        guard duplicateKeys.isEmpty else {
+            throw OfflineOperationQueueError.identityMismatch
+        }
+
+        let previousNextSequence = nextSequenceNumber
+        let highestSequence = restoredOperations
+            .map(\.sequenceNumber)
+            .max() ?? 0
+        nextSequenceNumber = highestSequence + 1
+        do {
+            try commit(restoredOperations)
+        } catch {
+            nextSequenceNumber = previousNextSequence
+            throw error
+        }
+    }
+
     /// Removes completed queue history older than the supplied date. Active,
     /// failed, and conflicted operations are never removed by this cleanup.
     @discardableResult

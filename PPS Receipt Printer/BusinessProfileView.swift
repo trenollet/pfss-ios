@@ -7,6 +7,7 @@
 
 import SwiftUI
 import PhotosUI
+import PDFKit
 
 struct BusinessProfileView: View {
     @EnvironmentObject private var store: AppDataStore
@@ -568,7 +569,16 @@ private struct BusinessDocumentPreviewsView: View {
             )
         ) {
             if let previewPDFURL {
-                ActivityView(activityItems: [previewPDFURL])
+                NavigationStack {
+                    PFSSPDFDocumentPreview(fileURL: previewPDFURL)
+                        .navigationTitle("Sample PDF Invoice")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { self.previewPDFURL = nil }
+                            }
+                        }
+                }
             }
         }
         .sheet(isPresented: $isShowingThermalPreview) {
@@ -663,5 +673,24 @@ private struct BusinessDocumentPreviewsView: View {
             catalogItems: catalogItems
         )
         isShowingThermalPreview = true
+    }
+}
+
+private struct PFSSPDFDocumentPreview: UIViewRepresentable {
+    let fileURL: URL
+
+    func makeUIView(context: Context) -> PDFView {
+        let view = PDFView()
+        view.autoScales = true
+        view.displayMode = .singlePageContinuous
+        view.displayDirection = .vertical
+        view.backgroundColor = .secondarySystemBackground
+        view.document = PDFDocument(url: fileURL)
+        return view
+    }
+
+    func updateUIView(_ view: PDFView, context: Context) {
+        guard view.document?.documentURL != fileURL else { return }
+        view.document = PDFDocument(url: fileURL)
     }
 }

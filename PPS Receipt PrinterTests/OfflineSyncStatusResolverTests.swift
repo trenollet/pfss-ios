@@ -61,6 +61,30 @@ final class OfflineSyncStatusResolverTests: XCTestCase {
         )
     }
 
+    func testSuspendedCloudAccessOverridesAnEmptyQueue() {
+        XCTAssertEqual(
+            OfflineSyncStatusResolver.resolve(
+                mode: .queueRemoteOperations,
+                queue: makeQueue(),
+                connectivity: .online,
+                cloudAccessStatus: .suspended
+            ),
+            .accessSuspended
+        )
+    }
+
+    func testReactivatedCloudAccessReturnsToFullySynchronized() {
+        XCTAssertEqual(
+            OfflineSyncStatusResolver.resolve(
+                mode: .queueRemoteOperations,
+                queue: makeQueue(),
+                connectivity: .online,
+                cloudAccessStatus: .available
+            ),
+            .fullySynchronized
+        )
+    }
+
     private func makeQueue() -> OfflineOperationQueue {
         OfflineOperationQueue(persistence: SyncStatusMemoryPersistence())
     }
