@@ -2,6 +2,7 @@ import SwiftUI
 
 struct EmployeeIdentityEditorView: View {
     @Binding var employee: EmployeeRecord
+    var allowsRoleEditing = true
     @State private var showingRoles = false
 
     private let colors = ["blue", "green", "orange", "purple", "red", "yellow", "gray"]
@@ -21,10 +22,17 @@ struct EmployeeIdentityEditorView: View {
                     .autocorrectionDisabled()
             }
             Section("Access and Display") {
-                Button { showingRoles = true } label: {
+                if allowsRoleEditing {
+                    Button { showingRoles = true } label: {
+                        LabeledContent("Roles", value: employee.roleDisplayText)
+                    }
+                    .foregroundStyle(.primary)
+                } else {
                     LabeledContent("Roles", value: employee.roleDisplayText)
+                    Text("Only a Manager or Owner can change employee roles.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .foregroundStyle(.primary)
                 Toggle("Active Employee", isOn: $employee.isActive)
                 Picker("Schedule Color", selection: $employee.colorName) {
                     ForEach(colors, id: \.self) { Text($0.capitalized).tag($0) }

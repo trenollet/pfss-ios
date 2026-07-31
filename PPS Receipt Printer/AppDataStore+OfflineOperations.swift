@@ -67,8 +67,327 @@ struct OfflineTimelineCorrectionPayload: Codable, Equatable {
     var correctedAt: Date
 }
 
+struct OfflineRecordMutationPayload: Codable, Equatable {
+    var entityType: OfflineEntityType
+    var entityID: UUID
+    var recordData: Data
+    var modifiedAt: Date
+}
+
 @MainActor
 extension AppDataStore {
+    func applyServerConflictResolutionReceipts(
+        _ receipts: [PFSSCloudflareConflictResolutionReceipt]
+    ) {
+        for receipt in receipts {
+            guard let local = offlineOperationQueue.operations.first(where: {
+                $0.status == .conflicted &&
+                $0.metadata["serverConflictID"] == receipt.id
+            }) else { continue }
+            let resolution: OfflineConflictResolution
+            switch receipt.resolution {
+            case "keptCloud": resolution = .keptRemote
+            case "keptDevice": resolution = .keptLocal
+            default: continue
+            }
+            try? OfflineConflictResolutionService(
+                queue: offlineOperationQueue
+            ).resolve(
+                operationID: local.id,
+                resolution: resolution,
+                employeeID: nil,
+                note: "Resolved by a Manager or Owner in the PFSS conflict inbox.",
+                at: receipt.resolvedAt,
+                resubmitLocal: false
+            )
+        }
+    }
+
+    func reconcileServerConflictInbox(
+        _ serverConflicts: [PFSSCloudflareSynchronizationConflict]
+    ) throws {
+        let activeIDs = Set(serverConflicts.map(\.id))
+        for operation in offlineOperationQueue.operations {
+            if let conflictID = operation.metadata["serverConflictID"],
+               !activeIDs.contains(conflictID) {
+                try offlineOperationQueue.remove(id: operation.id)
+            }
+        }
+
+        for serverConflict in serverConflicts {
+            guard !offlineOperationQueue.operations.contains(where: {
+                $0.metadata["serverConflictID"] == serverConflict.id
+            }) else { continue }
+
+            var operation = serverConflict.localOperation
+            operation.id = UUID(uuidString: serverConflict.id) ?? UUID()
+            operation.idempotencyKey = "server-conflict-\(serverConflict.id)"
+            operation.sequenceNumber = 0
+            operation.status = .conflicted
+            operation.updatedAt = serverConflict.detectedAt
+            operation.failure = OfflineFailureDetails(
+                category: .conflict,
+                code: "manager_review_required",
+                message: "A team member's change requires Manager or Owner review.",
+                isRetryable: false,
+                occurredAt: serverConflict.detectedAt
+            )
+            operation.conflict = OfflineConflictInformation(
+                id: operation.id,
+                kind: .concurrentModification,
+                detectedAt: serverConflict.detectedAt,
+                localVersion: OfflineRecordVersion(
+                    revision: operation.baseRevision,
+                    modifiedAt: operation.createdAt,
+                    source: .local,
+                    payload: operation.payload
+                ),
+                remoteVersion: OfflineRecordVersion(
+                    revision: serverConflict.cloudRevision,
+                    modifiedAt: serverConflict.cloudOperation.createdAt,
+                    source: .remote,
+                    payload: serverConflict.cloudOperation.payload
+                )
+            )
+            operation.metadata["serverConflictID"] = serverConflict.id
+            operation.metadata["sourceMemberID"] = serverConflict.sourceMemberID
+            operation.metadata["sourceDeviceID"] = serverConflict.sourceDeviceID
+            try offlineOperationQueue.enqueue(operation)
+        }
+    }
+
+    func resolveInboxConflict(
+        operationID: UUID,
+        resolution: OfflineConflictResolution,
+        reason: String,
+        affectedFields: [String]
+    ) async throws {
+        guard let operation = offlineOperationQueue.operation(id: operationID),
+              let conflictID = operation.metadata["serverConflictID"],
+              let requestResolution = onServerConflictResolutionRequested else {
+            throw OfflineConflictResolutionError.operationNotFound
+        }
+        try await requestResolution(
+            conflictID,
+            resolution,
+            reason,
+            affectedFields
+        )
+
+        var selected = operation
+        if resolution == .keptRemote,
+           let remote = operation.conflict?.remoteVersion {
+            selected.payload = remote.payload
+            selected.metadata["remoteRevision"] = remote.revision
+        } else if resolution == .keptLocal {
+            selected.metadata["remoteRevision"] =
+                operation.conflict?.remoteVersion?.revision
+        }
+        applyRemoteRecordOperations([selected])
+
+        try OfflineConflictResolutionService(queue: offlineOperationQueue).resolve(
+            operationID: operationID,
+            resolution: resolution,
+            employeeID: operation.actorEmployeeID,
+            note: "Resolved from the tenant Manager conflict inbox.",
+            resubmitLocal: false
+        )
+    }
+
+    func resolveRecordConflict(
+        operationID: UUID,
+        resolution: OfflineConflictResolution,
+        note: String = "Resolved from PFSS synchronization review."
+    ) throws {
+        guard let operation = offlineOperationQueue.operation(id: operationID),
+              let conflict = operation.conflict else {
+            throw OfflineConflictResolutionError.operationNotFound
+        }
+
+        if resolution == .keptRemote,
+           let remoteVersion = conflict.remoteVersion {
+            var remoteOperation = operation
+            remoteOperation.payload = remoteVersion.payload
+            if let revision = remoteVersion.revision {
+                remoteOperation.metadata["remoteRevision"] = revision
+            }
+            applyRemoteRecordOperations([remoteOperation])
+        }
+
+        try OfflineConflictResolutionService(queue: offlineOperationQueue).resolve(
+            operationID: operationID,
+            resolution: resolution,
+            employeeID: operation.actorEmployeeID,
+            note: note
+        )
+        if resolution == .keptLocal {
+            offlineSynchronizationService?.syncNow()
+        }
+    }
+
+    func applyRemoteRecordOperations(_ operations: [PendingOfflineOperation]) {
+        applyRemoteConflictResolutionReceipts(operations)
+        let recordOperations = operations.filter {
+            $0.type == .recordMutation && $0.actionName == "upsertRecord"
+        }
+        guard !recordOperations.isEmpty else { return }
+
+        isApplyingRemoteSynchronization = true
+        defer {
+            synchronizedRecordState = makeSynchronizedRecordState()
+            isApplyingRemoteSynchronization = false
+        }
+
+        for operation in recordOperations {
+            guard let mutation = try? operation.payload.decode(
+                OfflineRecordMutationPayload.self,
+                decoder: Self.recordSynchronizationDecoder
+            ) else { continue }
+            applyRemoteRecordMutation(mutation)
+            if let revision = operation.metadata["remoteRevision"] {
+                synchronizedRecordRevisions[
+                    synchronizationKey(
+                        type: mutation.entityType,
+                        id: mutation.entityID
+                    )
+                ] = revision
+            }
+        }
+        saveSynchronizedRecordRevisions()
+    }
+
+    private func applyRemoteConflictResolutionReceipts(
+        _ operations: [PendingOfflineOperation]
+    ) {
+        for receipt in operations {
+            guard let conflictID = receipt.metadata["serverConflictID"],
+                  let resolutionValue =
+                    receipt.metadata["conflictResolution"],
+                  let local = offlineOperationQueue.operations.first(where: {
+                      $0.status == .conflicted &&
+                      $0.metadata["serverConflictID"] == conflictID
+                  }) else { continue }
+            let resolution: OfflineConflictResolution
+            switch resolutionValue {
+            case "keptLocal": resolution = .keptLocal
+            case "keptRemote": resolution = .keptRemote
+            default: continue
+            }
+            try? OfflineConflictResolutionService(
+                queue: offlineOperationQueue
+            ).resolve(
+                operationID: local.id,
+                resolution: resolution,
+                employeeID: receipt.actorEmployeeID,
+                note: "Resolved by a Manager or Owner in the PFSS conflict inbox.",
+                resubmitLocal: false
+            )
+        }
+    }
+
+    private func applyRemoteRecordMutation(_ mutation: OfflineRecordMutationPayload) {
+        switch mutation.entityType {
+        case .customer:
+            Self.upsertRemote(decodeRemote(Customer.self, mutation), in: &customers)
+        case .site:
+            Self.upsertRemote(decodeRemote(CustomerSite.self, mutation), in: &sites)
+        case .lead:
+            Self.upsertRemote(decodeRemote(Lead.self, mutation), in: &leads)
+        case .estimate:
+            Self.upsertRemote(decodeRemote(EstimateRecord.self, mutation), in: &estimates)
+        case .job:
+            Self.upsertRemote(decodeRemote(JobRecord.self, mutation), in: &jobs)
+        case .invoice:
+            Self.upsertRemote(decodeRemote(InvoiceRecord.self, mutation), in: &invoices)
+        case .employee:
+            Self.upsertRemote(decodeRemote(EmployeeRecord.self, mutation), in: &employees)
+        case .catalog:
+            Self.upsertRemote(decodeRemote(ServiceCatalogItem.self, mutation), in: &serviceCatalogItems)
+        case .assignment:
+            guard let assignment = decodeRemote(Assignment.self, mutation) else { return }
+            var assignments = assignmentStore.assignments
+            if let index = assignments.firstIndex(where: { $0.id == assignment.id }) {
+                assignments[index] = assignment
+            } else {
+                assignments.append(assignment)
+            }
+            try? assignmentStore.replaceAll(with: assignments)
+        case .payment, .route, .custom:
+            break
+        }
+    }
+
+    private func decodeRemote<Value: Decodable>(
+        _ type: Value.Type,
+        _ mutation: OfflineRecordMutationPayload
+    ) -> Value? {
+        try? Self.recordSynchronizationDecoder.decode(type, from: mutation.recordData)
+    }
+
+    private static func upsertRemote<Value: Identifiable>(
+        _ value: Value?,
+        in values: inout [Value]
+    ) where Value.ID == UUID {
+        guard let value else { return }
+        if let index = values.firstIndex(where: { $0.id == value.id }) {
+            values[index] = value
+        } else {
+            values.append(value)
+        }
+    }
+
+    func enqueueRecordMutation<Value: Encodable>(
+        entityType: OfflineEntityType,
+        entityID: UUID,
+        value: Value,
+        modifiedAt: Date = Date()
+    ) {
+        guard offlineSynchronizationMode.requiresRemoteQueue else { return }
+        do {
+            let recordData = try Self.recordSynchronizationEncoder.encode(value)
+            let mutation = OfflineRecordMutationPayload(
+                entityType: entityType,
+                entityID: entityID,
+                recordData: recordData,
+                modifiedAt: modifiedAt
+            )
+            let payload = try OfflineOperationPayload(
+                mutation,
+                encoder: Self.recordSynchronizationEncoder
+            )
+            let operation = PendingOfflineOperation(
+                type: .recordMutation,
+                entityType: entityType,
+                entityID: entityID,
+                actionName: "upsertRecord",
+                actorEmployeeID: nil,
+                payload: payload,
+                createdAt: modifiedAt,
+                baseRevision: synchronizedRecordRevisions[
+                    synchronizationKey(type: entityType, id: entityID)
+                ],
+                metadata: ["recordSync": "true"]
+            )
+            _ = try offlineOperationQueue.enqueue(operation)
+            lastOfflineOperationError = nil
+        } catch {
+            lastOfflineOperationError = error.localizedDescription
+        }
+    }
+
+    static let recordSynchronizationEncoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }()
+
+    static let recordSynchronizationDecoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
+
     func enqueueTimelineCorrectionOperation(
         job: JobRecord,
         eventID: UUID,

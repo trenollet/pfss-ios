@@ -10,6 +10,7 @@ import SwiftUI
 struct EmployeeDetailView: View {
     @EnvironmentObject var store: AppDataStore
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var cloudManager = PFSSCloudflareBetaManager()
 
     @State var employee: EmployeeRecord
     private let originalEmployee: EmployeeRecord
@@ -18,6 +19,10 @@ struct EmployeeDetailView: View {
     @State private var endTime: Date
     @State private var showingRoleSelection = false
     @State private var showingUnsavedChangesAlert = false
+    @State private var showingArchiveConfirmation = false
+    @State private var isArchivingEmployee = false
+    @State private var lifecycleErrorMessage = ""
+    @State private var showingLifecycleError = false
 
     @FocusState private var isInputFocused: Bool
 
@@ -76,7 +81,10 @@ struct EmployeeDetailView: View {
                     subtitle: employee.roleDisplayText,
                     symbol: "person.crop.circle.fill"
                 ) {
-                    EmployeeIdentityEditorView(employee: $employee)
+                    EmployeeIdentityEditorView(
+                        employee: $employee,
+                        allowsRoleEditing: store.canManageCompany
+                    )
                 }
 
                 employeeSectionLink(
@@ -139,23 +147,52 @@ struct EmployeeDetailView: View {
                 }
             }
 
-            Section {
-                if employee.lifecycleStatus == .archived {
-                    Button {
-                        store.restoreEmployee(employee)
-                        dismiss()
+            if cloudManager.currentSession?.member.role.canManageAccess == true {
+                Section("Company Access") {
+                    NavigationLink {
+                        EmployeeCompanyAccessView(
+                            employee: employee,
+                            manager: cloudManager
+                        )
                     } label: {
-                        Label("Restore Employee", systemImage: "arrow.uturn.backward.circle.fill")
+                        Label {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("PFSS Access & Devices")
+                                    .fontWeight(.semibold)
+                                Text(companyAccessSummary)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "person.badge.key.fill")
+                                .font(.title2)
+                                .foregroundStyle(.blue)
+                                .frame(width: 32)
+                        }
+                        .padding(.vertical, 5)
                     }
-                    .buttonStyle(.borderedProminent)
-                } else {
-                    Button(role: .destructive) {
-                        store.archiveEmployee(employee)
-                        dismiss()
-                    } label: {
-                        Label("Archive Employee", systemImage: "archivebox.fill")
+                }
+            }
+
+            if store.canManageCompany {
+                Section {
+                    if employee.lifecycleStatus == .archived {
+                        Button {
+                            store.restoreEmployee(employee)
+                            dismiss()
+                        } label: {
+                            Label("Restore Employee", systemImage: "arrow.uturn.backward.circle.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                    } else {
+                        Button(role: .destructive) {
+                            showingArchiveConfirmation = true
+                        } label: {
+                            Label("Archive Employee", systemImage: "archivebox.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isArchivingEmployee)
                     }
-                    .buttonStyle(.borderedProminent)
                 }
             }
         }
@@ -208,6 +245,80 @@ struct EmployeeDetailView: View {
         } message: {
             Text("This employee has changes that have not been saved.")
         }
+        .confirmationDialog(
+            "Archive \(employee.displayName)?",
+            isPresented: $showingArchiveConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Secure Access and Archive", role: .destructive) {
+                archiveEmployeeSecurely()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text(
+                "PFSS will cancel any pending invitation or suspend active company access before archiving this employee. Restoring the employee record will not automatically reactivate login access."
+            )
+        }
+        .alert(
+            "Unable to Archive Employee",
+            isPresented: $showingLifecycleError
+        ) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(lifecycleErrorMessage)
+        }
+        .task {
+            guard cloudManager.isEnrolled else { return }
+            try? await cloudManager.refresh()
+        }
+    }
+
+    private var companyAccessSummary: String {
+        guard let member = employeeCloudMember else {
+            return cloudManager.currentSession?.member.role.canManageAccess == true
+                ? "No company login assigned"
+                : "Managed by a company administrator"
+        }
+
+        let deviceCount = cloudManager.devices.filter {
+            $0.memberID == member.id && $0.revokedAt == nil
+        }.count
+        return "\(member.status.title) · \(deviceCount) active device\(deviceCount == 1 ? "" : "s")"
+    }
+
+    private func archiveEmployeeSecurely() {
+        isArchivingEmployee = true
+        Task {
+            defer { isArchivingEmployee = false }
+            do {
+                if cloudManager.isEnrolled {
+                    try await cloudManager.refresh()
+                    guard cloudManager.currentSession?.member.role.canManageAccess == true else {
+                        throw PFSSCloudflareBetaError.server(
+                            "Only an Owner or Manager can archive an employee with company access."
+                        )
+                    }
+
+                    _ = try await cloudManager.secureEmployeeAccessForArchive(
+                        employeeID: employee.id
+                    )
+                }
+
+                store.archiveEmployee(employee)
+                dismiss()
+            } catch {
+                lifecycleErrorMessage = error.localizedDescription
+                showingLifecycleError = true
+            }
+        }
+    }
+
+    private var employeeCloudMember: PFSSTenantMember? {
+        let employeeID = employee.id.uuidString.lowercased()
+        let matches = cloudManager.members.filter {
+            $0.employeeID?.lowercased() == employeeID
+        }
+        return matches.last(where: { $0.status != .revoked }) ?? matches.last
     }
 
     private func employeeSectionLink<Destination: View>(
@@ -260,6 +371,11 @@ struct EmployeeDetailView: View {
 
     private func saveChanges() {
         isInputFocused = false
+
+        if !store.canManageCompany {
+            employee.role = originalEmployee.role
+            employee.roles = originalEmployee.roles
+        }
 
         employee.firstName =
             employee.firstName.trimmingCharacters(
@@ -396,6 +512,390 @@ struct EmployeeDetailView: View {
 
         default:
             return .blue
+        }
+    }
+}
+
+private struct EmployeeCompanyAccessView: View {
+    let employee: EmployeeRecord
+    @ObservedObject var manager: PFSSCloudflareBetaManager
+
+    @State private var invitation: PFSSTenantInvitation?
+    @State private var deviceToRevoke: PFSSTenantDevice?
+    @State private var isShowingMemberRevocation = false
+    @State private var alertTitle = "Company Access"
+    @State private var alertMessage = ""
+    @State private var isShowingAlert = false
+
+    private var employeeMember: PFSSTenantMember? {
+        let employeeID = employee.id.uuidString.lowercased()
+        let matches = manager.members.filter {
+            $0.employeeID?.lowercased() == employeeID
+        }
+        return matches.last(where: { $0.status != .revoked }) ?? matches.last
+    }
+
+    private var employeeDevices: [PFSSTenantDevice] {
+        guard let memberID = employeeMember?.id else { return [] }
+        return manager.devices
+            .filter { $0.memberID == memberID }
+            .sorted { $0.lastSeenAt > $1.lastSeenAt }
+    }
+
+    private var currentRole: PFSSTenantRole {
+        manager.currentSession?.member.role ?? .member
+    }
+
+    private var approvedInvitationRole: PFSSTenantRole? {
+        PFSSEmployeeAccessRolePolicy.invitationRole(for: employee)
+    }
+
+    private var canManageEmployee: Bool {
+        guard currentRole.canManageAccess else { return false }
+        guard employeeMember?.role != .owner else { return false }
+        if currentRole == .manager {
+            return approvedInvitationRole == .member &&
+                (employeeMember == nil || employeeMember?.role == .member)
+        }
+        return true
+    }
+
+    var body: some View {
+        List {
+            employeeIdentitySection
+
+            if manager.isEnrolled {
+                membershipSection
+                deviceSection
+            } else {
+                Section {
+                    ContentUnavailableView(
+                        "Company Access Unavailable",
+                        systemImage: "person.badge.key",
+                        description: Text(
+                            "Activate this device's company access before managing employee licenses."
+                        )
+                    )
+                }
+            }
+        }
+        .navigationTitle("Company Access")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            await refresh()
+        }
+        .sheet(item: $invitation) { invitation in
+            EmployeeInvitationResultView(
+                employeeName: employee.displayName,
+                invitation: invitation
+            )
+        }
+        .confirmationDialog(
+            "Revoke This Device?",
+            isPresented: Binding(
+                get: { deviceToRevoke != nil },
+                set: { if !$0 { deviceToRevoke = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Revoke and Remove Company Data", role: .destructive) {
+                revokeSelectedDevice()
+            }
+            Button("Cancel", role: .cancel) {
+                deviceToRevoke = nil
+            }
+        } message: {
+            Text(
+                "The next time this device contacts PFSS, it will remove all company-owned data and stored recovery access."
+            )
+        }
+        .confirmationDialog(
+            "Revoke Employee Access?",
+            isPresented: $isShowingMemberRevocation,
+            titleVisibility: .visible
+        ) {
+            Button("Revoke All Access", role: .destructive) {
+                updateMember(.revoke)
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text(
+                "Every device assigned to this employee will lose access and remove company-owned data on its next PFSS connection."
+            )
+        }
+        .alert(alertTitle, isPresented: $isShowingAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(alertMessage)
+        }
+    }
+
+    private var employeeIdentitySection: some View {
+        Section("Employee") {
+            LabeledContent("Name", value: employee.displayName)
+            if !employee.email.isEmpty {
+                LabeledContent("Email", value: employee.email)
+            }
+            Text(
+                "The employee record and security membership remain separate, securely linked records."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var membershipSection: some View {
+        Section("License & Membership") {
+            if let member = employeeMember {
+                LabeledContent("Status", value: member.status.title)
+                LabeledContent("Access Role", value: member.role.title)
+                if let approvedInvitationRole,
+                   member.role != approvedInvitationRole {
+                    Label(
+                        "Access does not match the employee's approved PFSS role.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
+
+                if canManageEmployee {
+                    membershipControls(member)
+                }
+            } else if canManageEmployee {
+                if let approvedInvitationRole {
+                    LabeledContent(
+                        "Approved Access Role",
+                        value: approvedInvitationRole.title
+                    )
+                }
+
+                Button {
+                    createInvitation()
+                } label: {
+                    Label("Create Device Invitation", systemImage: "person.badge.plus")
+                }
+            } else {
+                Text(ownerAccessGuidance)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func membershipControls(_ member: PFSSTenantMember) -> some View {
+        switch member.status {
+        case .invited:
+            Button("Cancel Pending Invitation", role: .destructive) {
+                cancelInvitation(member)
+            }
+        case .active:
+            Button("Suspend Access") {
+                updateMember(.suspend)
+            }
+            Button("Revoke Employee Access", role: .destructive) {
+                isShowingMemberRevocation = true
+            }
+        case .suspended:
+            Button("Reactivate Access") {
+                updateMember(.reactivate)
+            }
+            Button("Revoke Employee Access", role: .destructive) {
+                isShowingMemberRevocation = true
+            }
+        case .revoked:
+            Text("This membership has been permanently revoked.")
+                .foregroundStyle(.secondary)
+            if let approvedInvitationRole {
+                LabeledContent(
+                    "Approved Access Role",
+                    value: approvedInvitationRole.title
+                )
+            }
+            Button {
+                createInvitation()
+            } label: {
+                Label("Invite Employee Back", systemImage: "person.badge.plus")
+            }
+        }
+    }
+
+    private var deviceSection: some View {
+        Section {
+            if employeeDevices.isEmpty {
+                Text("No devices are enrolled for this employee.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(employeeDevices) { device in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(device.displayName)
+                                .fontWeight(.semibold)
+                            Spacer()
+                            Text(device.revokedAt == nil ? "Active" : "Revoked")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(
+                                    device.revokedAt == nil ? Color.green : Color.red
+                                )
+                        }
+                        Text(
+                            "Last seen " + device.lastSeenAt.formatted(
+                                date: .abbreviated,
+                                time: .shortened
+                            )
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                        if device.revokedAt == nil && canRevoke(device) {
+                            Button("Revoke Device", role: .destructive) {
+                                deviceToRevoke = device
+                            }
+                            .font(.subheadline.weight(.semibold))
+                        }
+                    }
+                    .padding(.vertical, 3)
+                }
+            }
+        } header: {
+            Text("Assigned Devices")
+        } footer: {
+            Text(
+                "Revoked devices receive a mandatory company-data removal command the next time they contact PFSS."
+            )
+        }
+    }
+
+    private func canRevoke(_ device: PFSSTenantDevice) -> Bool {
+        guard device.id != manager.currentSession?.device.id else {
+            return false
+        }
+        return canManageEmployee
+    }
+
+    private func refresh() async {
+        guard manager.isEnrolled else { return }
+        do {
+            try await manager.refresh()
+        } catch {
+            showError(error)
+        }
+    }
+
+    private func createInvitation() {
+        guard let approvedInvitationRole else {
+            showError(PFSSCloudflareBetaError.server(
+                "Owner access is created and recovered through the Owner account workflow."
+            ))
+            return
+        }
+        Task {
+            do {
+                invitation = try await manager.createInvitation(
+                    displayName: employee.displayName,
+                    role: approvedInvitationRole,
+                    employeeID: employee.id
+                )
+            } catch {
+                showError(error)
+            }
+        }
+    }
+
+    private var ownerAccessGuidance: String {
+        if approvedInvitationRole == nil {
+            return "Owner access is managed through the Owner account workflow, not an employee device invitation."
+        }
+        if approvedInvitationRole == .manager && currentRole == .manager {
+            return "An Owner must create access for an employee approved as a Manager."
+        }
+        return "No company login is assigned to this employee."
+    }
+
+    private func cancelInvitation(_ member: PFSSTenantMember) {
+        Task {
+            do {
+                try await manager.cancelInvitation(for: member)
+            } catch {
+                showError(error)
+            }
+        }
+    }
+
+    private func updateMember(_ action: PFSSTenantMemberAction) {
+        guard let member = employeeMember else { return }
+        Task {
+            do {
+                try await manager.updateMember(member, action: action)
+            } catch {
+                showError(error)
+            }
+        }
+    }
+
+    private func revokeSelectedDevice() {
+        guard let device = deviceToRevoke else { return }
+        deviceToRevoke = nil
+        Task {
+            do {
+                try await manager.revokeDevice(device)
+            } catch {
+                showError(error)
+            }
+        }
+    }
+
+    private func showError(_ error: Error) {
+        alertTitle = "Unable to Update Company Access"
+        alertMessage = error.localizedDescription
+        isShowingAlert = true
+    }
+}
+
+private struct EmployeeInvitationResultView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let employeeName: String
+    let invitation: PFSSTenantInvitation
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Single-Use Enrollment Code") {
+                    Text(invitation.enrollmentCode)
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                    ShareLink(
+                        item: invitation.enrollmentCode,
+                        subject: Text("PFSS device enrollment for \(employeeName)")
+                    ) {
+                        Label("Share Enrollment Code", systemImage: "square.and.arrow.up")
+                    }
+                }
+
+                Section("Expires") {
+                    Text(
+                        invitation.expiresAt.formatted(
+                            date: .abbreviated,
+                            time: .shortened
+                        )
+                    )
+                }
+
+                Section {
+                    Text(
+                        "Share this code securely with \(employeeName). It can be used once and cannot be displayed again."
+                    )
+                }
+            }
+            .navigationTitle("Invitation Created")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
     }
 }

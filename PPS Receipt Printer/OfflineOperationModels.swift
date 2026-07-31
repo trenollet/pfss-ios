@@ -31,6 +31,7 @@ enum OfflineEntityType: String, CaseIterable, Codable, Hashable {
     case lead
     case estimate
     case employee
+    case catalog
     case custom
 }
 

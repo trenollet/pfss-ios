@@ -16,6 +16,8 @@ enum OfflineSyncPresentationState: Equatable {
     case changesPending(Int)
     case syncFailed(Int)
     case conflictRequiresReview(Int)
+    case accessSuspended
+    case cloudUnavailable
     case fullySynchronized
 
     var title: String {
@@ -28,6 +30,8 @@ enum OfflineSyncPresentationState: Equatable {
         case let .changesPending(count): return "\(count) Change\(count == 1 ? "" : "s") Pending"
         case let .syncFailed(count): return "Sync Failed (\(count))"
         case let .conflictRequiresReview(count): return "\(count) Conflict\(count == 1 ? "" : "s") Need Review"
+        case .accessSuspended: return "Access Suspended"
+        case .cloudUnavailable: return "Cloud Sync Unavailable"
         case .fullySynchronized: return "Fully Synchronized"
         }
     }
@@ -52,6 +56,10 @@ enum OfflineSyncPresentationState: Equatable {
             return "One or more changes could not synchronize. Your local work is preserved."
         case .conflictRequiresReview:
             return "Local and remote changes are both preserved until reviewed."
+        case .accessSuspended:
+            return "This employee's company access is suspended. Synchronization will resume only after an Owner or Manager reactivates it."
+        case .cloudUnavailable:
+            return "PFSS could not complete its latest company synchronization check. Local work remains on this device."
         case .fullySynchronized:
             return "All local changes have synchronized successfully."
         }
@@ -67,6 +75,8 @@ enum OfflineSyncPresentationState: Equatable {
         case .changesPending: return "clock.arrow.circlepath"
         case .syncFailed: return "exclamationmark.arrow.triangle.2.circlepath"
         case .conflictRequiresReview: return "exclamationmark.triangle.fill"
+        case .accessSuspended: return "person.crop.circle.badge.pause"
+        case .cloudUnavailable: return "icloud.slash.fill"
         case .fullySynchronized: return "checkmark.icloud.fill"
         }
     }
@@ -79,6 +89,8 @@ enum OfflineSyncPresentationState: Equatable {
         case .synchronizing: return .blue
         case .syncFailed: return .red
         case .conflictRequiresReview: return .purple
+        case .accessSuspended: return .orange
+        case .cloudUnavailable: return .red
         }
     }
 }
@@ -88,8 +100,21 @@ enum OfflineSyncStatusResolver {
     static func resolve(
         mode: OfflineSynchronizationMode,
         queue: OfflineOperationQueue,
-        connectivity: OfflineConnectivityStatus
+        connectivity: OfflineConnectivityStatus,
+        cloudAccessStatus: PFSSCloudSynchronizationAccessStatus = .available
     ) -> OfflineSyncPresentationState {
+        switch cloudAccessStatus {
+        case .suspended:
+            return .accessSuspended
+        case .unavailable where connectivity != .offline:
+            return .cloudUnavailable
+        case .checking where connectivity == .unknown:
+            return .checkingConnection
+        case .checking, .available:
+            break
+        case .unavailable:
+            break
+        }
         if mode == .localOnly {
             return connectivity == .offline
                 ? .offlineSavedLocally(pendingCount: 0)
@@ -131,12 +156,14 @@ struct OfflineSyncStatusBadge: View {
     @ObservedObject var queue: OfflineOperationQueue
     @ObservedObject var connectivity: OfflineConnectivityMonitor
     let mode: OfflineSynchronizationMode
+    var cloudAccessStatus: PFSSCloudSynchronizationAccessStatus = .available
 
     private var status: OfflineSyncPresentationState {
         OfflineSyncStatusResolver.resolve(
             mode: mode,
             queue: queue,
-            connectivity: connectivity.status
+            connectivity: connectivity.status,
+            cloudAccessStatus: cloudAccessStatus
         )
     }
 
@@ -157,13 +184,21 @@ struct OfflineSyncDetailsView: View {
     @ObservedObject var queue: OfflineOperationQueue
     @ObservedObject var connectivity: OfflineConnectivityMonitor
     let mode: OfflineSynchronizationMode
+    var cloudAccessStatus: PFSSCloudSynchronizationAccessStatus = .available
+    var canOverrideConflicts = false
     var onSyncNow: (() -> Void)? = nil
+    var onResolveConflict: ((UUID, OfflineConflictResolution) throws -> Void)? = nil
+
+    @State private var conflictOperation: PendingOfflineOperation?
+    @State private var resolutionError = ""
+    @State private var isShowingResolutionError = false
 
     private var status: OfflineSyncPresentationState {
         OfflineSyncStatusResolver.resolve(
             mode: mode,
             queue: queue,
-            connectivity: connectivity.status
+            connectivity: connectivity.status,
+            cloudAccessStatus: cloudAccessStatus
         )
     }
 
@@ -171,7 +206,8 @@ struct OfflineSyncDetailsView: View {
         Array(
             queue.orderedOperations
                 .filter { !$0.status.isTerminal || $0.status == .synchronized }
-                .suffix(50)
+                .reversed()
+                .prefix(50)
         )
     }
 
@@ -235,6 +271,7 @@ struct OfflineSyncDetailsView: View {
                 syncMetric("Conflicts", value: queue.actionableOperations.filter {
                     $0.status == .conflicted
                 }.count)
+
             }
 
             Section("Synchronization Activity") {
@@ -253,6 +290,33 @@ struct OfflineSyncDetailsView: View {
         }
         .navigationTitle("Sync Status")
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            "Choose Which Version to Keep",
+            isPresented: Binding(
+                get: { conflictOperation != nil },
+                set: { if !$0 { conflictOperation = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Keep Cloud Version") {
+                resolveSelectedConflict(as: .keptRemote)
+            }
+            if canOverrideConflicts {
+                Button("Keep This Device's Version") {
+                    resolveSelectedConflict(as: .keptLocal)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                conflictOperation = nil
+            }
+        } message: {
+            Text(conflictResolutionMessage)
+        }
+        .alert("Unable to Resolve Conflict", isPresented: $isShowingResolutionError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(resolutionError)
+        }
     }
 
     private func syncMetric(_ title: String, value: Int) -> some View {
@@ -287,9 +351,54 @@ struct OfflineSyncDetailsView: View {
                 Text("Local and remote versions are preserved for review.")
                     .font(.caption)
                     .foregroundStyle(.purple)
+                if let paths = operation.metadata["conflictingPaths"],
+                   !paths.isEmpty {
+                    Text("Conflicting fields: " + paths)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if canOverrideConflicts {
+                    Text("Review this item in the centralized Conflict Inbox.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("This change was sent to a Manager or Owner for review.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if operation.metadata["conflictDeliveryStatus"] ==
+                        "deliveryFailed" {
+                        Text(
+                            operation.metadata["conflictDeliveryError"]
+                                ?? "PFSS could not send this conflict for review."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                    }
+                }
             }
         }
         .padding(.vertical, 4)
+    }
+
+    private func resolveSelectedConflict(
+        as resolution: OfflineConflictResolution
+    ) {
+        guard let operation = conflictOperation,
+              let onResolveConflict else { return }
+        conflictOperation = nil
+        do {
+            try onResolveConflict(operation.id, resolution)
+        } catch {
+            resolutionError = error.localizedDescription
+            isShowingResolutionError = true
+        }
+    }
+
+    private var conflictResolutionMessage: String {
+        if canOverrideConflicts {
+            return "PFSS preserved both versions. The cloud version is the latest accepted company record; keeping this device's version will submit it again as a reviewed replacement."
+        }
+        return "PFSS preserved both versions. Members may accept the latest company version; a Manager or Owner must review any request to replace it."
     }
 }
 

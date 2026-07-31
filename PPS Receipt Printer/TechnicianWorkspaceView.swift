@@ -45,7 +45,42 @@ struct TechnicianWorkspaceView: View {
 
     var body: some View {
         NavigationStack {
-            List {
+            if store.usesAuthenticatedMyDayIdentity {
+                authenticatedMyDay
+            } else {
+                ownerTechnicianWorkspace
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var authenticatedMyDay: some View {
+        if let employee = store.authenticatedMyDayEmployee {
+            TechnicianDailyAgendaView(employee: employee)
+                .environmentObject(store)
+        } else if store.authenticatedCloudEmployee == nil {
+            ContentUnavailableView(
+                "No Linked Employee Profile",
+                systemImage: "person.crop.circle.badge.exclamationmark",
+                description: Text(
+                    "Contact your system administrator to have this device added to your employee profile."
+                )
+            )
+            .navigationTitle("My Day")
+        } else {
+            ContentUnavailableView(
+                "My Day Is Not Assigned",
+                systemImage: "calendar.badge.exclamationmark",
+                description: Text(
+                    "My Day is available to employees with Technician access."
+                )
+            )
+            .navigationTitle("My Day")
+        }
+    }
+
+    private var ownerTechnicianWorkspace: some View {
+        List {
                 Section("Technician") {
                     Picker(
                         "Viewing Schedule For",
@@ -93,16 +128,15 @@ struct TechnicianWorkspaceView: View {
                         )
                     }
                 }
-            }
-            .navigationTitle("Technician")
-            .onAppear {
-                repairSelectionIfNeeded()
-            }
-            .onChange(
-                of: store.activeEmployees.map(\.id)
-            ) { _, _ in
-                repairSelectionIfNeeded()
-            }
+        }
+        .navigationTitle("Technician")
+        .onAppear {
+            repairSelectionIfNeeded()
+        }
+        .onChange(
+            of: store.activeEmployees.map(\.id)
+        ) { _, _ in
+            repairSelectionIfNeeded()
         }
     }
 

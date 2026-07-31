@@ -3,7 +3,7 @@
 - Status: Active
 - Owner: PFSS Project
 - Applies To: v0.9+
-- Last Updated: 2026-07-18
+- Last Updated: 2026-07-31
 
 ## Current Foundation
 
@@ -97,6 +97,148 @@ Goals:
 - Strengthen saved-record detail presentation
 - Formalize release notes and milestone checkpoints
 - Continue scheduling, dispatch, recurring-work, and route workflows
+
+## Production Account Platform
+
+**Status:** Planned after the current development phase
+
+PFSS Cloud production onboarding and support must replace beta enrollment with
+a durable identity, tenant-provisioning, and recovery system.
+
+### First-Run Company Registration
+
+- Extend the existing unauthenticated `Device Activation` screen into the
+  shared account entry point. It must clearly offer both `Activate Employee
+  Device` for an invitation code and `Create New Company` for a first Owner.
+  Do not ship a nonfunctional signup placeholder before registration is ready.
+- Present a guided first-run choice to create a company or sign in to an
+  existing company.
+- Verify the initial Owner's email and establish password and/or passkey
+  authentication with multi-factor recovery methods.
+- Collect the minimum company profile, legal consent, time zone, plan, and
+  billing information required for service activation.
+- Atomically create the authentication subject, tenant, Owner membership,
+  subscription allocation, first device session, and immutable audit event.
+- Provision the tenant's PFSS Cloud database/storage boundary without exposing
+  infrastructure addresses or tenant identifiers to the client.
+- Seed an initial recoverable company snapshot and verify synchronization before
+  declaring setup complete.
+- Roll back incomplete registration so PFSS never leaves an ownerless tenant,
+  orphaned subscription, or partially provisioned database.
+
+### Durable Sign-In and Owner Recovery
+
+- Treat Keychain credentials as revocable per-device sessions, never as the
+  Owner's only durable identity.
+- Support new-device sign-in using verified username/email plus password or
+  passkey, followed by MFA where required.
+- Issue a new device credential only after authentication and register it in the
+  tenant's device inventory.
+- Restore a replacement device from the current PFSS Cloud snapshot and resume
+  queued synchronization safely.
+- Provide verified account recovery and single-use recovery codes without using
+  employee invitation codes as permanent credentials.
+- Support more than one Owner so one lost device or inaccessible account cannot
+  permanently lock a company out.
+- Allow an authenticated Owner to revoke a lost device, triggering mandatory
+  company-data removal if that device contacts PFSS again.
+
+### Developer Support and Database Operations Console
+
+- Build a separate developer-only operations tool for customer support,
+  provisioning diagnostics, migration status, backup verification, tenant
+  health, and disaster recovery.
+- Require phishing-resistant MFA, least-privilege roles, short-lived access,
+  approved devices, and just-in-time elevation for support operators.
+- Do not create a universal customer password, permanent tenant credential, or
+  undocumented master-key path.
+- Require an explicit support case and customer authorization for access to
+  customer data whenever practical; visibly identify any support session.
+- Log every tenant lookup, data view, export, recovery, credential action,
+  migration, and administrative mutation in an immutable audit trail.
+- Separate routine support metadata from sensitive business content and redact
+  secrets, payment data, authentication material, and unnecessary personal
+  information by default.
+- Make break-glass access exceptional, time-limited, independently alerted, and
+  subject to post-event review.
+- Provide safe tenant backup, point-in-time recovery, schema migration,
+  quarantine, and integrity-check workflows with confirmation and rollback.
+- Test the console and production provisioning process in a non-production
+  environment before granting access to live customer tenants.
+
+### Job-Scoped Technician Location Sharing
+
+- Treat location as short-lived operational evidence, not continuous employee
+  surveillance or a permanent part of the employee record.
+- Report a device location only while the linked employee has an active
+  assignment in an approved workflow state, initially Traveling, On Site,
+  Setup, Working, or Pack Up.
+- Stop reporting automatically when work is paused or completed, the employee
+  is off duty, the assignment is cancelled, access is revoked, or the app no
+  longer has the required location authorization.
+- Clearly disclose when job-scoped location sharing is active and explain its
+  business purpose during permission onboarding.
+- Send the tenant, employee, device, assignment, coordinates, accuracy,
+  timestamp, and workflow state through a dedicated PFSS Cloud location
+  channel rather than the durable business-record change feed.
+- Show Managers and Owners only the latest authorized observation needed for
+  dispatch and Live Map decisions, with visible Live, Stale, Not Reporting,
+  and Permission Denied states; never fabricate a missing location.
+- Use configurable freshness and retention limits so precise coordinates expire
+  quickly after their operational purpose has ended.
+- Allow location evidence to support review of a requested time correction,
+  while never changing time records automatically or treating GPS alone as
+  proof of work performed.
+- Preserve the original time entry, proposed correction, reviewer, reason, and
+  decision in the audit trail; record only the minimum location evidence needed
+  to explain that decision.
+- Add explicit role authorization, tenant isolation, rate limits, battery-aware
+  update intervals, offline behavior, consent withdrawal, and revoked-device
+  tests before production use.
+
+### Beta-to-Production Cloud Infrastructure
+
+- Treat the current `pfss-beta-api` Worker, beta D1 database, and beta R2 archive
+  bucket as trial infrastructure only; do not promote them in place for live
+  customer use.
+- Create separately named and independently secured production Cloudflare
+  Workers, D1 databases, R2 buckets, queues, secrets, service bindings, and
+  operational accounts.
+- Replace the beta `workers.dev` address with a stable PFSS-owned production
+  domain and ship that endpoint through release-specific app configuration.
+- Keep Development, Beta/Staging, and Production environments isolated so test
+  tenants, credentials, archives, logs, and migrations cannot cross boundaries.
+- Establish version-controlled production provisioning and migration procedures
+  with preflight validation, backups, rollback plans, and post-deployment
+  integrity checks.
+- Configure production monitoring, alerting, rate limits, abuse protection,
+  retention rules, disaster recovery, and cost controls before onboarding live
+  customers.
+- Perform load, tenant-isolation, authentication, recovery, revoked-device, and
+  failure-injection testing against the staging-equivalent environment before
+  every production cutover.
+- Define an explicit beta-customer migration process that verifies ownership,
+  moves or intentionally resets approved tenant data, rotates credentials, and
+  records customer acceptance without silently copying trial data.
+- Remove the beta endpoint from production builds and prevent production
+  credentials from authenticating against beta infrastructure.
+
+These capabilities are production requirements, but implementation begins only
+after the current development phase is completed and accepted.
+
+## Final Pre-Launch UI Consistency Pass
+
+**Status:** Required before v1.0 production release; deferred from Phase 16
+
+- Replace the adaptive system `TabView` presentation with a PFSS-owned primary
+  navigation bar that remains at the bottom on both iPhone and iPad.
+- Preserve Dashboard, Sales, My Day, Service, and Settings destinations,
+  selection state, role-based visibility, accessibility labels, safe-area
+  behavior, and deep-navigation behavior.
+- Verify the unified navigation in portrait and landscape, light and dark
+  appearance, larger Dynamic Type sizes, and supported iPhone and iPad layouts.
+- Complete this as part of the final UI improvements and enhancements pass
+  before PFSS goes live, not as an expansion of Phase 16.
 
 ## v1.0 — First Production Release
 

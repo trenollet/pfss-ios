@@ -186,9 +186,10 @@ final class OfflineConflictResolutionService {
     func resolve(
         operationID: UUID,
         resolution: OfflineConflictResolution,
-        employeeID: UUID,
+        employeeID: UUID?,
         note: String,
-        at timestamp: Date = Date()
+        at timestamp: Date = Date(),
+        resubmitLocal: Bool = true
     ) throws {
         guard var operation = queue.operation(id: operationID) else {
             throw OfflineConflictResolutionError.operationNotFound
@@ -210,7 +211,8 @@ final class OfflineConflictResolutionService {
         case .keptLocal:
             operation.payload = conflict.localVersion.payload
             operation.baseRevision = conflict.remoteVersion?.revision
-            operation.status = .pending
+            operation.status = resubmitLocal ? .pending : .synchronized
+            operation.synchronizedAt = resubmitLocal ? nil : timestamp
             operation.failure = nil
             operation.nextRetryAt = nil
         case .keptRemote:
@@ -234,7 +236,9 @@ final class OfflineConflictResolutionService {
         operation.updatedAt = timestamp
         operation.metadata["conflictResolution"] = resolution.rawValue
         operation.metadata["conflictResolvedAt"] = ISO8601DateFormatter().string(from: timestamp)
-        operation.metadata["conflictResolvedBy"] = employeeID.uuidString
+        if let employeeID {
+            operation.metadata["conflictResolvedBy"] = employeeID.uuidString
+        }
         try queue.update(operation)
     }
 }

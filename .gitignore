@@ -1,0 +1,8 @@
+# Cloudflare Worker dependencies and local secrets
+Cloudflare/**/node_modules/
+Cloudflare/**/.pnpm-store/
+.pnpm-store/
+Cloudflare/**/.wrangler/
+Cloudflare/**/.dev.vars*
+Cloudflare/**/.env*
+!Cloudflare/**/.env.example

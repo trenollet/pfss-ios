@@ -153,15 +153,24 @@ struct TechnicianDailyAgendaView: View {
                         queue: store.offlineOperationQueue,
                         connectivity: store.offlineConnectivityMonitor,
                         mode: store.offlineSynchronizationMode,
+                        cloudAccessStatus: store.cloudSynchronizationAccessStatus,
+                        canOverrideConflicts: store.canOverrideSynchronizationConflicts,
                         onSyncNow: store.offlineSynchronizationService.map { service in
                             { service.syncNow() }
+                        },
+                        onResolveConflict: { operationID, resolution in
+                            try store.resolveRecordConflict(
+                                operationID: operationID,
+                                resolution: resolution
+                            )
                         }
                     )
                 } label: {
                     OfflineSyncStatusBadge(
                         queue: store.offlineOperationQueue,
                         connectivity: store.offlineConnectivityMonitor,
-                        mode: store.offlineSynchronizationMode
+                        mode: store.offlineSynchronizationMode,
+                        cloudAccessStatus: store.cloudSynchronizationAccessStatus
                     )
                 }
                 .buttonStyle(.plain)
