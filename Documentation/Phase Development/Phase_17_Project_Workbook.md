@@ -154,7 +154,7 @@ not expand the production account implementation boundary.
 - [ ] The first trusted device synchronizes the initial company snapshot.
 - [ ] An Owner signs in on a replacement device without an employee invitation.
 - [ ] Recovery succeeds without access to an existing trusted device.
-- [ ] Multiple Owners prevent a single lost account from locking the company.
+- [x] Multiple Owners prevent a single lost account from locking the company.
 - [ ] Employee invitation activation continues to work unchanged.
 - [ ] Server-side entitlements enforce the approved plan and limits.
 - [ ] Failed registration and provisioning roll back completely.
@@ -348,3 +348,13 @@ not expand the production account implementation boundary.
   current and final active Owner remain protected. Strict TypeScript validation,
   all 46 Worker tests, and a direct full-app Swift type-check pass. Live signed
   iPhone/iPad multiple-Owner acceptance remains open.
+- 2026-08-01: Live multiple-Owner acceptance passed on the signed test devices.
+  A second Owner accepted an exact-email invitation through a fresh WorkOS
+  sign-in, activated without restarting, received an independent device and
+  synchronized workspace, displayed the correct Owner identity, and exercised
+  independent recovery controls. Invitation replay and cancellation were
+  rejected, current/final Owner protections held, revoking the second Owner
+  removed company access and data from that device, and the original Owner and
+  company remained operational. The acceptance flow now safely rotates an
+  existing signed-out tenant device credential and distinguishes WorkOS sign-up
+  from retry-safe sign-in.

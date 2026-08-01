@@ -224,8 +224,12 @@ export async function startOwnerAuthorization(
   const rawEmailHint = body.emailHint === undefined
     ? null
     : nonemptyString(body.emailHint, 3, 254)?.toLowerCase() ?? null;
+  const screenHint = body.screenHint === "sign-in" ? "sign-in" :
+    body.screenHint === "sign-up" || body.screenHint === undefined
+      ? "sign-up"
+      : null;
   if (!state || !codeChallenge || !redirectURI ||
-      (rawEmailHint !== null && !validEmail(rawEmailHint))) {
+      !screenHint || (rawEmailHint !== null && !validEmail(rawEmailHint))) {
     return json({ error: "invalid_authorization_request" }, 400);
   }
   try {
@@ -234,6 +238,7 @@ export async function startOwnerAuthorization(
       codeChallenge,
       redirectURI,
       emailHint: rawEmailHint ?? undefined,
+      screenHint,
     });
     const now = new Date().toISOString();
     await env.DB.prepare(
@@ -682,11 +687,17 @@ async function acceptOwnerInvitation(
         AND status != 'revoked'`,
   ).bind(invitation.tenantID, authorization.subjectID).first();
   if (existingMembership) return json({ error: "owner_already_exists" }, 409);
-  const count = await env.DB.prepare(
-    "SELECT COUNT(*) AS count FROM devices WHERE tenant_id = ?1 AND revoked_at IS NULL",
-  ).bind(invitation.tenantID).first<{ count: number }>();
-  if ((count?.count ?? 0) >= stagingRegistrationEntitlements.deviceLimit) {
-    return json({ error: "device_limit_reached" }, 409);
+  const existingDevice = await env.DB.prepare(
+    `SELECT member_id AS memberID FROM devices
+      WHERE tenant_id = ?1 AND id = ?2`,
+  ).bind(invitation.tenantID, deviceID).first<{ memberID: string }>();
+  if (!existingDevice) {
+    const count = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM devices WHERE tenant_id = ?1 AND revoked_at IS NULL",
+    ).bind(invitation.tenantID).first<{ count: number }>();
+    if ((count?.count ?? 0) >= stagingRegistrationEntitlements.deviceLimit) {
+      return json({ error: "device_limit_reached" }, 409);
+    }
   }
   const deviceToken = `${crypto.randomUUID()}${crypto.randomUUID()}`;
   const tokenDigest = await sha256(deviceToken);
@@ -700,12 +711,24 @@ async function acceptOwnerInvitation(
           SET authentication_subject_id = ?1, status = 'active', activated_at = ?2
         WHERE tenant_id = ?3 AND id = ?4 AND role = 'owner' AND status = 'invited'`,
     ).bind(authorization.subjectID, now, invitation.tenantID, invitation.memberID),
-    env.DB.prepare(
-      `INSERT INTO devices
-        (id, tenant_id, member_id, display_name, token_hash, created_at, last_seen_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)`,
-    ).bind(deviceID, invitation.tenantID, invitation.memberID, deviceName,
-      tokenDigest, now),
+    existingDevice
+      ? env.DB.prepare(
+        `UPDATE devices
+            SET member_id = ?1, display_name = ?2, token_hash = ?3,
+                last_seen_at = ?4, revoked_at = NULL,
+                data_removal_required_at = NULL,
+                data_removal_acknowledged_at = NULL,
+                credentials_purged_at = NULL
+          WHERE tenant_id = ?5 AND id = ?6`,
+      ).bind(invitation.memberID, deviceName, tokenDigest, now,
+        invitation.tenantID, deviceID)
+      : env.DB.prepare(
+        `INSERT INTO devices
+          (id, tenant_id, member_id, display_name, token_hash, created_at,
+           last_seen_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)`,
+      ).bind(deviceID, invitation.tenantID, invitation.memberID, deviceName,
+        tokenDigest, now),
     env.DB.prepare(
       `UPDATE owner_authorization_attempts SET status = 'consumed',
               consumed_at = ?1, updated_at = ?1
@@ -725,7 +748,7 @@ async function acceptOwnerInvitation(
     owner: { memberID: invitation.memberID },
     device: { id: deviceID, deviceToken },
     tokenIssued: true,
-  }, 201);
+  }, existingDevice ? 200 : 201);
 }
 
 async function revokeOwnerMember(

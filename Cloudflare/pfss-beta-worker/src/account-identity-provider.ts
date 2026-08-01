@@ -27,6 +27,7 @@ export interface IdentityAuthorizationStart {
   codeChallenge: string;
   redirectURI: string;
   emailHint?: string;
+  screenHint?: "sign-up" | "sign-in";
 }
 
 export interface IdentityAuthorizationSession {
@@ -192,7 +193,7 @@ implements ManagedOwnerIdentityProvider {
     url.searchParams.set("state", request.state);
     url.searchParams.set("code_challenge", request.codeChallenge);
     url.searchParams.set("code_challenge_method", "S256");
-    url.searchParams.set("screen_hint", "sign-up");
+    url.searchParams.set("screen_hint", request.screenHint ?? "sign-up");
     if (request.emailHint) url.searchParams.set("login_hint", request.emailHint);
     return {
       authorizationURL: url.toString(),

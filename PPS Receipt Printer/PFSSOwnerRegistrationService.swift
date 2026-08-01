@@ -383,7 +383,11 @@ final class PFSSOwnerAuthenticationBrowser: NSObject, ObservableObject,
             ?? UIWindow(windowScene: scene)
     }
 
-    func authenticate(at url: URL, callbackURL: URL) async throws -> URL {
+    func authenticate(
+        at url: URL,
+        callbackURL: URL,
+        prefersEphemeralSession: Bool = false
+    ) async throws -> URL {
         guard let host = callbackURL.host else {
             throw PFSSOwnerAuthenticationError.untrustedRedirect
         }
@@ -412,7 +416,8 @@ final class PFSSOwnerAuthenticationBrowser: NSObject, ObservableObject,
                 }
             }
             authenticationSession.presentationContextProvider = self
-            authenticationSession.prefersEphemeralWebBrowserSession = false
+            authenticationSession.prefersEphemeralWebBrowserSession =
+                prefersEphemeralSession
             self.session = authenticationSession
             guard authenticationSession.start() else {
                 continuation.resume(

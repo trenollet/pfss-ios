@@ -300,12 +300,14 @@ private struct PFSSOwnerInvitationAcceptanceView: View {
                 let authorizationSession = try await coordinator.start(
                     emailHint: email.trimmingCharacters(
                         in: .whitespacesAndNewlines
-                    ).lowercased()
+                    ).lowercased(),
+                    screenHint: "sign-in"
                 )
                 let callback = try await browser.authenticate(
                     at: authorizationSession.authorizationURL,
                     callbackURL:
-                        PFSSCloudflareOwnerAccountService.stagingRedirectURI
+                        PFSSCloudflareOwnerAccountService.stagingRedirectURI,
+                    prefersEphemeralSession: true
                 )
                 let authorization = try coordinator.consumeCallback(callback)
                 let identity = try await accountService.exchange(authorization)
@@ -494,7 +496,8 @@ private struct PFSSExistingOwnerSignInView: View {
                 let authorizationSession = try await coordinator.start(
                     emailHint: email.trimmingCharacters(
                         in: .whitespacesAndNewlines
-                    ).lowercased()
+                    ).lowercased(),
+                    screenHint: "sign-in"
                 )
                 let callback = try await browser.authenticate(
                     at: authorizationSession.authorizationURL,

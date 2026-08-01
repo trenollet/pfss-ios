@@ -1019,6 +1019,7 @@ describe("managed Owner identity boundary", () => {
       codeChallenge,
       redirectURI: "https://identity.staging.pfss.test/callback",
       emailHint: "owner@example.com",
+      screenHint: "sign-in",
     });
     const authorizationURL = new URL(session.authorizationURL);
     expect(authorizationURL.origin).toBe("https://api.workos.com");
@@ -1026,6 +1027,7 @@ describe("managed Owner identity boundary", () => {
     expect(authorizationURL.searchParams.get("code_challenge_method")).toBe("S256");
     expect(authorizationURL.searchParams.get("code_challenge"))
       .toBe(codeChallenge);
+    expect(authorizationURL.searchParams.get("screen_hint")).toBe("sign-in");
 
     const identity = await adapter.exchangeAuthorizationCode(
       "authorization_code_12345",
@@ -2325,7 +2327,20 @@ describe("membership authorization", () => {
         new Date(now.getTime() + 300_000).toISOString(), now.toISOString(),
       ),
     ]);
+    // A signed-out installation retains its device ID. Model the primary Owner
+    // keeping their phone while the signed-out iPad is activated for the
+    // invited Owner.
     const deviceID = crypto.randomUUID();
+    await env.DB.prepare(
+      `INSERT INTO devices
+        (id, tenant_id, member_id, display_name, token_hash, created_at,
+         last_seen_at)
+       VALUES (?1, ?2, ?3, 'Signed-out iPad', ?4, ?5, ?5)`,
+    ).bind(
+      deviceID, owner.tenantID, owner.memberID,
+      createHash("sha256").update(`old_${deviceID}`).digest("hex"),
+      now.toISOString(),
+    ).run();
     const accepted = await worker.fetch(new Request(
       "https://pfss.test/v1/owner-invitations/accept",
       {
@@ -2339,7 +2354,7 @@ describe("membership authorization", () => {
         }),
       },
     ), env);
-    expect(accepted.status).toBe(201);
+    expect(accepted.status).toBe(200);
     const membership = await env.DB.prepare(
       `SELECT role, status, authentication_subject_id AS subjectID
          FROM tenant_members WHERE id = ?1`,
@@ -2352,6 +2367,17 @@ describe("membership authorization", () => {
       role: "owner",
       status: "active",
       subjectID,
+    });
+    const reassignedDevice = await env.DB.prepare(
+      `SELECT member_id AS memberID, revoked_at AS revokedAt
+         FROM devices WHERE tenant_id = ?1 AND id = ?2`,
+    ).bind(owner.tenantID, deviceID).first<{
+      memberID: string;
+      revokedAt: string | null;
+    }>();
+    expect(reassignedDevice).toEqual({
+      memberID: invitation.memberID,
+      revokedAt: null,
     });
 
     const replay = await worker.fetch(new Request(

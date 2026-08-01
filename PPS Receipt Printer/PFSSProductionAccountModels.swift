@@ -144,6 +144,7 @@ struct PFSSIdentityAuthorizationRequest: Codable, Equatable {
     let codeChallenge: String
     let redirectURI: URL
     let emailHint: String?
+    let screenHint: String
 }
 
 struct PFSSIdentityAuthorizationSession: Codable, Equatable {
