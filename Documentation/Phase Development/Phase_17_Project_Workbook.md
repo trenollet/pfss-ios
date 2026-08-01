@@ -119,8 +119,9 @@ returned only after the complete transaction reaches `active`.
   after permanent-domain deployment.
 - [x] Subscription and payment provider: Apple StoreKit 2, App Store Server API,
   and App Store Server Notifications V2 per ADR-003.
-- [ ] Initial plan names, employee/device limits, trial policy, and cancellation
-  behavior.
+- [x] Initial plan names, combined-user/device/record limits, 14-day trial, and
+  safe downgrade behavior per ADR-005. Final cancellation retention timing
+  remains a launch-policy decision.
 - [ ] PFSS-owned production domain and environment configuration strategy.
 - [ ] Legal terms, privacy-policy versions, minimum company profile, and regions
   supported at launch.
@@ -232,6 +233,33 @@ not expand the production account implementation boundary.
 - [x] Prevent suspension, revocation, or removal of the final active Owner.
 - [ ] Complete live recovery-code, lost-device, and replacement-device tests on
   signed iPhone and iPad builds.
+
+## Step 8 — Plan Entitlements and Account-State Enforcement
+
+- [x] Resolve the current unrevoked, effective tenant allocation on the server;
+  malformed, expired, revoked, or missing allocations grant no authority.
+- [x] Return a provider-neutral entitlement receipt containing plan code,
+  allocation source, lifecycle status, access mode, limits, modules, and current
+  employee, device, and Owner usage.
+- [x] Enforce combined-user and device limits at invitation, sign-in, recovery,
+  second-Owner, and employee-device enrollment boundaries.
+- [x] Enforce lead, customer, and job creation limits while continuing to allow
+  access to and updates of existing records after a downgrade.
+- [x] Preserve full access for effective beta, internal-testing,
+  internal-business, and promotional grants without a client-side payment
+  bypass.
+- [x] Keep past-due and cancelled paid accounts readable while preventing new
+  devices, invitations, synchronized mutations, conflict decisions, snapshots,
+  and backup uploads.
+- [x] Block pending and suspended paid allocations instead of trusting local
+  StoreKit state.
+- [x] Approve customer-facing packaged plans and combined-user, device, lead,
+  customer, and job limits per ADR-005.
+- [ ] Approve trial length, billing-retry grace duration, cancellation effective
+  date, and final post-cancellation data-retention policy.
+- [ ] Add the App Store transaction and notification adapter that creates and
+  advances paid allocations using Apple's verified server evidence.
+- [ ] Present plan, usage, and safe read-only account guidance in Owner Settings.
 
 ## Phase Start Record
 
@@ -358,3 +386,11 @@ not expand the production account implementation boundary.
   company remained operational. The acceptance flow now safely rotates an
   existing signed-out tenant device credential and distinguishes WorkOS sign-up
   from retry-safe sign-in.
+- 2026-08-01: Began Step 8 with a centralized server entitlement resolver and
+  matching Swift receipt. Effective server-owned allocations now govern
+  employee, device, and Owner growth limits. Paid accounts resolve to full,
+  read-only, or blocked access from their server lifecycle state; complimentary
+  sources remain explicit grants. Added an authenticated entitlement-and-usage
+  endpoint and regression coverage for employee-limit rejection and past-due
+  read-only behavior. Commercial plan names, final limits, grace timing, and
+  App Store transaction ingestion remain pending product approval.

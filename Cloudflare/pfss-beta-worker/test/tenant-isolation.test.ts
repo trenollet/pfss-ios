@@ -31,6 +31,7 @@ async function seedIdentity(
   const token = `${label}-${crypto.randomUUID()}`;
   const tokenHash = createHash("sha256").update(token).digest("hex");
   const now = new Date().toISOString();
+  const subjectID = crypto.randomUUID();
   await env.DB.batch([
     env.DB.prepare(
       "INSERT INTO tenants (id, display_name, status, created_at) VALUES (?1, ?2, 'active', ?3)",
@@ -45,6 +46,29 @@ async function seedIdentity(
         (id, tenant_id, member_id, display_name, token_hash, created_at, last_seen_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)`,
     ).bind(deviceID, tenantID, memberID, `${label} Device`, tokenHash, now),
+    env.DB.prepare(
+      `INSERT INTO authentication_subjects
+        (id, display_name, status, created_at, updated_at)
+       VALUES (?1, ?2, 'active', ?3, ?3)`,
+    ).bind(subjectID, `${label} Test Authority`, now),
+    env.DB.prepare(
+      `INSERT INTO plan_allocations
+        (id, tenant_id, access_source, plan_code, entitlements_json,
+         effective_at, granted_by_subject_id, grant_reason, created_at)
+       VALUES (?1, ?2, 'internalTesting', 'test-full', ?3, ?4, ?5,
+               'Automated test fixture', ?4)`,
+    ).bind(
+      crypto.randomUUID(),
+      tenantID,
+      JSON.stringify({
+        userLimit: 25,
+        deviceLimit: 40,
+        recordLimits: { leads: 1_000, customers: 1_000, jobs: 3_000 },
+        modules: ["sales", "service", "dispatch", "reporting"],
+      }),
+      now,
+      subjectID,
+    ),
   ]);
   return { tenantID, memberID, deviceID, token };
 }
@@ -358,6 +382,7 @@ describe("production account registration foundation", () => {
       "legal_consents",
       "subscription_accounts",
       "plan_allocations",
+      "plan_catalog",
     ];
     const tables = await env.DB.prepare(
       `SELECT name FROM sqlite_master
@@ -371,6 +396,36 @@ describe("production account registration foundation", () => {
     ).all<{ name: string }>();
     expect(memberColumns.results.map((column) => column.name))
       .toContain("authentication_subject_id");
+
+    const plans = await env.DB.prepare(
+      `SELECT code, user_limit AS userLimit, device_limit AS deviceLimit,
+              lead_limit AS leadLimit, customer_limit AS customerLimit,
+              job_limit AS jobLimit
+         FROM plan_catalog ORDER BY monthly_price_cents`,
+    ).all<{
+      code: string;
+      userLimit: number;
+      deviceLimit: number;
+      leadLimit: number | null;
+      customerLimit: number | null;
+      jobLimit: number | null;
+    }>();
+    expect(plans.results).toContainEqual({
+      code: "trial-14-day",
+      userLimit: 2,
+      deviceLimit: 4,
+      leadLimit: 5,
+      customerLimit: 5,
+      jobLimit: 10,
+    });
+    expect(plans.results).toContainEqual({
+      code: "expert-monthly",
+      userLimit: 10,
+      deviceLimit: 20,
+      leadLimit: 10_000,
+      customerLimit: 10_000,
+      jobLimit: 50_000,
+    });
 
     await expect(env.DB.prepare(
       `INSERT INTO authentication_subjects
@@ -462,14 +517,14 @@ describe("production account registration foundation", () => {
       tenant: { id: string; displayName: string };
       owner: { memberID: string; role: string };
       device: { id: string; deviceToken: string };
-      plan: { accessSource: string; entitlements: { employeeLimit: number } };
+      plan: { accessSource: string; entitlements: { userLimit: number } };
       tokenIssued: boolean;
     }>();
     expect(receipt.registrationAttempt.status).toBe("active");
     expect(receipt.tenant.displayName).toContain("PFSS");
     expect(receipt.owner.role).toBe("owner");
     expect(receipt.plan.accessSource).toBe("betaGrant");
-    expect(receipt.plan.entitlements.employeeLimit).toBe(25);
+    expect(receipt.plan.entitlements.userLimit).toBe(5);
     expect(receipt.tokenIssued).toBe(true);
 
     const sessionResponse = await worker.fetch(new Request(
@@ -2458,5 +2513,141 @@ describe("membership authorization", () => {
       },
     ), env);
     expect(response.status).toBe(403);
+  });
+
+  it("reports server-owned entitlement usage and enforces employee limits", async () => {
+    const owner = await seedIdentity("Entitlement Limit");
+    await env.DB.prepare(
+      `UPDATE plan_allocations SET entitlements_json = ?1
+        WHERE tenant_id = ?2 AND revoked_at IS NULL`,
+    ).bind(JSON.stringify({
+      userLimit: 2,
+      deviceLimit: 2,
+      recordLimits: { leads: 1, customers: 1, jobs: 1 },
+      modules: ["service"],
+    }), owner.tenantID).run();
+
+    const status = await worker.fetch(
+      request(owner, "/v1/account/entitlements"), env,
+    );
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({
+      planCode: "test-full",
+      accessSource: "internalTesting",
+      accessMode: "full",
+      entitlements: { userLimit: 2, deviceLimit: 2 },
+      usage: { users: 1, employees: 0, devices: 1, owners: 1 },
+    });
+
+    const invite = () => worker.fetch(request(owner, "/v1/invitations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ displayName: "Limited Employee", role: "member" }),
+    }), env);
+    expect((await invite()).status).toBe(201);
+    const rejected = await invite();
+    expect(rejected.status).toBe(409);
+    expect(await rejected.json()).toEqual({
+      error: "user_limit_reached",
+      upgradeRecommended: true,
+    });
+  });
+
+  it("limits new records while permitting updates to existing records", async () => {
+    const owner = await seedIdentity("Record Limits");
+    await env.DB.prepare(
+      `UPDATE plan_allocations SET entitlements_json = ?1
+        WHERE tenant_id = ?2 AND revoked_at IS NULL`,
+    ).bind(JSON.stringify({
+      userLimit: 5,
+      deviceLimit: 10,
+      recordLimits: { leads: 1, customers: 1, jobs: 1 },
+      modules: ["sales", "service"],
+    }), owner.tenantID).run();
+    const operation = (entityID: string, baseRevision?: string) => ({
+      id: crypto.randomUUID(),
+      idempotencyKey: `lead-${crypto.randomUUID()}`,
+      type: "recordMutation",
+      entityType: "lead",
+      entityID,
+      actionName: "upsertRecord",
+      baseRevision: baseRevision ?? null,
+      payload: { schemaVersion: 1, contentType: "test", body: "e30=" },
+      createdAt: new Date().toISOString(),
+    });
+    const submit = (value: ReturnType<typeof operation>) => worker.fetch(
+      request(owner, "/v1/operations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(value),
+      }), env,
+    );
+
+    const leadID = crypto.randomUUID();
+    const created = await submit(operation(leadID));
+    expect(created.status).toBe(201);
+    const revision = (await created.json<{ revision: string }>()).revision;
+
+    const limited = await submit(operation(crypto.randomUUID()));
+    expect(limited.status).toBe(409);
+    expect(await limited.json()).toEqual({
+      error: "lead_limit_reached",
+      limit: 1,
+      upgradeRecommended: true,
+    });
+
+    expect((await submit(operation(leadID, revision))).status).toBe(201);
+  });
+
+  it("keeps past-due paid companies readable while blocking account growth", async () => {
+    const owner = await seedIdentity("Past Due");
+    const now = new Date().toISOString();
+    const subscriptionID = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE plan_allocations SET revoked_at = ?1 WHERE tenant_id = ?2",
+      ).bind(now, owner.tenantID),
+      env.DB.prepare(
+        `INSERT INTO subscription_accounts
+          (id, tenant_id, provider_key, provider_customer_reference, status,
+           created_at, updated_at)
+         VALUES (?1, ?2, 'appStore', ?3, 'pastDue', ?4, ?4)`,
+      ).bind(subscriptionID, owner.tenantID, crypto.randomUUID(), now),
+      env.DB.prepare(
+        `INSERT INTO plan_allocations
+          (id, tenant_id, subscription_account_id, access_source,
+           source_reference, plan_code, entitlements_json, effective_at,
+           created_at)
+         VALUES (?1, ?2, ?3, 'appStoreSubscription', ?4, 'team-annual',
+                 ?5, ?6, ?6)`,
+      ).bind(
+        crypto.randomUUID(), owner.tenantID, subscriptionID,
+        crypto.randomUUID(), JSON.stringify({
+          userLimit: 25,
+          deviceLimit: 40,
+          recordLimits: { leads: 1_000, customers: 1_000, jobs: 3_000 },
+          modules: ["sales", "service", "dispatch", "reporting"],
+        }), now,
+      ),
+    ]);
+
+    const status = await worker.fetch(
+      request(owner, "/v1/account/entitlements"), env,
+    );
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({
+      subscriptionStatus: "pastDue",
+      accessMode: "readOnly",
+    });
+    const invitation = await worker.fetch(request(owner, "/v1/invitations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ displayName: "Blocked Growth", role: "member" }),
+    }), env);
+    expect(invitation.status).toBe(402);
+    expect(await invitation.json()).toEqual({
+      error: "account_read_only",
+      subscriptionStatus: "pastDue",
+    });
   });
 });

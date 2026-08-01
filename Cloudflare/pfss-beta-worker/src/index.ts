@@ -6,6 +6,11 @@ import {
   WorkOSManagedOwnerIdentityProvider,
   managedIdentityConfigurationFromBindings,
 } from "./account-identity-provider";
+import {
+  AccountEntitlementSnapshot,
+  limitReached,
+  resolveAccountEntitlements,
+} from "./account-entitlements";
 
 interface Env extends ManagedIdentityConfigurationBindings {
   DB: D1Database;
@@ -137,6 +142,51 @@ function bearer(request: Request): string | null {
   return authorization.startsWith("Bearer ")
     ? authorization.slice("Bearer ".length).trim()
     : null;
+}
+
+async function requireFullAccountAccess(
+  env: Env,
+  tenantID: string,
+): Promise<AccountEntitlementSnapshot | Response> {
+  const snapshot = await resolveAccountEntitlements(env.DB, tenantID);
+  if (!snapshot) return json({ error: "account_entitlements_unavailable" }, 403);
+  if (snapshot.accessMode === "readOnly") {
+    return json({
+      error: "account_read_only",
+      subscriptionStatus: snapshot.subscriptionStatus,
+    }, 402);
+  }
+  if (snapshot.accessMode === "blocked") {
+    return json({
+      error: "account_access_blocked",
+      subscriptionStatus: snapshot.subscriptionStatus,
+    }, 403);
+  }
+  return snapshot;
+}
+
+async function activeResourceCount(
+  env: Env,
+  tenantID: string,
+  resource: "devices" | "users" | "employees" | "owners",
+): Promise<number> {
+  const sql = resource === "devices"
+    ? `SELECT COUNT(*) AS count FROM devices
+        WHERE tenant_id = ?1 AND revoked_at IS NULL`
+    : resource === "users"
+    ? `SELECT COUNT(*) AS count FROM tenant_members
+        WHERE tenant_id = ?1
+          AND status IN ('invited', 'active', 'suspended')`
+    : resource === "owners"
+    ? `SELECT COUNT(*) AS count FROM tenant_members
+        WHERE tenant_id = ?1 AND role = 'owner'
+          AND status IN ('invited', 'active', 'suspended')`
+    : `SELECT COUNT(*) AS count FROM tenant_members
+        WHERE tenant_id = ?1 AND role != 'owner'
+          AND status IN ('invited', 'active', 'suspended')`;
+  const row = await env.DB.prepare(sql).bind(tenantID)
+    .first<{ count: number }>();
+  return row?.count ?? 0;
 }
 
 const forbiddenRegistrationKeys = new Set([
@@ -456,6 +506,8 @@ async function signInExistingOwner(
     return json({ error: "owner_company_selection_required" }, 409);
   }
   const membership = memberships.results[0];
+  const accountAccess = await requireFullAccountAccess(env, membership.tenantID);
+  if (accountAccess instanceof Response) return accountAccess;
   const deviceToken = `${crypto.randomUUID()}${crypto.randomUUID()}`;
   const tokenDigest = await sha256(deviceToken);
   const existingDevice = await env.DB.prepare(
@@ -463,10 +515,8 @@ async function signInExistingOwner(
       WHERE tenant_id = ?1 AND id = ?2`,
   ).bind(membership.tenantID, deviceID).first<{ memberID: string }>();
   if (!existingDevice) {
-    const count = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM devices WHERE tenant_id = ?1 AND revoked_at IS NULL",
-    ).bind(membership.tenantID).first<{ count: number }>();
-    if ((count?.count ?? 0) >= stagingRegistrationEntitlements.deviceLimit) {
+    const count = await activeResourceCount(env, membership.tenantID, "devices");
+    if (limitReached(count, accountAccess.entitlements.deviceLimit)) {
       return json({ error: "device_limit_reached" }, 409);
     }
   }
@@ -568,6 +618,12 @@ async function createOwnerInvitation(
   identity: DeviceIdentity,
 ): Promise<Response> {
   if (identity.role !== "owner") return json({ error: "owner_required" }, 403);
+  const accountAccess = await requireFullAccountAccess(env, identity.tenantID);
+  if (accountAccess instanceof Response) return accountAccess;
+  const userCount = await activeResourceCount(env, identity.tenantID, "users");
+  if (limitReached(userCount, accountAccess.entitlements.userLimit)) {
+    return json({ error: "user_limit_reached", upgradeRecommended: true }, 409);
+  }
   const body = await request.json<Record<string, unknown>>();
   const displayName = nonemptyString(body.displayName, 1, 100);
   const email = nonemptyString(body.email, 3, 320)?.trim().toLowerCase();
@@ -687,15 +743,15 @@ async function acceptOwnerInvitation(
         AND status != 'revoked'`,
   ).bind(invitation.tenantID, authorization.subjectID).first();
   if (existingMembership) return json({ error: "owner_already_exists" }, 409);
+  const accountAccess = await requireFullAccountAccess(env, invitation.tenantID);
+  if (accountAccess instanceof Response) return accountAccess;
   const existingDevice = await env.DB.prepare(
     `SELECT member_id AS memberID FROM devices
       WHERE tenant_id = ?1 AND id = ?2`,
   ).bind(invitation.tenantID, deviceID).first<{ memberID: string }>();
   if (!existingDevice) {
-    const count = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM devices WHERE tenant_id = ?1 AND revoked_at IS NULL",
-    ).bind(invitation.tenantID).first<{ count: number }>();
-    if ((count?.count ?? 0) >= stagingRegistrationEntitlements.deviceLimit) {
+    const count = await activeResourceCount(env, invitation.tenantID, "devices");
+    if (limitReached(count, accountAccess.entitlements.deviceLimit)) {
       return json({ error: "device_limit_reached" }, 409);
     }
   }
@@ -875,14 +931,14 @@ async function redeemOwnerRecoveryCode(
     tenantName: string;
   }>();
   if (!method) return json({ error: "invalid_or_used_recovery_code" }, 401);
+  const accountAccess = await requireFullAccountAccess(env, method.tenantID);
+  if (accountAccess instanceof Response) return accountAccess;
   const existing = await env.DB.prepare(
     "SELECT member_id AS memberID FROM devices WHERE tenant_id = ?1 AND id = ?2",
   ).bind(method.tenantID, deviceID).first<{ memberID: string }>();
   if (!existing) {
-    const count = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM devices WHERE tenant_id = ?1 AND revoked_at IS NULL",
-    ).bind(method.tenantID).first<{ count: number }>();
-    if ((count?.count ?? 0) >= stagingRegistrationEntitlements.deviceLimit) {
+    const count = await activeResourceCount(env, method.tenantID, "devices");
+    if (limitReached(count, accountAccess.entitlements.deviceLimit)) {
       return json({ error: "device_limit_reached" }, 409);
     }
   }
@@ -1214,9 +1270,9 @@ async function startAccountRegistration(
 }
 
 const stagingRegistrationEntitlements = {
-  employeeLimit: 25,
-  deviceLimit: 40,
-  ownerLimit: 4,
+  userLimit: 5,
+  deviceLimit: 10,
+  recordLimits: { leads: 1_000, customers: 1_000, jobs: 3_000 },
   modules: ["sales", "service", "dispatch", "reporting"],
 };
 
@@ -1318,7 +1374,7 @@ async function completeAccountRegistration(
         (id, tenant_id, access_source, source_reference, plan_code,
          entitlements_json, effective_at, expires_at, granted_by_subject_id,
          grant_reason, created_at)
-       SELECT ?2, ?3, 'betaGrant', ?1, requested_plan_code, ?4, ?5, ?6,
+       SELECT ?2, ?3, 'betaGrant', ?1, 'beta-90-day', ?4, ?5, ?6,
               subject_id, 'Phase 17 staging registration', ?5
          FROM account_registration_attempts
         WHERE id = ?1 AND status = 'provisioning' AND tenant_id = ?3`,
@@ -1400,7 +1456,7 @@ async function completeAccountRegistration(
       enrolledAt: now,
     },
     plan: {
-      code: attempt.requestedPlanCode,
+      code: "beta-90-day",
       accessSource: "betaGrant",
       entitlements: stagingRegistrationEntitlements,
     },
@@ -1671,6 +1727,8 @@ async function resolveSynchronizationConflict(
   conflictID: string,
 ): Promise<Response> {
   if (!canResolveConflicts(identity)) return json({ error: "forbidden" }, 403);
+  const accountAccess = await requireFullAccountAccess(env, identity.tenantID);
+  if (accountAccess instanceof Response) return accountAccess;
   const body = await request.json<{
     resolution?: string;
     reason?: string;
@@ -1994,11 +2052,18 @@ async function enroll(request: Request, env: Env): Promise<Response> {
   ).bind(codeHash, now).first<{ tenantID: string; memberID: string }>();
   if (!code) return json({ error: "invalid_or_expired_enrollment_code" }, 403);
 
+  const accountAccess = await requireFullAccountAccess(env, code.tenantID);
+  if (accountAccess instanceof Response) return accountAccess;
+
   const existingDevice = await env.DB.prepare(
     `SELECT 1 FROM devices WHERE tenant_id = ?1 AND id = ?2`,
   ).bind(code.tenantID, body.deviceID).first();
   if (existingDevice) {
     return json({ error: "device_identifier_in_use" }, 409);
+  }
+  const deviceCount = await activeResourceCount(env, code.tenantID, "devices");
+  if (limitReached(deviceCount, accountAccess.entitlements.deviceLimit)) {
+    return json({ error: "device_limit_reached" }, 409);
   }
 
   const deviceToken = `${crypto.randomUUID()}${crypto.randomUUID()}`;
@@ -2075,6 +2140,24 @@ function session(identity: DeviceIdentity): Response {
   });
 }
 
+async function accountEntitlementStatus(
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  const snapshot = await resolveAccountEntitlements(env.DB, identity.tenantID);
+  if (!snapshot) return json({ error: "account_entitlements_unavailable" }, 404);
+  const [users, employees, devices, owners] = await Promise.all([
+    activeResourceCount(env, identity.tenantID, "users"),
+    activeResourceCount(env, identity.tenantID, "employees"),
+    activeResourceCount(env, identity.tenantID, "devices"),
+    activeResourceCount(env, identity.tenantID, "owners"),
+  ]);
+  return json({
+    ...snapshot,
+    usage: { users, employees, devices, owners },
+  });
+}
+
 async function expireTenantInvitations(
   env: Env,
   tenantID: string,
@@ -2130,6 +2213,8 @@ async function createInvitation(
   identity: DeviceIdentity,
 ): Promise<Response> {
   if (!canManageMembers(identity)) return json({ error: "forbidden" }, 403);
+  const accountAccess = await requireFullAccountAccess(env, identity.tenantID);
+  if (accountAccess instanceof Response) return accountAccess;
   const body = await request.json<{
     displayName?: string;
     role?: TenantRole;
@@ -2145,6 +2230,10 @@ async function createInvitation(
     return json({ error: "forbidden" }, 403);
   }
   await expireTenantInvitations(env, identity.tenantID);
+  const userCount = await activeResourceCount(env, identity.tenantID, "users");
+  if (limitReached(userCount, accountAccess.entitlements.userLimit)) {
+    return json({ error: "user_limit_reached", upgradeRecommended: true }, 409);
+  }
   if (employeeID) {
     const approvedRole = await approvedTenantRoleForEmployee(
       env,
@@ -2570,6 +2659,8 @@ async function acceptOperation(
   env: Env,
   identity: DeviceIdentity,
 ): Promise<Response> {
+  const accountAccess = await requireFullAccountAccess(env, identity.tenantID);
+  if (accountAccess instanceof Response) return accountAccess;
   const operation = await request.json<Record<string, unknown>>();
   const id = String(operation.id ?? "");
   const idempotencyKey = String(operation.idempotencyKey ?? "");
@@ -2638,6 +2729,26 @@ async function acceptOperation(
       operationJSON: string;
       updatedByDeviceID: string;
     }>();
+    if (!current && ["lead", "customer", "job"].includes(entityType)) {
+      const limit = entityType === "lead"
+        ? accountAccess.entitlements.recordLimits.leads
+        : entityType === "customer"
+        ? accountAccess.entitlements.recordLimits.customers
+        : accountAccess.entitlements.recordLimits.jobs;
+      if (limit !== null) {
+        const count = await env.DB.prepare(
+          `SELECT COUNT(*) AS count FROM synchronized_records
+            WHERE tenant_id = ?1 AND entity_type = ?2`,
+        ).bind(identity.tenantID, entityType).first<{ count: number }>();
+        if (limitReached(count?.count ?? 0, limit)) {
+          return json({
+            error: `${entityType}_limit_reached`,
+            limit,
+            upgradeRecommended: true,
+          }, 409);
+        }
+      }
+    }
     const baseRevision = operation.baseRevision == null
       ? null
       : String(operation.baseRevision);
@@ -2934,6 +3045,8 @@ async function publishSynchronizationSnapshot(
   identity: DeviceIdentity,
 ): Promise<Response> {
   if (identity.role !== "owner") return json({ error: "forbidden" }, 403);
+  const accountAccess = await requireFullAccountAccess(env, identity.tenantID);
+  if (accountAccess instanceof Response) return accountAccess;
   if (request.headers.get("content-type") !== archiveMediaType) {
     return json({ error: "unsupported_archive_type" }, 415);
   }
@@ -2981,6 +3094,8 @@ async function uploadBackup(
   identity: DeviceIdentity,
 ): Promise<Response> {
   if (identity.role !== "owner") return json({ error: "forbidden" }, 403);
+  const accountAccess = await requireFullAccountAccess(env, identity.tenantID);
+  if (accountAccess instanceof Response) return accountAccess;
   if (request.headers.get("content-type") !== archiveMediaType) {
     return json({ error: "unsupported_archive_type" }, 415);
   }
@@ -3121,6 +3236,9 @@ export default {
 
       if (request.method === "GET" && url.pathname === "/v1/session") {
         return session(identity);
+      }
+      if (request.method === "GET" && url.pathname === "/v1/account/entitlements") {
+        return accountEntitlementStatus(env, identity);
       }
       if (
         request.method === "GET" &&

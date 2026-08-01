@@ -833,7 +833,7 @@ private struct PFSSOwnerRegistrationStartView: View {
                         displayName: companyName,
                         timeZoneID: TimeZone.current.identifier
                     ),
-                    requestedPlanCode: "team-annual",
+                    requestedPlanCode: "beta-90-day",
                     consent: PFSSRegistrationConsent(
                         termsVersion: "terms-2026-07",
                         privacyVersion: "privacy-2026-07",

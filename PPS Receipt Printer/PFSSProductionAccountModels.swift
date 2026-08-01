@@ -45,6 +45,47 @@ enum PFSSAccountAccessSource: String, Codable, CaseIterable {
     case promotionalGrant
 }
 
+enum PFSSAccountAccessMode: String, Codable, CaseIterable {
+    case full
+    case readOnly
+    case blocked
+}
+
+struct PFSSAccountEntitlements: Codable, Equatable {
+    let userLimit: Int
+    let deviceLimit: Int
+    let recordLimits: PFSSAccountRecordLimits
+    let modules: [String]
+}
+
+struct PFSSAccountRecordLimits: Codable, Equatable {
+    let leads: Int?
+    let customers: Int?
+    let jobs: Int?
+}
+
+struct PFSSAccountEntitlementUsage: Codable, Equatable {
+    let users: Int
+    let employees: Int
+    let devices: Int
+    let owners: Int
+}
+
+/// A server-resolved account decision. The app presents this receipt but never
+/// promotes its own plan, changes limits, or infers authority from StoreKit.
+struct PFSSAccountEntitlementSnapshot: Codable, Equatable {
+    let planCode: String
+    let accessSource: PFSSAccountAccessSource
+    let subscriptionStatus: PFSSSubscriptionLifecycleStatus
+    let accessMode: PFSSAccountAccessMode
+    let entitlements: PFSSAccountEntitlements
+    let effectiveAt: Date
+    let expiresAt: Date?
+    let usage: PFSSAccountEntitlementUsage
+
+    var permitsChanges: Bool { accessMode == .full }
+}
+
 enum PFSSOwnerOperationalRole: String, Codable, CaseIterable, Identifiable {
     case salesperson
     case technician
