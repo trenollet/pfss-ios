@@ -2536,7 +2536,10 @@ describe("membership authorization", () => {
       accessSource: "internalTesting",
       accessMode: "full",
       entitlements: { userLimit: 2, deviceLimit: 2 },
-      usage: { users: 1, employees: 0, devices: 1, owners: 1 },
+      usage: {
+        users: 1, employees: 0, devices: 1, owners: 1,
+        leads: 0, customers: 0, jobs: 0,
+      },
     });
 
     const invite = () => worker.fetch(request(owner, "/v1/invitations", {
@@ -2551,6 +2554,39 @@ describe("membership authorization", () => {
       error: "user_limit_reached",
       upgradeRecommended: true,
     });
+  });
+
+  it("accepts Apple-signed transaction evidence without granting client authority", async () => {
+    const owner = await seedIdentity("App Store Evidence");
+    const signedTransaction = `${"a".repeat(24)}.${"b".repeat(80)}.${"c".repeat(64)}`;
+    const submit = () => worker.fetch(request(
+      owner,
+      "/v1/account/subscriptions/app-store/transactions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          signedTransaction,
+          planCode: "base-monthly",
+          productID: "com.patriot.pfss.subscription.base.monthly",
+        }),
+      },
+    ), env);
+
+    const accepted = await submit();
+    expect(accepted.status).toBe(202);
+    const receipt = await accepted.json<{ evidenceID: string; status: string }>();
+    expect(receipt.status).toBe("pendingVerification");
+
+    const duplicate = await submit();
+    expect(duplicate.status).toBe(200);
+    expect(await duplicate.json()).toEqual(receipt);
+
+    const allocation = await env.DB.prepare(
+      `SELECT access_source AS accessSource FROM plan_allocations
+        WHERE tenant_id = ?1 AND revoked_at IS NULL`,
+    ).bind(owner.tenantID).first<{ accessSource: string }>();
+    expect(allocation?.accessSource).toBe("internalTesting");
   });
 
   it("limits new records while permitting updates to existing records", async () => {

@@ -189,6 +189,18 @@ async function activeResourceCount(
   return row?.count ?? 0;
 }
 
+async function synchronizedRecordCount(
+  env: Env,
+  tenantID: string,
+  entityType: "lead" | "customer" | "job",
+): Promise<number> {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS count FROM synchronized_records
+      WHERE tenant_id = ?1 AND entity_type = ?2`,
+  ).bind(tenantID, entityType).first<{ count: number }>();
+  return row?.count ?? 0;
+}
+
 const forbiddenRegistrationKeys = new Set([
   "tenantid", "tenant", "role", "ownerrole", "price", "amount",
   "entitlements", "limits", "databaseid", "databasename", "bucketname",
@@ -2146,16 +2158,88 @@ async function accountEntitlementStatus(
 ): Promise<Response> {
   const snapshot = await resolveAccountEntitlements(env.DB, identity.tenantID);
   if (!snapshot) return json({ error: "account_entitlements_unavailable" }, 404);
-  const [users, employees, devices, owners] = await Promise.all([
+  const [users, employees, devices, owners, leads, customers, jobs] =
+    await Promise.all([
     activeResourceCount(env, identity.tenantID, "users"),
     activeResourceCount(env, identity.tenantID, "employees"),
     activeResourceCount(env, identity.tenantID, "devices"),
     activeResourceCount(env, identity.tenantID, "owners"),
+    synchronizedRecordCount(env, identity.tenantID, "lead"),
+    synchronizedRecordCount(env, identity.tenantID, "customer"),
+    synchronizedRecordCount(env, identity.tenantID, "job"),
   ]);
   return json({
     ...snapshot,
-    usage: { users, employees, devices, owners },
+    usage: { users, employees, devices, owners, leads, customers, jobs },
   });
+}
+
+const appStoreProducts = new Map([
+  ["base-monthly", "com.patriot.pfss.subscription.base.monthly"],
+  ["pro-monthly", "com.patriot.pfss.subscription.pro.monthly"],
+  ["expert-monthly", "com.patriot.pfss.subscription.expert.monthly"],
+]);
+
+async function submitAppStoreTransaction(
+  request: Request,
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  if (identity.role !== "owner") return json({ error: "owner_required" }, 403);
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json<Record<string, unknown>>();
+  } catch {
+    return json({ error: "invalid_json" }, 400);
+  }
+  const signedTransaction = nonemptyString(body.signedTransaction, 64, 32_768);
+  const planCode = nonemptyString(body.planCode, 3, 64);
+  const productID = nonemptyString(body.productID, 3, 255);
+  if (!signedTransaction || !planCode || !productID) {
+    return json({ error: "invalid_app_store_transaction" }, 400);
+  }
+  if (appStoreProducts.get(planCode) !== productID) {
+    return json({ error: "app_store_product_plan_mismatch" }, 400);
+  }
+  const jwsParts = signedTransaction.split(".");
+  if (
+    jwsParts.length !== 3 ||
+    jwsParts.some((part) => !/^[A-Za-z0-9_-]+$/.test(part))
+  ) {
+    return json({ error: "invalid_app_store_jws" }, 400);
+  }
+
+  const digest = await sha256(signedTransaction);
+  const existing = await env.DB.prepare(
+    `SELECT id, status FROM app_store_transaction_evidence
+      WHERE signed_transaction_sha256 = ?1 AND tenant_id = ?2`,
+  ).bind(digest, identity.tenantID).first<{
+    id: string;
+    status: "pendingVerification" | "verified" | "rejected";
+  }>();
+  if (existing) {
+    return json({ evidenceID: existing.id, status: existing.status });
+  }
+
+  const evidenceID = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO app_store_transaction_evidence
+       (id, tenant_id, submitted_by_member_id, submitted_by_device_id,
+        plan_code, product_id, signed_transaction,
+        signed_transaction_sha256, status, submitted_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pendingVerification', ?9)`,
+  ).bind(
+    evidenceID,
+    identity.tenantID,
+    identity.memberID,
+    identity.deviceID,
+    planCode,
+    productID,
+    signedTransaction,
+    digest,
+    new Date().toISOString(),
+  ).run();
+  return json({ evidenceID, status: "pendingVerification" }, 202);
 }
 
 async function expireTenantInvitations(
@@ -3239,6 +3323,12 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/v1/account/entitlements") {
         return accountEntitlementStatus(env, identity);
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/account/subscriptions/app-store/transactions"
+      ) {
+        return submitAppStoreTransaction(request, env, identity);
       }
       if (
         request.method === "GET" &&

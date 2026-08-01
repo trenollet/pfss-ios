@@ -257,9 +257,11 @@ not expand the production account implementation boundary.
   customer, and job limits per ADR-005.
 - [ ] Approve trial length, billing-retry grace duration, cancellation effective
   date, and final post-cancellation data-retention policy.
-- [ ] Add the App Store transaction and notification adapter that creates and
+- [ ] Complete the App Store transaction and notification adapter that creates and
   advances paid allocations using Apple's verified server evidence.
-- [ ] Present plan, usage, and safe read-only account guidance in Owner Settings.
+- [x] Accept locally verified StoreKit 2 transaction JWS evidence into a durable,
+  idempotent server inbox without granting client-authored access.
+- [x] Present plan, usage, and safe read-only account guidance in Owner Settings.
 
 ## Phase Start Record
 
@@ -392,5 +394,13 @@ not expand the production account implementation boundary.
   read-only, or blocked access from their server lifecycle state; complimentary
   sources remain explicit grants. Added an authenticated entitlement-and-usage
   endpoint and regression coverage for employee-limit rejection and past-due
-  read-only behavior. Commercial plan names, final limits, grace timing, and
-  App Store transaction ingestion remain pending product approval.
+  read-only behavior. Billing-retry grace timing, cancellation retention, and
+  verified App Store lifecycle processing remain pending.
+- 2026-08-01: Connected the server-resolved plan receipt to Owner Settings with
+  combined-user, device, lead, customer, and job usage. Archived synchronized
+  records remain counted, unlimited limits render explicitly, and read-only or
+  blocked accounts receive safe guidance. Added the StoreKit 2 client adapter
+  and migration `0014_app_store_transaction_evidence.sql`; locally verified
+  Apple JWS evidence is accepted idempotently as pending verification and cannot
+  change an allocation. Apple server signature verification, notifications V2,
+  App Store Connect products, and paid-plan activation remain the next gate.

@@ -69,6 +69,9 @@ struct PFSSAccountEntitlementUsage: Codable, Equatable {
     let employees: Int
     let devices: Int
     let owners: Int
+    let leads: Int
+    let customers: Int
+    let jobs: Int
 }
 
 /// A server-resolved account decision. The app presents this receipt but never

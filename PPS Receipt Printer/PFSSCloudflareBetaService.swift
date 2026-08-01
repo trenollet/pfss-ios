@@ -422,6 +422,8 @@ final class PFSSCloudflareBetaManager: ObservableObject {
     @Published private(set) var state: PFSSCloudflareBetaState
     @Published private(set) var backups: [PFSSCloudflareBackup] = []
     @Published private(set) var currentSession: PFSSCloudflareSession?
+    @Published private(set) var accountEntitlementSnapshot:
+        PFSSAccountEntitlementSnapshot?
     @Published private(set) var members: [PFSSTenantMember] = []
     @Published private(set) var devices: [PFSSTenantDevice] = []
 
@@ -548,6 +550,7 @@ final class PFSSCloudflareBetaManager: ObservableObject {
         credentialStore.delete()
         backups = []
         currentSession = nil
+        accountEntitlementSnapshot = nil
         members = []
         devices = []
         state = savedEndpoint.isEmpty ? .notConfigured : .notEnrolled
@@ -559,6 +562,7 @@ final class PFSSCloudflareBetaManager: ObservableObject {
         }
         backups = []
         currentSession = nil
+        accountEntitlementSnapshot = nil
         members = []
         devices = []
         state = .notEnrolled
@@ -574,10 +578,45 @@ final class PFSSCloudflareBetaManager: ObservableObject {
         )
     }
 
+    func refreshAccountEntitlements() async throws {
+        guard currentSession?.member.role == .owner else {
+            accountEntitlementSnapshot = nil
+            throw PFSSCloudflareBetaError.server("owner_required")
+        }
+        let data = try await perform(
+            try request(path: "/v1/account/entitlements", authenticated: true)
+        )
+        accountEntitlementSnapshot = try Self.decoder.decode(
+            PFSSAccountEntitlementSnapshot.self,
+            from: data
+        )
+    }
+
+    func submitAppStoreTransaction(
+        _ evidence: PFSSAppStoreTransactionEvidence
+    ) async throws -> PFSSAppStoreTransactionReceipt {
+        var request = try request(
+            path: "/v1/account/subscriptions/app-store/transactions",
+            method: "POST",
+            authenticated: true
+        )
+        request.httpBody = try Self.encoder.encode(evidence)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        return try Self.decoder.decode(
+            PFSSAppStoreTransactionReceipt.self,
+            from: try await perform(request)
+        )
+    }
+
     func refresh() async throws {
         state = .working
         do {
             try await refreshSession()
+            if currentSession?.member.role == .owner {
+                try await refreshAccountEntitlements()
+            } else {
+                accountEntitlementSnapshot = nil
+            }
             if currentSession?.member.role.canManageRecovery == true {
                 try await refreshBackups()
             } else {

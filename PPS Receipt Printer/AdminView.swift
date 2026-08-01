@@ -193,6 +193,22 @@ struct AdminView: View {
 
                 if let member = cloudManager.currentSession?.member,
                    member.role == .owner {
+                    Section("Plan & Usage") {
+                        NavigationLink {
+                            PFSSPlanUsageView(manager: cloudManager)
+                        } label: {
+                            HStack {
+                                Label("Plan & Usage", systemImage: "chart.bar.doc.horizontal")
+                                Spacer()
+                                if let snapshot = cloudManager.accountEntitlementSnapshot {
+                                    Text(snapshot.planCode == "beta-90-day" ? "Beta Test" : snapshot.planCode)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+
                     Section("Account Security") {
                         NavigationLink {
                             PFSSOwnerAccountSecurityView(
@@ -230,6 +246,9 @@ struct AdminView: View {
         .task {
             if cloudManager.isEnrolled {
                 try? await cloudManager.refreshSession()
+                if cloudManager.currentSession?.member.role == .owner {
+                    try? await cloudManager.refreshAccountEntitlements()
+                }
             }
         }
         .navigationTitle("Settings")
