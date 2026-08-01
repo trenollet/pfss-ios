@@ -142,6 +142,7 @@ final class PFSSProductionAccountModelsTests: XCTestCase {
     func testEntitlementSnapshotPreservesServerAuthority() throws {
         let json = """
         {
+          "appAccountToken": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           "planCode": "beta-full",
           "accessSource": "betaGrant",
           "subscriptionStatus": "active",
@@ -158,7 +159,10 @@ final class PFSSProductionAccountModelsTests: XCTestCase {
           },
           "effectiveAt": "2027-01-15T08:00:00Z",
           "expiresAt": null,
-          "usage": { "users": 4, "employees": 3, "devices": 4, "owners": 1 }
+          "usage": {
+            "users": 4, "employees": 3, "devices": 4, "owners": 1,
+            "leads": 20, "customers": 12, "jobs": 40
+          }
         }
         """
         let decoder = JSONDecoder()
@@ -175,6 +179,7 @@ final class PFSSProductionAccountModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.usage.devices, 4)
 
         let readOnly = PFSSAccountEntitlementSnapshot(
+            appAccountToken: snapshot.appAccountToken,
             planCode: snapshot.planCode,
             accessSource: .appStoreSubscription,
             subscriptionStatus: .pastDue,

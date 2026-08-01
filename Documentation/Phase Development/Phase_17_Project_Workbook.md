@@ -261,6 +261,9 @@ not expand the production account implementation boundary.
   advances paid allocations using Apple's verified server evidence.
 - [x] Accept locally verified StoreKit 2 transaction JWS evidence into a durable,
   idempotent server inbox without granting client-authored access.
+- [x] Add Apple-rooted server signature verification, strict bundle,
+  environment, product, and tenant-token validation, and an idempotent App Store
+  Server Notifications V2 endpoint for the sandbox adapter.
 - [x] Present plan, usage, and safe read-only account guidance in Owner Settings.
 
 ## Phase Start Record
@@ -402,5 +405,13 @@ not expand the production account implementation boundary.
   blocked accounts receive safe guidance. Added the StoreKit 2 client adapter
   and migration `0014_app_store_transaction_evidence.sql`; locally verified
   Apple JWS evidence is accepted idempotently as pending verification and cannot
-  change an allocation. Apple server signature verification, notifications V2,
-  App Store Connect products, and paid-plan activation remain the next gate.
+  change an allocation. Apple verification and lifecycle processing follow in
+  the next implementation entry.
+- 2026-08-01: Added Apple's official App Store Server Library and pinned Apple
+  Root CA G2/G3 trust anchors. Verified device transactions and Notification V2
+  events now reconcile server-owned subscription accounts and paid allocations
+  using the tenant UUID as `appAccountToken`. Invalid signatures, unpublished
+  products, bundle/environment mismatches, and cross-tenant tokens are rejected.
+  Migration `0015_app_store_subscription_lifecycle.sql` adds durable lifecycle
+  and notification state. The remaining external gate is creating the sandbox
+  products in App Store Connect and registering the notification URL.

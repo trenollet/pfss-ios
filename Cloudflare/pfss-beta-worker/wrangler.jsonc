@@ -3,6 +3,7 @@
   "name": "pfss-beta-api",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
+  "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "triggers": {
     "crons": ["17 3 * * *"]
@@ -12,7 +13,9 @@
     "WORKOS_ENVIRONMENT": "staging",
     "WORKOS_API_BASE_URL": "https://api.workos.com",
     "WORKOS_ISSUER": "https://api.workos.com/",
-    "WORKOS_REDIRECT_URIS": "[\"https://auth-staging.patriot-ok.com/callback/\"]"
+    "WORKOS_REDIRECT_URIS": "[\"https://auth-staging.patriot-ok.com/callback/\"]",
+    "APP_STORE_ENVIRONMENT": "sandbox",
+    "APP_STORE_BUNDLE_ID": "com.patriot.PPS-Receipt-Printer"
   },
   "d1_databases": [
     {

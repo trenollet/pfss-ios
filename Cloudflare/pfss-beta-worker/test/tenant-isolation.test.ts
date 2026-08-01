@@ -13,6 +13,8 @@ import {
   managedIdentityConfigurationFromBindings,
   validateManagedIdentityConfiguration,
 } from "../src/account-identity-provider";
+import { normalizedAppStoreTransaction } from
+  "../src/app-store-subscription-provider";
 
 interface SeededIdentity {
   tenantID: string;
@@ -2556,7 +2558,7 @@ describe("membership authorization", () => {
     });
   });
 
-  it("accepts Apple-signed transaction evidence without granting client authority", async () => {
+  it("rejects unverified App Store evidence without granting client authority", async () => {
     const owner = await seedIdentity("App Store Evidence");
     const signedTransaction = `${"a".repeat(24)}.${"b".repeat(80)}.${"c".repeat(64)}`;
     const submit = () => worker.fetch(request(
@@ -2574,9 +2576,9 @@ describe("membership authorization", () => {
     ), env);
 
     const accepted = await submit();
-    expect(accepted.status).toBe(202);
+    expect(accepted.status).toBe(400);
     const receipt = await accepted.json<{ evidenceID: string; status: string }>();
-    expect(receipt.status).toBe("pendingVerification");
+    expect(receipt.status).toBe("rejected");
 
     const duplicate = await submit();
     expect(duplicate.status).toBe(200);
@@ -2587,6 +2589,22 @@ describe("membership authorization", () => {
         WHERE tenant_id = ?1 AND revoked_at IS NULL`,
     ).bind(owner.tenantID).first<{ accessSource: string }>();
     expect(allocation?.accessSource).toBe("internalTesting");
+  });
+
+  it("normalizes only the published PFSS App Store product claims", () => {
+    const tenantID = crypto.randomUUID();
+    const transaction = normalizedAppStoreTransaction({
+      transactionId: "200000000000001",
+      originalTransactionId: "200000000000000",
+      appAccountToken: tenantID,
+      productId: "com.patriot.pfss.subscription.pro.monthly",
+      purchaseDate: Date.now(),
+      expiresDate: Date.now() + 2_592_000_000,
+      environment: "Sandbox",
+    });
+    expect(transaction.planCode).toBe("pro-monthly");
+    expect(transaction.appAccountToken).toBe(tenantID);
+    expect(transaction.environment).toBe("sandbox");
   });
 
   it("limits new records while permitting updates to existing records", async () => {

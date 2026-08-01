@@ -11,8 +11,16 @@ import {
   limitReached,
   resolveAccountEntitlements,
 } from "./account-entitlements";
+import {
+  AppStoreConfigurationBindings,
+  AppStoreConfigurationError,
+  AppleAppStoreSubscriptionProvider,
+  VerifiedAppStoreTransaction,
+  appStoreConfigurationFromBindings,
+} from "./app-store-subscription-provider";
 
-interface Env extends ManagedIdentityConfigurationBindings {
+interface Env extends ManagedIdentityConfigurationBindings,
+  AppStoreConfigurationBindings {
   DB: D1Database;
   ARCHIVES: R2Bucket;
 }
@@ -2170,6 +2178,7 @@ async function accountEntitlementStatus(
   ]);
   return json({
     ...snapshot,
+    appAccountToken: identity.tenantID,
     usage: { users, employees, devices, owners, leads, customers, jobs },
   });
 }
@@ -2179,6 +2188,189 @@ const appStoreProducts = new Map([
   ["pro-monthly", "com.patriot.pfss.subscription.pro.monthly"],
   ["expert-monthly", "com.patriot.pfss.subscription.expert.monthly"],
 ]);
+
+async function appStoreProvider(
+  env: Env,
+): Promise<AppleAppStoreSubscriptionProvider> {
+  return AppleAppStoreSubscriptionProvider.create(
+    appStoreConfigurationFromBindings(env),
+  );
+}
+
+async function applyVerifiedAppStoreTransaction(
+  env: Env,
+  transaction: VerifiedAppStoreTransaction,
+  status: "active" | "pastDue" | "cancelled" | "suspended",
+  audit: {
+    eventType: string;
+    actorMemberID?: string;
+    actorDeviceID?: string;
+    notificationUUID?: string;
+  },
+): Promise<void> {
+  const tenant = await env.DB.prepare(
+    "SELECT id FROM tenants WHERE id = ?1",
+  ).bind(transaction.appAccountToken).first<{ id: string }>();
+  if (!tenant) throw new Error("app_store_tenant_not_found");
+  const plan = await env.DB.prepare(
+    `SELECT entitlements_json AS entitlementsJSON FROM plan_catalog
+      WHERE code = ?1 AND billing_mode = 'appStore'`,
+  ).bind(transaction.planCode).first<{ entitlementsJSON: string }>();
+  if (!plan) throw new Error("app_store_plan_not_found");
+  const now = new Date().toISOString();
+  const subscription = await env.DB.prepare(
+    `SELECT account.id, account.status, account.product_id AS productID,
+            allocation.source_reference AS transactionID,
+            allocation.plan_code AS planCode
+       FROM subscription_accounts AS account
+       LEFT JOIN plan_allocations AS allocation
+         ON allocation.subscription_account_id = account.id
+        AND allocation.revoked_at IS NULL
+      WHERE account.tenant_id = ?1
+      ORDER BY allocation.created_at DESC LIMIT 1`,
+  ).bind(tenant.id).first<{
+    id: string;
+    status: string;
+    productID: string | null;
+    transactionID: string | null;
+    planCode: string | null;
+  }>();
+  if (
+    subscription?.status === status &&
+    subscription.productID === transaction.productID &&
+    subscription.transactionID === transaction.transactionID &&
+    subscription.planCode === transaction.planCode
+  ) return;
+  const subscriptionID = subscription?.id ?? crypto.randomUUID();
+  const statements: D1PreparedStatement[] = [];
+  if (subscription) {
+    statements.push(env.DB.prepare(
+      `UPDATE subscription_accounts
+          SET provider_key = 'appStore', provider_customer_reference = ?1,
+              status = ?2, product_id = ?3, original_transaction_id = ?1,
+              app_store_environment = ?4, current_period_expires_at = ?5,
+              updated_at = ?6
+        WHERE id = ?7 AND tenant_id = ?8`,
+    ).bind(
+      transaction.originalTransactionID,
+      status,
+      transaction.productID,
+      transaction.environment,
+      transaction.expiresAt,
+      now,
+      subscriptionID,
+      tenant.id,
+    ));
+  } else {
+    statements.push(env.DB.prepare(
+      `INSERT INTO subscription_accounts
+        (id, tenant_id, provider_key, provider_customer_reference, status,
+         product_id, original_transaction_id, app_store_environment,
+         current_period_expires_at, created_at, updated_at)
+       VALUES (?1, ?2, 'appStore', ?3, ?4, ?5, ?3, ?6, ?7, ?8, ?8)`,
+    ).bind(
+      subscriptionID,
+      tenant.id,
+      transaction.originalTransactionID,
+      status,
+      transaction.productID,
+      transaction.environment,
+      transaction.expiresAt,
+      now,
+    ));
+  }
+  statements.push(
+    env.DB.prepare(
+      `UPDATE plan_allocations SET revoked_at = ?1
+        WHERE tenant_id = ?2 AND access_source = 'appStoreSubscription'
+          AND revoked_at IS NULL`,
+    ).bind(now, tenant.id),
+    env.DB.prepare(
+      `INSERT INTO plan_allocations
+        (id, tenant_id, subscription_account_id, access_source,
+         source_reference, plan_code, entitlements_json, effective_at,
+         created_at)
+       VALUES (?1, ?2, ?3, 'appStoreSubscription', ?4, ?5, ?6, ?7, ?8)`,
+    ).bind(
+      crypto.randomUUID(),
+      tenant.id,
+      subscriptionID,
+      transaction.transactionID,
+      transaction.planCode,
+      plan.entitlementsJSON,
+      transaction.purchasedAt,
+      now,
+    ),
+    accessAuditStatement(env, tenant.id, audit.eventType, {
+      actorMemberID: audit.actorMemberID,
+      actorDeviceID: audit.actorDeviceID,
+      metadata: {
+        planCode: transaction.planCode,
+        productID: transaction.productID,
+        environment: transaction.environment,
+        subscriptionStatus: status,
+        notificationUUID: audit.notificationUUID ?? "",
+      },
+      createdAt: now,
+    }),
+  );
+  await env.DB.batch(statements);
+}
+
+async function appStoreNotification(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  let body: { signedPayload?: unknown };
+  try {
+    body = await request.json<{ signedPayload?: unknown }>();
+  } catch {
+    return json({ error: "invalid_json" }, 400);
+  }
+  if (typeof body.signedPayload !== "string" || body.signedPayload.length > 65_536) {
+    return json({ error: "invalid_app_store_notification" }, 400);
+  }
+  try {
+    const notification = await (await appStoreProvider(env)).verifyNotification(
+      body.signedPayload,
+    );
+    const duplicate = await env.DB.prepare(
+      "SELECT notification_uuid FROM app_store_notification_events WHERE notification_uuid = ?1",
+    ).bind(notification.notificationUUID).first();
+    if (duplicate) return new Response(null, { status: 200 });
+    await applyVerifiedAppStoreTransaction(
+      env,
+      notification.transaction,
+      notification.subscriptionStatus,
+      {
+        eventType: "account.app_store_notification_processed",
+        notificationUUID: notification.notificationUUID,
+      },
+    );
+    await env.DB.prepare(
+      `INSERT INTO app_store_notification_events
+        (notification_uuid, notification_type, subtype, tenant_id,
+         original_transaction_id, signed_payload_sha256, signed_at,
+         processed_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+    ).bind(
+      notification.notificationUUID,
+      notification.notificationType,
+      notification.subtype,
+      notification.transaction.appAccountToken,
+      notification.transaction.originalTransactionID,
+      await sha256(body.signedPayload),
+      notification.signedAt,
+      new Date().toISOString(),
+    ).run();
+    return new Response(null, { status: 200 });
+  } catch (error) {
+    if (error instanceof AppStoreConfigurationError) {
+      return json({ error: error.message }, 503);
+    }
+    return json({ error: "invalid_app_store_notification" }, 400);
+  }
+}
 
 async function submitAppStoreTransaction(
   request: Request,
@@ -2239,7 +2431,44 @@ async function submitAppStoreTransaction(
     digest,
     new Date().toISOString(),
   ).run();
-  return json({ evidenceID, status: "pendingVerification" }, 202);
+  try {
+    const transaction = await (await appStoreProvider(env)).verifyTransaction(
+      signedTransaction,
+    );
+    if (
+      transaction.appAccountToken !== identity.tenantID.toLowerCase() ||
+      transaction.productID !== productID || transaction.planCode !== planCode
+    ) {
+      throw new Error("app_store_transaction_mismatch");
+    }
+    const now = new Date();
+    const status = transaction.revokedAt
+      ? "suspended"
+      : transaction.expiresAt && new Date(transaction.expiresAt) <= now
+      ? "cancelled"
+      : "active";
+    await applyVerifiedAppStoreTransaction(env, transaction, status, {
+      eventType: "account.app_store_transaction_verified",
+      actorMemberID: identity.memberID,
+      actorDeviceID: identity.deviceID,
+    });
+    await env.DB.prepare(
+      `UPDATE app_store_transaction_evidence
+          SET status = 'verified', verified_at = ?1
+        WHERE id = ?2 AND tenant_id = ?3`,
+    ).bind(new Date().toISOString(), evidenceID, identity.tenantID).run();
+    return json({ evidenceID, status: "verified" });
+  } catch (error) {
+    if (error instanceof AppStoreConfigurationError) {
+      return json({ evidenceID, status: "pendingVerification" }, 202);
+    }
+    await env.DB.prepare(
+      `UPDATE app_store_transaction_evidence
+          SET status = 'rejected', rejection_reason = 'verification_failed'
+        WHERE id = ?1 AND tenant_id = ?2`,
+    ).bind(evidenceID, identity.tenantID).run();
+    return json({ evidenceID, status: "rejected" }, 400);
+  }
 }
 
 async function expireTenantInvitations(
@@ -3307,6 +3536,12 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/v1/beta/enroll") {
         return enroll(request, env);
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/app-store/notifications/v2"
+      ) {
+        return appStoreNotification(request, env);
       }
       if (
         request.method === "POST" &&

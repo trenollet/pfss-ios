@@ -77,6 +77,7 @@ struct PFSSAccountEntitlementUsage: Codable, Equatable {
 /// A server-resolved account decision. The app presents this receipt but never
 /// promotes its own plan, changes limits, or infers authority from StoreKit.
 struct PFSSAccountEntitlementSnapshot: Codable, Equatable {
+    let appAccountToken: UUID
     let planCode: String
     let accessSource: PFSSAccountAccessSource
     let subscriptionStatus: PFSSSubscriptionLifecycleStatus
