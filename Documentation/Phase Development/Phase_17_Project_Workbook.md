@@ -234,7 +234,9 @@ not expand the production account implementation boundary.
 - [ ] Complete live recovery-code, lost-device, and replacement-device tests on
   signed iPhone and iPad builds.
 
-## Step 8 — Plan Entitlements and Account-State Enforcement
+## Step 8 — Plan Entitlements and App Store Readiness
+
+### Step 8a — Account-State Enforcement and Apple Authority Foundation
 
 - [x] Resolve the current unrevoked, effective tenant allocation on the server;
   malformed, expired, revoked, or missing allocations grant no authority.
@@ -257,7 +259,7 @@ not expand the production account implementation boundary.
   customer, and job limits per ADR-005.
 - [ ] Approve trial length, billing-retry grace duration, cancellation effective
   date, and final post-cancellation data-retention policy.
-- [ ] Complete the App Store transaction and notification adapter that creates and
+- [x] Complete the App Store transaction and notification adapter that creates and
   advances paid allocations using Apple's verified server evidence.
 - [x] Accept locally verified StoreKit 2 transaction JWS evidence into a durable,
   idempotent server inbox without granting client-authored access.
@@ -265,6 +267,46 @@ not expand the production account implementation boundary.
   environment, product, and tenant-token validation, and an idempotent App Store
   Server Notifications V2 endpoint for the sandbox adapter.
 - [x] Present plan, usage, and safe read-only account guidance in Owner Settings.
+
+### Step 8b — Pre-Listing Product, Beta, and Operational Readiness
+
+- [ ] Finalize the public app name, subtitle, positioning, and brand-availability
+  review without changing the established PFSS bundle identifier.
+- [ ] Replace the app icon with an approved production asset set and verify its
+  appearance on supported iPhone and iPad devices.
+- [ ] Prepare the App Store description, promotional text, keywords,
+  subscription descriptions, support information, and App Review notes.
+- [ ] Approve Business as the primary category and confirm the appropriate
+  secondary category after competitor and positioning review.
+- [ ] Preserve a known-good signed field build for the internal business Owner,
+  retain the existing bundle identifier, and verify upgrades preserve the
+  Tim-iPhone17pro installation and synchronized workspace.
+- [ ] Formalize invited beta access through TestFlight, sandbox purchases, and
+  expiring server-owned beta allocations; do not introduce a production
+  license-key or activation-code payment bypass.
+- [ ] Build the launch-critical developer management console for audited beta
+  grants, Enterprise/Custom allocations, account support, subscription status,
+  device review, and protected test-account cleanup.
+- [ ] Publish and link the privacy policy, terms, support channel, account
+  deletion instructions, and production recovery procedure.
+- [ ] Prepare required iPhone and iPad screenshots, privacy disclosures, age
+  rating answers, review credentials, and a submission-readiness checklist.
+
+### Step 8c — App Store Connect and Sandbox Subscription Activation
+
+- [ ] Create or align the PFSS App Store Connect app record using the existing
+  bundle identifier and the approved Step 8b product identity.
+- [ ] Create the Base, Pro, and Expert subscription products in one subscription
+  group with the approved product identifiers, pricing, limits, and metadata.
+- [ ] Register the production and sandbox App Store Server Notifications V2 URL
+  and confirm signed lifecycle events reconcile server allocations.
+- [ ] Configure sandbox testers and TestFlight groups, then verify purchase,
+  restore, upgrade, downgrade, billing-retry, cancellation, expiration, and
+  revocation behavior end to end.
+- [ ] Expose subscription purchase and management controls in Owner Settings only
+  after App Store products and server verification are operational.
+- [ ] Complete App Review metadata, subscription disclosures, restore-purchase
+  behavior, and final signed-device acceptance before submission.
 
 ## Phase Start Record
 
@@ -415,3 +457,9 @@ not expand the production account implementation boundary.
   Migration `0015_app_store_subscription_lifecycle.sql` adds durable lifecycle
   and notification state. The remaining external gate is creating the sandbox
   products in App Store Connect and registering the notification URL.
+- 2026-08-01: Split Step 8 into three controlled gates. Step 8a records the
+  completed entitlement and Apple-authority foundation. Step 8b adds product
+  identity, icon, listing content, field-build continuity, compliant TestFlight
+  beta access, launch-critical developer administration, policies, and listing
+  assets. Step 8c resumes App Store Connect product creation and end-to-end
+  sandbox subscription activation only after Step 8b is accepted.
