@@ -139,7 +139,7 @@ private struct PFSSFirstRunView: View {
                         Text("Welcome to PFSS")
                             .font(.title2.weight(.semibold))
                         Text(
-                            "Activate an employee device or create a new PFSS company as its first Owner."
+                            "Create a PFSS company, connect an employee device, or securely access an existing business."
                         )
                         .foregroundStyle(.secondary)
                     }
@@ -147,57 +147,62 @@ private struct PFSSFirstRunView: View {
                 }
 
                 Section("Choose How to Begin") {
+#if DEBUG
                     NavigationLink {
-                        PFSSExistingOwnerSignInView()
+                        PFSSOwnerRegistrationStartView()
                     } label: {
-                        Label(
-                            "Sign In as Existing Owner",
-                            systemImage: "person.crop.circle.badge.checkmark"
+                        firstRunOption(
+                            "Create New Company",
+                            detail: "First-time setup",
+                            systemImage: "building.2.fill"
+                        )
+                    }
+#endif
+
+                    NavigationLink {
+                        PFSSCompanyActivationView()
+                    } label: {
+                        firstRunOption(
+                            "Activate Employee Device",
+                            detail: "Add a new employee device to an existing company",
+                            systemImage: "person.badge.key.fill"
                         )
                     }
 
                     NavigationLink {
-                        PFSSOwnerRecoveryView()
+                        PFSSExistingOwnerSignInView()
                     } label: {
-                        Label(
-                            "Use Owner Recovery Code",
-                            systemImage: "key.viewfinder"
+                        firstRunOption(
+                            "Sign In as Existing Business Owner",
+                            detail: "Log in to a second or new device as the company owner",
+                            systemImage: "person.crop.circle.badge.checkmark"
                         )
                     }
 
                     NavigationLink {
                         PFSSOwnerInvitationAcceptanceView()
                     } label: {
-                        Label(
-                            "Accept Owner Invitation",
+                        firstRunOption(
+                            "Accept Business Owner Invitation",
+                            detail: "For businesses with more than one owner",
                             systemImage: "person.2.badge.gearshape"
                         )
                     }
 
                     NavigationLink {
-                        PFSSCompanyActivationView()
+                        PFSSOwnerRecoveryView()
                     } label: {
-                        Label(
-                            "Activate Employee Device",
-                            systemImage: "person.badge.key.fill"
+                        firstRunOption(
+                            "Use Business Owner Recovery Code",
+                            detail: "Enter a recovery code if a business owner's device is lost",
+                            systemImage: "key.viewfinder"
                         )
                     }
-
-#if DEBUG
-                    NavigationLink {
-                        PFSSOwnerRegistrationStartView()
-                    } label: {
-                        Label(
-                            "Create New Company",
-                            systemImage: "building.2.fill"
-                        )
-                    }
-#endif
                 }
 
                 Section {
                     Text(
-                        "Employee activation uses a one-time code from an authorized Manager or Owner. New-company registration verifies the first Owner before creating company access."
+                        "Employee activation uses a one-time code from an authorized Manager or Business Owner. New-company registration verifies the first Business Owner before creating company access."
                     )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -205,6 +210,24 @@ private struct PFSSFirstRunView: View {
             }
             .navigationTitle("Get Started")
         }
+    }
+
+    private func firstRunOption(
+        _ title: String,
+        detail: String,
+        systemImage: String
+    ) -> some View {
+        Label {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } icon: {
+            Image(systemName: systemImage)
+        }
+        .padding(.vertical, 3)
     }
 }
 
