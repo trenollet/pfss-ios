@@ -9,6 +9,12 @@ import Combine
 import Foundation
 import Security
 
+extension Notification.Name {
+    static let pfssCompanyAccessWasActivated = Notification.Name(
+        "PFSSCompanyAccessWasActivated"
+    )
+}
+
 struct PFSSCloudflareBetaConfiguration: Equatable {
     var endpoint: URL
 }
@@ -153,6 +159,27 @@ struct PFSSAccessCleanupResult: Decodable, Equatable {
     var deviceCredentialsPurged: Int
 }
 
+struct PFSSOwnerRecoveryCodeStatus: Decodable, Equatable {
+    var availableCodes: Int
+    var createdAt: Date?
+}
+
+struct PFSSOwnerRecoveryCodeReceipt: Decodable, Equatable {
+    var recoveryCodes: [String]
+    var createdAt: Date
+}
+
+struct PFSSOwnerAccountInvitation: Decodable, Identifiable, Equatable {
+    var invitationID: String
+    var memberID: String
+    var displayName: String
+    var email: String
+    var invitationCode: String
+    var expiresAt: Date
+
+    var id: String { invitationID }
+}
+
 struct PFSSEmployeeArchiveAccessResult: Decodable, Equatable {
     enum Action: String, Decodable {
         case none
@@ -172,6 +199,7 @@ struct PFSSCloudflareSession: Codable, Equatable {
     struct Member: Codable, Equatable {
         var id: String
         var displayName: String
+        var email: String?
         var role: PFSSTenantRole
         var employeeID: String?
     }
@@ -422,6 +450,61 @@ final class PFSSCloudflareBetaManager: ObservableObject {
     var savedEndpoint: String { Self.defaultEndpoint }
     var isEnrolled: Bool { credentialStore.load() != nil }
 
+    func registrationDeviceID() -> UUID {
+        if let saved = defaults.string(forKey: deviceIDKey),
+           let id = UUID(uuidString: saved) {
+            return id
+        }
+        let id = UUID()
+        defaults.set(id.uuidString.lowercased(), forKey: deviceIDKey)
+        return id
+    }
+
+    func acceptProvisionedOwnerDevice(
+        token: String,
+        deviceID: UUID
+    ) async throws {
+        guard !token.isEmpty else {
+            throw PFSSCloudflareBetaError.invalidResponse
+        }
+        credentialStore.save(token)
+        defaults.set(deviceID.uuidString.lowercased(), forKey: deviceIDKey)
+        state = .connected
+        try await refreshSession()
+        NotificationCenter.default.post(
+            name: .pfssCompanyAccessWasActivated,
+            object: nil
+        )
+    }
+
+    func configureOwnerWorkProfile(
+        roles: Set<PFSSOwnerOperationalRole>
+    ) async throws -> PFSSOwnerWorkProfileReceipt {
+        guard currentSession?.member.role == .owner else {
+            throw PFSSCloudflareBetaError.server("owner_required")
+        }
+        guard !roles.isEmpty else {
+            throw PFSSCloudflareBetaError.server(
+                "Select Sales, Technician, or both."
+            )
+        }
+        var request = try request(
+            path: "/v1/account/owner-work-profile",
+            method: "POST",
+            authenticated: true
+        )
+        request.httpBody = try Self.encoder.encode([
+            "roles": roles.sorted { $0.rawValue < $1.rawValue }
+        ])
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let receipt = try Self.decoder.decode(
+            PFSSOwnerWorkProfileReceipt.self,
+            from: try await perform(request)
+        )
+        try await refreshSession()
+        return receipt
+    }
+
     func enroll(code: String, deviceName: String) async throws {
         state = .enrolling
         let enrollmentDeviceID = UUID().uuidString.lowercased()
@@ -441,6 +524,10 @@ final class PFSSCloudflareBetaManager: ObservableObject {
             credentialStore.save(response.deviceToken)
             defaults.set(enrollmentDeviceID, forKey: deviceIDKey)
             state = .connected
+            NotificationCenter.default.post(
+                name: .pfssCompanyAccessWasActivated,
+                object: nil
+            )
             // Enrollment codes are single-use. Once the credential is safely
             // stored, a transient status refresh must not misreport enrollment
             // as failed and tempt the owner to retry a consumed code.
@@ -464,6 +551,17 @@ final class PFSSCloudflareBetaManager: ObservableObject {
         members = []
         devices = []
         state = savedEndpoint.isEmpty ? .notConfigured : .notEnrolled
+    }
+
+    func logOut() throws {
+        try PFSSCompanyDataRemovalCoordinator.shared.logOut {
+            self.credentialStore.delete()
+        }
+        backups = []
+        currentSession = nil
+        members = []
+        devices = []
+        state = .notEnrolled
     }
 
     func refreshSession() async throws {
@@ -587,6 +685,75 @@ final class PFSSCloudflareBetaManager: ObservableObject {
             currentSession = nil
             state = .notEnrolled
         }
+    }
+
+    func ownerRecoveryCodeStatus() async throws
+        -> PFSSOwnerRecoveryCodeStatus {
+        let data = try await perform(
+            try request(
+                path: "/v1/account-recovery/codes",
+                authenticated: true
+            )
+        )
+        return try Self.decoder.decode(
+            PFSSOwnerRecoveryCodeStatus.self,
+            from: data
+        )
+    }
+
+    func replaceOwnerRecoveryCodes() async throws
+        -> PFSSOwnerRecoveryCodeReceipt {
+        let data = try await perform(
+            try request(
+                path: "/v1/account-recovery/codes",
+                method: "POST",
+                authenticated: true
+            )
+        )
+        return try Self.decoder.decode(
+            PFSSOwnerRecoveryCodeReceipt.self,
+            from: data
+        )
+    }
+
+    func createOwnerInvitation(
+        displayName: String,
+        email: String
+    ) async throws -> PFSSOwnerAccountInvitation {
+        var invitationRequest = try request(
+            path: "/v1/owner-invitations",
+            method: "POST",
+            authenticated: true
+        )
+        invitationRequest.httpBody = try Self.encoder.encode([
+            "displayName": displayName.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ),
+            "email": email.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).lowercased()
+        ])
+        invitationRequest.setValue(
+            "application/json",
+            forHTTPHeaderField: "Content-Type"
+        )
+        let invitation = try Self.decoder.decode(
+            PFSSOwnerAccountInvitation.self,
+            from: try await perform(invitationRequest)
+        )
+        try await refreshAdministration()
+        return invitation
+    }
+
+    func revokeOwnerMember(_ member: PFSSTenantMember) async throws {
+        _ = try await perform(
+            try request(
+                path: "/v1/owner-members/\(member.id)/revoke",
+                method: "POST",
+                authenticated: true
+            )
+        )
+        try await refreshAdministration()
     }
 
     func cancelInvitation(for member: PFSSTenantMember) async throws {
@@ -971,9 +1138,9 @@ private final class PFSSCloudSnapshotPublisher {
 
     private func synchronizeNow() async {
         guard let store else { return }
-        if manager.currentSession == nil {
-            try? await manager.refreshSession()
-        }
+        // Membership-to-employee links and access lifecycle can change on the
+        // server while this device remains enrolled, so refresh every poll.
+        try? await manager.refreshSession()
         if let member = manager.currentSession?.member {
             store.updateCloudIdentity(
                 role: member.role,
@@ -1171,9 +1338,9 @@ final class PFSSCloudflareSynchronizationAdapter: OfflineSynchronizationAdapter 
 }
 
 /// Selects remote queueing only when this installation already has a valid
-/// Cloudflare endpoint and protected device credential. A newly enrolled
-/// installation begins remote synchronization on its next app launch; an
-/// unenrolled installation retains the established local-only behavior.
+/// Cloudflare endpoint and protected device credential. The app session host
+/// recreates this store immediately after enrollment or sign-in so remote
+/// synchronization can begin without relaunching the app.
 @MainActor
 enum PFSSCloudflareAppDataStoreFactory {
     static func make() -> AppDataStore {

@@ -1,0 +1,19 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "GPB2DAL564.com.patriot.PPS-Receipt-Printer",
+        "paths": [
+          "/callback",
+          "/callback/*"
+        ]
+      }
+    ]
+  },
+  "webcredentials": {
+    "apps": [
+      "GPB2DAL564.com.patriot.PPS-Receipt-Printer"
+    ]
+  }
+}

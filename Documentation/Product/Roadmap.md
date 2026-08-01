@@ -100,7 +100,7 @@ Goals:
 
 ## Production Account Platform
 
-**Status:** Planned after the current development phase
+**Status:** Active — Phase 17
 
 PFSS Cloud production onboarding and support must replace beta enrollment with
 a durable identity, tenant-provisioning, and recovery system.
@@ -225,6 +225,11 @@ a durable identity, tenant-provisioning, and recovery system.
 
 These capabilities are production requirements, but implementation begins only
 after the current development phase is completed and accepted.
+
+Phase 17 implementation and acceptance are tracked in
+`../Phase Development/Phase_17_Project_Workbook.md`. The durable identity and
+registration boundary is defined in
+`../Architecture/ProductionAccountPlatform.md`.
 
 ## Final Pre-Launch UI Consistency Pass
 

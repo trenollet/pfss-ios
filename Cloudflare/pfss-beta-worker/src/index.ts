@@ -1,9 +1,86 @@
-interface Env {
+import {
+  IdentityConfigurationError,
+  IdentityProviderResponseError,
+  ManagedIdentityConfigurationBindings,
+  ManagedOwnerIdentityProvider,
+  WorkOSManagedOwnerIdentityProvider,
+  managedIdentityConfigurationFromBindings,
+} from "./account-identity-provider";
+
+interface Env extends ManagedIdentityConfigurationBindings {
   DB: D1Database;
   ARCHIVES: R2Bucket;
 }
 
 type TenantRole = "owner" | "manager" | "member";
+
+type AccountRegistrationStatus =
+  | "started"
+  | "identityVerified"
+  | "profileComplete"
+  | "planAuthorized"
+  | "provisioning"
+  | "active"
+  | "expired"
+  | "cancelled"
+  | "failedRolledBack";
+
+type AccountAuthenticationMethod =
+  | "password"
+  | "passkey"
+  | "signInWithApple"
+  | "federated";
+
+type AccountAccessSource =
+  | "appStoreSubscription"
+  | "betaGrant"
+  | "internalTesting"
+  | "internalBusinessGrant"
+  | "promotionalGrant";
+
+interface ValidatedAccountRegistration {
+  idempotencyKey: string;
+  identityAssertion: string;
+  authenticationMethod: AccountAuthenticationMethod;
+  owner: { displayName: string; email: string };
+  company: { displayName: string; normalizedName: string; timeZoneID: string };
+  requestedPlanCode: string;
+  consent: {
+    termsVersion: string;
+    privacyVersion: string;
+    acceptedAt: string;
+  };
+  device: { id: string; displayName: string };
+}
+
+interface AccountRegistrationAttemptRow {
+  id: string;
+  requestFingerprint: string;
+  status: AccountRegistrationStatus;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+  cancelledAt: string | null;
+}
+
+interface ProvisioningRegistrationAttemptRow extends AccountRegistrationAttemptRow {
+  ownerDisplayName: string;
+  companyDisplayName: string;
+  timeZoneID: string;
+  requestedPlanCode: string;
+  deviceID: string;
+  deviceDisplayName: string;
+  subjectID: string;
+  tenantID: string | null;
+}
+
+interface OwnerAuthorizationAttemptRow {
+  id: string;
+  codeChallenge: string;
+  redirectURI: string;
+  status: "started" | "verified" | "consumed" | "expired" | "failed";
+  expiresAt: string;
+}
 
 interface DeviceIdentity {
   tenantID: string;
@@ -11,6 +88,7 @@ interface DeviceIdentity {
   memberID: string;
   employeeID: string | null;
   memberName: string;
+  memberEmail: string | null;
   role: TenantRole;
   memberStatus: "invited" | "active" | "suspended" | "revoked";
   deviceID: string;
@@ -28,6 +106,13 @@ function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: jsonHeaders });
 }
 
+function utf8Base64(value: unknown): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
 async function sha256(value: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -38,11 +123,1318 @@ async function sha256(value: string): Promise<string> {
     .join("");
 }
 
+async function sha256Base64URL(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  const encoded = btoa(String.fromCharCode(...new Uint8Array(digest)));
+  return encoded.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 function bearer(request: Request): string | null {
   const authorization = request.headers.get("authorization") ?? "";
   return authorization.startsWith("Bearer ")
     ? authorization.slice("Bearer ".length).trim()
     : null;
+}
+
+const forbiddenRegistrationKeys = new Set([
+  "tenantid", "tenant", "role", "ownerrole", "price", "amount",
+  "entitlements", "limits", "databaseid", "databasename", "bucketname",
+  "storagepath", "infrastructureendpoint", "workerurl", "accesssource",
+  "allocationsource", "granttype", "complimentaryaccess",
+]);
+
+function normalizedFieldKey(value: string): string {
+  return value.replace(/[_-]/g, "").toLowerCase();
+}
+
+function forbiddenRegistrationField(
+  value: unknown,
+  path = "",
+): string | null {
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      const found = forbiddenRegistrationField(value[index], `${path}[${index}]`);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (value === null || typeof value !== "object") return null;
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const childPath = path ? `${path}.${key}` : key;
+    if (forbiddenRegistrationKeys.has(normalizedFieldKey(key))) return childPath;
+    const found = forbiddenRegistrationField(child, childPath);
+    if (found) return found;
+  }
+  return null;
+}
+
+function nonemptyString(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized.length >= minimum && normalized.length <= maximum
+    ? normalized
+    : null;
+}
+
+function validEmail(value: string): boolean {
+  if (value.length > 254 || /\s/.test(value)) return false;
+  const parts = value.split("@");
+  return parts.length === 2 && parts[0].length > 0 && parts[0].length <= 64 &&
+    parts[1].includes(".") && !parts[1].startsWith(".") &&
+    !parts[1].endsWith(".");
+}
+
+function managedOwnerIdentityProvider(env: Env): ManagedOwnerIdentityProvider {
+  return new WorkOSManagedOwnerIdentityProvider(
+    managedIdentityConfigurationFromBindings(env),
+  );
+}
+
+function accountAuthenticationMethod(providerMethod: string):
+AccountAuthenticationMethod {
+  switch (providerMethod) {
+  case "Password": return "password";
+  case "Passkey": return "passkey";
+  case "AppleOAuth": return "signInWithApple";
+  default: return "federated";
+  }
+}
+
+export async function startOwnerAuthorization(
+  request: Request,
+  env: Env,
+  provider: ManagedOwnerIdentityProvider = managedOwnerIdentityProvider(env),
+): Promise<Response> {
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json<Record<string, unknown>>();
+  } catch {
+    return json({ error: "invalid_authorization_request" }, 400);
+  }
+  const state = nonemptyString(body.state, 43, 128);
+  const codeChallenge = nonemptyString(body.codeChallenge, 43, 128);
+  const redirectURI = nonemptyString(body.redirectURI, 8, 2048);
+  const rawEmailHint = body.emailHint === undefined
+    ? null
+    : nonemptyString(body.emailHint, 3, 254)?.toLowerCase() ?? null;
+  if (!state || !codeChallenge || !redirectURI ||
+      (rawEmailHint !== null && !validEmail(rawEmailHint))) {
+    return json({ error: "invalid_authorization_request" }, 400);
+  }
+  try {
+    const session = await provider.startAuthorization({
+      state,
+      codeChallenge,
+      redirectURI,
+      emailHint: rawEmailHint ?? undefined,
+    });
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO owner_authorization_attempts
+        (id, state_digest, code_challenge, redirect_uri, email_hint, status,
+         expires_at, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, 'started', ?6, ?7, ?7)`,
+    ).bind(
+      crypto.randomUUID(), await sha256(state), codeChallenge, redirectURI,
+      rawEmailHint, session.expiresAt, now,
+    ).run();
+    return json(session, 201);
+  } catch (error) {
+    if (error instanceof IdentityConfigurationError) {
+      return json({ error: "invalid_authorization_request" }, 400);
+    }
+    return json({ error: "identity_provider_unavailable" }, 503);
+  }
+}
+
+async function persistVerifiedOwnerIdentity(
+  env: Env,
+  identity: Awaited<ReturnType<ManagedOwnerIdentityProvider["exchangeAuthorizationCode"]>>,
+): Promise<{ subjectID: string; wasCreated: boolean } | Response> {
+  const existingIdentity = await env.DB.prepare(
+    `SELECT subject_id AS subjectID
+       FROM authentication_identities
+      WHERE provider_key = ?1 AND provider_subject = ?2`,
+  ).bind(identity.providerKey, identity.providerSubject)
+    .first<{ subjectID: string }>();
+  const existingContact = await env.DB.prepare(
+    `SELECT subject_id AS subjectID
+       FROM verified_contact_addresses
+      WHERE kind = 'email' AND normalized_value = ?1`,
+  ).bind(identity.verifiedEmail).first<{ subjectID: string }>();
+  if (existingIdentity && existingContact &&
+      existingIdentity.subjectID !== existingContact.subjectID) {
+    return json({ error: "identity_linking_required" }, 409);
+  }
+  if (!existingIdentity && existingContact) {
+    return json({ error: "identity_linking_required" }, 409);
+  }
+  const subjectID = existingIdentity?.subjectID ?? crypto.randomUUID();
+  const now = new Date().toISOString();
+  const statements = existingIdentity
+    ? [
+        env.DB.prepare(
+          `UPDATE authentication_subjects
+              SET display_name = ?2, status = 'active', updated_at = ?3
+            WHERE id = ?1`,
+        ).bind(subjectID, identity.displayName, now),
+        env.DB.prepare(
+          `UPDATE authentication_identities
+              SET last_authenticated_at = ?3
+            WHERE provider_key = ?1 AND provider_subject = ?2`,
+        ).bind(identity.providerKey, identity.providerSubject, now),
+      ]
+    : [
+        env.DB.prepare(
+          `INSERT INTO authentication_subjects
+            (id, display_name, status, created_at, updated_at)
+           VALUES (?1, ?2, 'active', ?3, ?3)`,
+        ).bind(subjectID, identity.displayName, now),
+        env.DB.prepare(
+          `INSERT INTO authentication_identities
+            (id, subject_id, provider_key, provider_subject, method,
+             created_at, last_authenticated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)`,
+        ).bind(
+          crypto.randomUUID(), subjectID, identity.providerKey,
+          identity.providerSubject,
+          accountAuthenticationMethod(identity.authenticationMethod), now,
+        ),
+      ];
+  if (!existingContact) {
+    statements.push(env.DB.prepare(
+      `INSERT INTO verified_contact_addresses
+        (id, subject_id, kind, normalized_value, verified_at, created_at)
+       VALUES (?1, ?2, 'email', ?3, ?4, ?4)`,
+    ).bind(crypto.randomUUID(), subjectID, identity.verifiedEmail, now));
+  }
+  await env.DB.batch(statements);
+  return { subjectID, wasCreated: !existingIdentity };
+}
+
+export async function completeOwnerAuthorization(
+  request: Request,
+  env: Env,
+  provider: ManagedOwnerIdentityProvider = managedOwnerIdentityProvider(env),
+): Promise<Response> {
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json<Record<string, unknown>>();
+  } catch {
+    return json({ error: "invalid_authorization_callback" }, 400);
+  }
+  const state = nonemptyString(body.state, 43, 128);
+  const code = nonemptyString(body.code, 20, 512);
+  const codeVerifier = nonemptyString(body.codeVerifier, 43, 128);
+  const redirectURI = nonemptyString(body.redirectURI, 8, 2048);
+  if (!state || !code || !codeVerifier || !redirectURI) {
+    return json({ error: "invalid_authorization_callback" }, 400);
+  }
+  const attempt = await env.DB.prepare(
+    `SELECT id, code_challenge AS codeChallenge, redirect_uri AS redirectURI,
+            status, expires_at AS expiresAt
+       FROM owner_authorization_attempts WHERE state_digest = ?1`,
+  ).bind(await sha256(state)).first<OwnerAuthorizationAttemptRow>();
+  if (!attempt) return json({ error: "authorization_not_found" }, 404);
+  if (attempt.status !== "started") {
+    return json({ error: "authorization_already_used" }, 409);
+  }
+  if (Date.parse(attempt.expiresAt) <= Date.now()) {
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      `UPDATE owner_authorization_attempts
+          SET status = 'expired', updated_at = ?2
+        WHERE id = ?1 AND status = 'started'`,
+    ).bind(attempt.id, now).run();
+    return json({ error: "authorization_expired" }, 410);
+  }
+  if (attempt.redirectURI !== redirectURI ||
+      await sha256Base64URL(codeVerifier) !== attempt.codeChallenge) {
+    return json({ error: "invalid_authorization_callback" }, 400);
+  }
+  try {
+    const identity = await provider.exchangeAuthorizationCode(
+      code, codeVerifier, redirectURI,
+    );
+    const persistedIdentity = await persistVerifiedOwnerIdentity(env, identity);
+    if (persistedIdentity instanceof Response) return persistedIdentity;
+    const identityAssertion = `pfss_owner_${crypto.randomUUID()}${crypto.randomUUID()}`;
+    const method = accountAuthenticationMethod(identity.authenticationMethod);
+    const now = new Date().toISOString();
+    const updated = await env.DB.prepare(
+      `UPDATE owner_authorization_attempts
+          SET status = 'verified', subject_id = ?2,
+              subject_was_created = ?3, identity_assertion_digest = ?4,
+              provider_method = ?5, verified_at = ?6, updated_at = ?6
+        WHERE id = ?1 AND status = 'started'`,
+    ).bind(
+      attempt.id, persistedIdentity.subjectID,
+      persistedIdentity.wasCreated ? 1 : 0,
+      await sha256(identityAssertion), method, now,
+    ).run();
+    if (updated.meta.changes !== 1) {
+      return json({ error: "authorization_already_used" }, 409);
+    }
+    return json({
+      identityAssertion,
+      authenticationMethod: method,
+      owner: {
+        displayName: identity.displayName,
+        email: identity.verifiedEmail,
+      },
+    });
+  } catch (error) {
+    if (error instanceof IdentityConfigurationError) {
+      return json({ error: "invalid_authorization_callback" }, 400);
+    }
+    if (error instanceof IdentityProviderResponseError) {
+      return json({ error: "identity_verification_failed" }, 401);
+    }
+    console.error("Owner authorization callback failed", error instanceof Error
+      ? { name: error.name, message: error.message }
+      : { name: "UnknownError" });
+    return json({ error: "identity_provider_unavailable" }, 503);
+  }
+}
+
+async function signInExistingOwner(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json<Record<string, unknown>>();
+  } catch {
+    return json({ error: "invalid_owner_sign_in" }, 400);
+  }
+  const identityAssertion = nonemptyString(body.identityAssertion, 20, 4096);
+  const deviceID = nonemptyString(body.deviceID, 36, 36);
+  const deviceName = nonemptyString(body.deviceName, 1, 120);
+  if (!identityAssertion || !deviceID || !deviceName) {
+    return json({ error: "invalid_owner_sign_in" }, 400);
+  }
+  const assertionDigest = await sha256(identityAssertion);
+  const now = new Date().toISOString();
+  const authorization = await env.DB.prepare(
+    `SELECT id, subject_id AS subjectID
+       FROM owner_authorization_attempts
+      WHERE identity_assertion_digest = ?1 AND status = 'verified'
+        AND expires_at > ?2`,
+  ).bind(assertionDigest, now).first<{ id: string; subjectID: string }>();
+  if (!authorization?.subjectID) {
+    return json({ error: "identity_verification_required" }, 401);
+  }
+  const memberships = await env.DB.prepare(
+    `SELECT members.id AS memberID, members.tenant_id AS tenantID,
+            tenants.display_name AS tenantName
+       FROM tenant_members AS members
+       JOIN tenants ON tenants.id = members.tenant_id
+      WHERE members.authentication_subject_id = ?1
+        AND members.role = 'owner' AND members.status = 'active'
+        AND tenants.status = 'active'`,
+  ).bind(authorization.subjectID).all<{
+    memberID: string;
+    tenantID: string;
+    tenantName: string;
+  }>();
+  if (memberships.results.length === 0) {
+    return json({ error: "owner_company_not_found" }, 404);
+  }
+  if (memberships.results.length > 1) {
+    return json({ error: "owner_company_selection_required" }, 409);
+  }
+  const membership = memberships.results[0];
+  const deviceToken = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+  const tokenDigest = await sha256(deviceToken);
+  const existingDevice = await env.DB.prepare(
+    `SELECT member_id AS memberID FROM devices
+      WHERE tenant_id = ?1 AND id = ?2`,
+  ).bind(membership.tenantID, deviceID).first<{ memberID: string }>();
+  if (!existingDevice) {
+    const count = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM devices WHERE tenant_id = ?1 AND revoked_at IS NULL",
+    ).bind(membership.tenantID).first<{ count: number }>();
+    if ((count?.count ?? 0) >= stagingRegistrationEntitlements.deviceLimit) {
+      return json({ error: "device_limit_reached" }, 409);
+    }
+  }
+  await env.DB.batch([
+    existingDevice
+      ? env.DB.prepare(
+        `UPDATE devices
+            SET member_id = ?1, display_name = ?2, token_hash = ?3,
+                last_seen_at = ?4, revoked_at = NULL,
+                data_removal_required_at = NULL,
+                data_removal_acknowledged_at = NULL,
+                credentials_purged_at = NULL
+          WHERE tenant_id = ?5 AND id = ?6`,
+      ).bind(membership.memberID, deviceName, tokenDigest, now,
+        membership.tenantID, deviceID)
+      : env.DB.prepare(
+        `INSERT INTO devices
+          (id, tenant_id, member_id, display_name, token_hash, created_at,
+           last_seen_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)`,
+      ).bind(deviceID, membership.tenantID, membership.memberID, deviceName,
+        tokenDigest, now),
+    env.DB.prepare(
+      `UPDATE owner_authorization_attempts
+          SET status = 'consumed', consumed_at = ?2, updated_at = ?2
+        WHERE id = ?1 AND status = 'verified'`,
+    ).bind(authorization.id, now),
+    accessAuditStatement(env, membership.tenantID, "account.owner_signed_in", {
+      actorMemberID: membership.memberID,
+      actorDeviceID: deviceID,
+      targetMemberID: membership.memberID,
+      targetDeviceID: deviceID,
+      metadata: { existingDevice: existingDevice ? "true" : "false" },
+      createdAt: now,
+    }),
+  ]);
+  return json({
+    tenant: { id: membership.tenantID, displayName: membership.tenantName },
+    owner: { memberID: membership.memberID },
+    device: { id: deviceID, deviceToken },
+    tokenIssued: true,
+  }, existingDevice ? 200 : 201);
+}
+
+function recoveryCode(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(15));
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const encoded = [...bytes].map((byte) => alphabet[byte % alphabet.length]);
+  return `PFSS-${encoded.slice(0, 5).join("")}-${encoded.slice(5, 10).join("")}-${encoded.slice(10).join("")}`;
+}
+
+async function replaceOwnerRecoveryCodes(
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  if (identity.role !== "owner") return json({ error: "owner_required" }, 403);
+  const subject = await env.DB.prepare(
+    `SELECT authentication_subject_id AS subjectID
+       FROM tenant_members
+      WHERE tenant_id = ?1 AND id = ?2 AND role = 'owner'
+        AND status = 'active'`,
+  ).bind(identity.tenantID, identity.memberID).first<{ subjectID: string | null }>();
+  if (!subject?.subjectID) {
+    return json({ error: "owner_identity_not_linked" }, 409);
+  }
+  const codes = Array.from({ length: 8 }, () => recoveryCode());
+  const now = new Date().toISOString();
+  const statements: D1PreparedStatement[] = [
+    env.DB.prepare(
+      `UPDATE account_recovery_methods
+          SET revoked_at = ?1
+        WHERE subject_id = ?2 AND kind = 'recoveryCode'
+          AND revoked_at IS NULL AND last_used_at IS NULL`,
+    ).bind(now, subject.subjectID),
+  ];
+  for (const code of codes) {
+    statements.push(env.DB.prepare(
+      `INSERT INTO account_recovery_methods
+        (id, subject_id, kind, secret_digest, created_at)
+       VALUES (?1, ?2, 'recoveryCode', ?3, ?4)`,
+    ).bind(crypto.randomUUID(), subject.subjectID, await sha256(code), now));
+  }
+  statements.push(accessAuditStatement(
+    env, identity.tenantID, "account.recovery_codes_replaced", {
+      actorMemberID: identity.memberID,
+      actorDeviceID: identity.deviceID,
+      targetMemberID: identity.memberID,
+      metadata: { codeCount: String(codes.length) },
+      createdAt: now,
+    },
+  ));
+  await env.DB.batch(statements);
+  return json({ recoveryCodes: codes, createdAt: now }, 201);
+}
+
+async function createOwnerInvitation(
+  request: Request,
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  if (identity.role !== "owner") return json({ error: "owner_required" }, 403);
+  const body = await request.json<Record<string, unknown>>();
+  const displayName = nonemptyString(body.displayName, 1, 100);
+  const email = nonemptyString(body.email, 3, 320)?.trim().toLowerCase();
+  if (!displayName || !email || !email.includes("@")) {
+    return json({ error: "invalid_owner_invitation" }, 400);
+  }
+  const existing = await env.DB.prepare(
+    `SELECT 1 FROM tenant_members AS members
+       JOIN verified_contact_addresses AS contact
+         ON contact.subject_id = members.authentication_subject_id
+        AND contact.kind = 'email'
+      WHERE members.tenant_id = ?1 AND members.role = 'owner'
+        AND members.status IN ('invited', 'active')
+        AND contact.normalized_value = ?2`,
+  ).bind(identity.tenantID, email).first();
+  if (existing) return json({ error: "owner_already_exists" }, 409);
+  const pending = await env.DB.prepare(
+    `SELECT 1 FROM owner_account_invitations
+      WHERE tenant_id = ?1 AND invited_email = ?2
+        AND accepted_at IS NULL AND cancelled_at IS NULL
+        AND expires_at > ?3`,
+  ).bind(identity.tenantID, email, new Date().toISOString()).first();
+  if (pending) return json({ error: "owner_invitation_already_pending" }, 409);
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const memberID = crypto.randomUUID();
+  const invitationID = crypto.randomUUID();
+  const invitationCode = `PFSS-OWNER-${crypto.randomUUID()}${crypto.randomUUID()}`;
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO tenant_members
+        (id, tenant_id, display_name, role, status, created_at)
+       VALUES (?1, ?2, ?3, 'owner', 'invited', ?4)`,
+    ).bind(memberID, identity.tenantID, displayName, now.toISOString()),
+    env.DB.prepare(
+      `INSERT INTO owner_account_invitations
+        (id, tenant_id, member_id, invited_email, invitation_digest,
+         created_by_member_id, expires_at, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+    ).bind(invitationID, identity.tenantID, memberID, email,
+      await sha256(invitationCode), identity.memberID,
+      expiresAt.toISOString(), now.toISOString()),
+    accessAuditStatement(env, identity.tenantID, "owner.invitation_created", {
+      actorMemberID: identity.memberID,
+      actorDeviceID: identity.deviceID,
+      targetMemberID: memberID,
+      metadata: { invitedEmail: email },
+      createdAt: now.toISOString(),
+    }),
+  ]);
+  return json({
+    invitationID,
+    memberID,
+    displayName,
+    email,
+    invitationCode,
+    expiresAt: expiresAt.toISOString(),
+  }, 201);
+}
+
+async function acceptOwnerInvitation(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  const body = await request.json<Record<string, unknown>>();
+  const invitationCode = nonemptyString(body.invitationCode, 40, 200);
+  const identityAssertion = nonemptyString(body.identityAssertion, 20, 4096);
+  const deviceID = nonemptyString(body.deviceID, 36, 36);
+  const deviceName = nonemptyString(body.deviceName, 1, 120);
+  if (!invitationCode || !identityAssertion || !deviceID || !deviceName ||
+      !validUUID(deviceID)) {
+    return json({ error: "invalid_owner_invitation_acceptance" }, 400);
+  }
+  const now = new Date().toISOString();
+  const invitation = await env.DB.prepare(
+    `SELECT invitations.id AS invitationID,
+            invitations.tenant_id AS tenantID,
+            invitations.member_id AS memberID,
+            invitations.invited_email AS invitedEmail,
+            tenants.display_name AS tenantName
+       FROM owner_account_invitations AS invitations
+       JOIN tenants ON tenants.id = invitations.tenant_id
+      WHERE invitations.invitation_digest = ?1
+        AND invitations.accepted_at IS NULL
+        AND invitations.cancelled_at IS NULL
+        AND invitations.expires_at > ?2
+        AND tenants.status = 'active'`,
+  ).bind(await sha256(invitationCode), now).first<{
+    invitationID: string;
+    tenantID: string;
+    memberID: string;
+    invitedEmail: string;
+    tenantName: string;
+  }>();
+  if (!invitation) return json({ error: "invalid_or_expired_owner_invitation" }, 401);
+  const authorization = await env.DB.prepare(
+    `SELECT authorization.id, authorization.subject_id AS subjectID,
+            contact.normalized_value AS verifiedEmail
+       FROM owner_authorization_attempts AS authorization
+       JOIN verified_contact_addresses AS contact
+         ON contact.subject_id = authorization.subject_id
+        AND contact.kind = 'email'
+      WHERE authorization.identity_assertion_digest = ?1
+        AND authorization.status = 'verified'
+        AND authorization.expires_at > ?2`,
+  ).bind(await sha256(identityAssertion), now).first<{
+    id: string;
+    subjectID: string;
+    verifiedEmail: string;
+  }>();
+  if (!authorization || authorization.verifiedEmail !== invitation.invitedEmail) {
+    return json({ error: "owner_invitation_identity_mismatch" }, 403);
+  }
+  const existingMembership = await env.DB.prepare(
+    `SELECT 1 FROM tenant_members
+      WHERE tenant_id = ?1 AND authentication_subject_id = ?2
+        AND status != 'revoked'`,
+  ).bind(invitation.tenantID, authorization.subjectID).first();
+  if (existingMembership) return json({ error: "owner_already_exists" }, 409);
+  const count = await env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM devices WHERE tenant_id = ?1 AND revoked_at IS NULL",
+  ).bind(invitation.tenantID).first<{ count: number }>();
+  if ((count?.count ?? 0) >= stagingRegistrationEntitlements.deviceLimit) {
+    return json({ error: "device_limit_reached" }, 409);
+  }
+  const deviceToken = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+  const tokenDigest = await sha256(deviceToken);
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE owner_account_invitations SET accepted_at = ?1
+        WHERE id = ?2 AND accepted_at IS NULL AND cancelled_at IS NULL`,
+    ).bind(now, invitation.invitationID),
+    env.DB.prepare(
+      `UPDATE tenant_members
+          SET authentication_subject_id = ?1, status = 'active', activated_at = ?2
+        WHERE tenant_id = ?3 AND id = ?4 AND role = 'owner' AND status = 'invited'`,
+    ).bind(authorization.subjectID, now, invitation.tenantID, invitation.memberID),
+    env.DB.prepare(
+      `INSERT INTO devices
+        (id, tenant_id, member_id, display_name, token_hash, created_at, last_seen_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)`,
+    ).bind(deviceID, invitation.tenantID, invitation.memberID, deviceName,
+      tokenDigest, now),
+    env.DB.prepare(
+      `UPDATE owner_authorization_attempts SET status = 'consumed',
+              consumed_at = ?1, updated_at = ?1
+        WHERE id = ?2 AND status = 'verified'`,
+    ).bind(now, authorization.id),
+    accessAuditStatement(env, invitation.tenantID, "owner.invitation_accepted", {
+      actorMemberID: invitation.memberID,
+      actorDeviceID: deviceID,
+      targetMemberID: invitation.memberID,
+      targetDeviceID: deviceID,
+      metadata: { verifiedEmail: authorization.verifiedEmail },
+      createdAt: now,
+    }),
+  ]);
+  return json({
+    tenant: { id: invitation.tenantID, displayName: invitation.tenantName },
+    owner: { memberID: invitation.memberID },
+    device: { id: deviceID, deviceToken },
+    tokenIssued: true,
+  }, 201);
+}
+
+async function revokeOwnerMember(
+  env: Env,
+  identity: DeviceIdentity,
+  memberID: string,
+): Promise<Response> {
+  if (identity.role !== "owner") return json({ error: "owner_required" }, 403);
+  if (memberID === identity.memberID) {
+    return json({ error: "cannot_modify_current_member" }, 409);
+  }
+  const target = await env.DB.prepare(
+    `SELECT role, status FROM tenant_members
+      WHERE tenant_id = ?1 AND id = ?2`,
+  ).bind(identity.tenantID, memberID).first<{ role: TenantRole; status: string }>();
+  if (!target || target.role !== "owner") return json({ error: "not_found" }, 404);
+  if (target.status === "invited") {
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE owner_account_invitations SET cancelled_at = ?1
+          WHERE tenant_id = ?2 AND member_id = ?3
+            AND accepted_at IS NULL AND cancelled_at IS NULL`,
+      ).bind(now, identity.tenantID, memberID),
+      env.DB.prepare(
+        `UPDATE tenant_members SET status = 'revoked', revoked_at = ?1
+          WHERE tenant_id = ?2 AND id = ?3 AND status = 'invited'`,
+      ).bind(now, identity.tenantID, memberID),
+      accessAuditStatement(env, identity.tenantID, "owner.invitation_cancelled", {
+        actorMemberID: identity.memberID,
+        actorDeviceID: identity.deviceID,
+        targetMemberID: memberID,
+        createdAt: now,
+      }),
+    ]);
+    return json({ memberID, status: "revoked" });
+  }
+  if (target.status !== "active") return json({ error: "invalid_member_transition" }, 409);
+  const activeOwners = await env.DB.prepare(
+    `SELECT COUNT(*) AS count FROM tenant_members
+      WHERE tenant_id = ?1 AND role = 'owner' AND status = 'active'`,
+  ).bind(identity.tenantID).first<{ count: number }>();
+  if ((activeOwners?.count ?? 0) <= 1) {
+    return json({ error: "final_active_owner_protected" }, 409);
+  }
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE tenant_members SET status = 'revoked', revoked_at = ?1
+        WHERE tenant_id = ?2 AND id = ?3 AND role = 'owner' AND status = 'active'`,
+    ).bind(now, identity.tenantID, memberID),
+    env.DB.prepare(
+      `UPDATE devices SET revoked_at = COALESCE(revoked_at, ?1),
+              data_removal_required_at = COALESCE(data_removal_required_at, ?1)
+        WHERE tenant_id = ?2 AND member_id = ?3`,
+    ).bind(now, identity.tenantID, memberID),
+    accessAuditStatement(env, identity.tenantID, "owner.revoked", {
+      actorMemberID: identity.memberID,
+      actorDeviceID: identity.deviceID,
+      targetMemberID: memberID,
+      metadata: { activeOwnersBefore: String(activeOwners?.count ?? 0) },
+      createdAt: now,
+    }),
+  ]);
+  return json({ memberID, status: "revoked" });
+}
+
+async function ownerRecoveryStatus(
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  if (identity.role !== "owner") return json({ error: "owner_required" }, 403);
+  const status = await env.DB.prepare(
+    `SELECT COUNT(*) AS availableCodes, MAX(methods.created_at) AS createdAt
+       FROM account_recovery_methods AS methods
+       JOIN tenant_members AS members
+         ON members.authentication_subject_id = methods.subject_id
+      WHERE members.tenant_id = ?1 AND members.id = ?2
+        AND methods.kind = 'recoveryCode'
+        AND methods.last_used_at IS NULL AND methods.revoked_at IS NULL`,
+  ).bind(identity.tenantID, identity.memberID).first<{
+    availableCodes: number;
+    createdAt: string | null;
+  }>();
+  return json({
+    availableCodes: status?.availableCodes ?? 0,
+    createdAt: status?.createdAt ?? null,
+  });
+}
+
+async function redeemOwnerRecoveryCode(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json<Record<string, unknown>>();
+  } catch {
+    return json({ error: "invalid_recovery_request" }, 400);
+  }
+  const code = nonemptyString(body.recoveryCode, 20, 64)?.toUpperCase();
+  const deviceID = nonemptyString(body.deviceID, 36, 36);
+  const deviceName = nonemptyString(body.deviceName, 1, 120);
+  if (!code || !deviceID || !deviceName || !validUUID(deviceID)) {
+    return json({ error: "invalid_recovery_request" }, 400);
+  }
+  const digest = await sha256(code);
+  const method = await env.DB.prepare(
+    `SELECT methods.id AS methodID, methods.subject_id AS subjectID,
+            members.id AS memberID, members.tenant_id AS tenantID,
+            tenants.display_name AS tenantName
+       FROM account_recovery_methods AS methods
+       JOIN tenant_members AS members
+         ON members.authentication_subject_id = methods.subject_id
+        AND members.role = 'owner' AND members.status = 'active'
+       JOIN tenants ON tenants.id = members.tenant_id AND tenants.status = 'active'
+      WHERE methods.kind = 'recoveryCode' AND methods.secret_digest = ?1
+        AND methods.last_used_at IS NULL AND methods.revoked_at IS NULL`,
+  ).bind(digest).first<{
+    methodID: string;
+    subjectID: string;
+    memberID: string;
+    tenantID: string;
+    tenantName: string;
+  }>();
+  if (!method) return json({ error: "invalid_or_used_recovery_code" }, 401);
+  const existing = await env.DB.prepare(
+    "SELECT member_id AS memberID FROM devices WHERE tenant_id = ?1 AND id = ?2",
+  ).bind(method.tenantID, deviceID).first<{ memberID: string }>();
+  if (!existing) {
+    const count = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM devices WHERE tenant_id = ?1 AND revoked_at IS NULL",
+    ).bind(method.tenantID).first<{ count: number }>();
+    if ((count?.count ?? 0) >= stagingRegistrationEntitlements.deviceLimit) {
+      return json({ error: "device_limit_reached" }, 409);
+    }
+  }
+  const now = new Date().toISOString();
+  const token = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+  const tokenDigest = await sha256(token);
+  const attemptID = crypto.randomUUID();
+  const [claimed] = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE account_recovery_methods SET last_used_at = ?1
+        WHERE id = ?2 AND last_used_at IS NULL AND revoked_at IS NULL`,
+    ).bind(now, method.methodID),
+    existing
+      ? env.DB.prepare(
+        `UPDATE devices SET member_id = ?1, display_name = ?2, token_hash = ?3,
+                last_seen_at = ?4, revoked_at = NULL,
+                data_removal_required_at = NULL,
+                data_removal_acknowledged_at = NULL,
+                credentials_purged_at = NULL
+          WHERE tenant_id = ?5 AND id = ?6`,
+      ).bind(method.memberID, deviceName, tokenDigest, now, method.tenantID, deviceID)
+      : env.DB.prepare(
+        `INSERT INTO devices
+          (id, tenant_id, member_id, display_name, token_hash, created_at, last_seen_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)`,
+      ).bind(deviceID, method.tenantID, method.memberID, deviceName, tokenDigest, now),
+    env.DB.prepare(
+      `INSERT INTO owner_recovery_attempts
+        (id, recovery_method_id, subject_id, device_id, status, created_at)
+       VALUES (?1, ?2, ?3, ?4, 'succeeded', ?5)`,
+    ).bind(attemptID, method.methodID, method.subjectID, deviceID, now),
+    accessAuditStatement(env, method.tenantID, "account.recovered", {
+      actorMemberID: method.memberID,
+      actorDeviceID: deviceID,
+      targetMemberID: method.memberID,
+      targetDeviceID: deviceID,
+      metadata: { method: "recoveryCode", existingDevice: existing ? "true" : "false" },
+      createdAt: now,
+    }),
+  ]);
+  if (claimed.meta.changes !== 1) {
+    return json({ error: "invalid_or_used_recovery_code" }, 401);
+  }
+  return json({
+    tenant: { id: method.tenantID, displayName: method.tenantName },
+    owner: { memberID: method.memberID },
+    device: { id: deviceID, deviceToken: token },
+    tokenIssued: true,
+  }, existing ? 200 : 201);
+}
+
+function validTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validUUID(value: unknown): value is string {
+  return typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+      .test(value);
+}
+
+async function parseAccountRegistration(
+  request: Request,
+): Promise<ValidatedAccountRegistration | Response> {
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json<Record<string, unknown>>();
+  } catch {
+    return json({ error: "invalid_registration_request" }, 400);
+  }
+  const forbiddenField = forbiddenRegistrationField(body);
+  if (forbiddenField) {
+    return json({
+      error: "forbidden_registration_field",
+      field: forbiddenField,
+    }, 400);
+  }
+
+  const owner = body.owner as Record<string, unknown> | undefined;
+  const company = body.company as Record<string, unknown> | undefined;
+  const consent = body.consent as Record<string, unknown> | undefined;
+  const device = body.device as Record<string, unknown> | undefined;
+  const ownerName = nonemptyString(owner?.displayName, 2, 120);
+  const email = nonemptyString(owner?.email, 3, 254)?.toLowerCase() ?? null;
+  const companyName = nonemptyString(company?.displayName, 2, 160);
+  const timeZoneID = nonemptyString(company?.timeZoneID, 1, 80);
+  const identityAssertion = nonemptyString(body.identityAssertion, 20, 4096);
+  const authenticationMethod = body.authenticationMethod as
+    | AccountAuthenticationMethod
+    | undefined;
+  const supportedMethods: AccountAuthenticationMethod[] = [
+    "password", "passkey", "signInWithApple", "federated",
+  ];
+  const planCode = nonemptyString(body.requestedPlanCode, 1, 64)?.toLowerCase();
+  const termsVersion = nonemptyString(consent?.termsVersion, 1, 80);
+  const privacyVersion = nonemptyString(consent?.privacyVersion, 1, 80);
+  const acceptedAt = typeof consent?.acceptedAt === "string"
+    ? new Date(consent.acceptedAt)
+    : null;
+  const now = Date.now();
+  const consentTime = acceptedAt?.getTime() ?? Number.NaN;
+  const deviceName = nonemptyString(device?.displayName, 1, 120);
+
+  if (!validUUID(body.idempotencyKey) || !ownerName || !email ||
+      !validEmail(email) || !companyName || !timeZoneID ||
+      !validTimeZone(timeZoneID) || !identityAssertion ||
+      !authenticationMethod || !supportedMethods.includes(authenticationMethod) ||
+      !planCode || !/^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(planCode) ||
+      !termsVersion || !privacyVersion || !Number.isFinite(consentTime) ||
+      consentTime < now - 86_400_000 || consentTime > now + 300_000 ||
+      !validUUID(device?.id) || !deviceName) {
+    return json({ error: "invalid_registration_request" }, 400);
+  }
+
+  return {
+    idempotencyKey: body.idempotencyKey,
+    identityAssertion,
+    authenticationMethod,
+    owner: { displayName: ownerName, email },
+    company: {
+      displayName: companyName,
+      normalizedName: companyName.replace(/\s+/g, " ").toLowerCase(),
+      timeZoneID,
+    },
+    requestedPlanCode: planCode,
+    consent: {
+      termsVersion,
+      privacyVersion,
+      acceptedAt: acceptedAt!.toISOString(),
+    },
+    device: { id: device!.id, displayName: deviceName },
+  };
+}
+
+async function validateAccountRegistration(request: Request): Promise<Response> {
+  const registration = await parseAccountRegistration(request);
+  if (registration instanceof Response) return registration;
+  const { identityAssertion: _, ...publicRegistration } = registration;
+  const { normalizedName: __, ...publicCompany } = publicRegistration.company;
+  return json({
+    valid: true,
+    status: "started" satisfies AccountRegistrationStatus,
+    registration: { ...publicRegistration, company: publicCompany },
+  });
+}
+
+function registrationReceipt(
+  attempt: AccountRegistrationAttemptRow,
+  registrationToken: string | null,
+): Response {
+  return json({
+    registrationAttempt: {
+      id: attempt.id,
+      status: attempt.status,
+      expiresAt: attempt.expiresAt,
+      createdAt: attempt.createdAt,
+      updatedAt: attempt.updatedAt,
+      cancelledAt: attempt.cancelledAt,
+    },
+    registrationToken,
+    tokenIssued: registrationToken !== null,
+  }, registrationToken === null ? 200 : 201);
+}
+
+async function registrationFingerprint(
+  registration: ValidatedAccountRegistration,
+): Promise<{ fingerprint: string; assertionDigest: string }> {
+  const assertionDigest = await sha256(registration.identityAssertion);
+  const fingerprint = await sha256(JSON.stringify({
+    ...registration,
+    identityAssertion: assertionDigest,
+  }));
+  return { fingerprint, assertionDigest };
+}
+
+async function expireRegistrationAttempt(
+  env: Env,
+  attempt: AccountRegistrationAttemptRow,
+): Promise<AccountRegistrationAttemptRow> {
+  if (["started", "identityVerified", "profileComplete", "planAuthorized"]
+      .includes(attempt.status) && Date.parse(attempt.expiresAt) <= Date.now()) {
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      `UPDATE account_registration_attempts
+          SET status = 'expired', updated_at = ?2
+        WHERE id = ?1 AND status = ?3`,
+    ).bind(attempt.id, now, attempt.status).run();
+    return { ...attempt, status: "expired", updatedAt: now };
+  }
+  return attempt;
+}
+
+async function startAccountRegistration(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  const registration = await parseAccountRegistration(request);
+  if (registration instanceof Response) return registration;
+  const { fingerprint, assertionDigest } =
+    await registrationFingerprint(registration);
+  const existing = await env.DB.prepare(
+    `SELECT id, request_fingerprint AS requestFingerprint, status,
+            expires_at AS expiresAt, created_at AS createdAt,
+            updated_at AS updatedAt, cancelled_at AS cancelledAt
+       FROM account_registration_attempts WHERE idempotency_key = ?1`,
+  ).bind(registration.idempotencyKey).first<AccountRegistrationAttemptRow>();
+  if (existing) {
+    if (existing.requestFingerprint !== fingerprint) {
+      return json({ error: "idempotency_key_reused" }, 409);
+    }
+    return registrationReceipt(
+      await expireRegistrationAttempt(env, existing),
+      null,
+    );
+  }
+
+  const verifiedAuthorization = await env.DB.prepare(
+    `SELECT authorization.id, authorization.subject_id AS subjectID,
+            authorization.provider_method AS providerMethod,
+            authorization.subject_was_created AS subjectWasCreated
+       FROM owner_authorization_attempts AS authorization
+       JOIN verified_contact_addresses AS contact
+         ON contact.subject_id = authorization.subject_id
+        AND contact.kind = 'email'
+      WHERE authorization.identity_assertion_digest = ?1
+        AND authorization.status = 'verified'
+        AND authorization.expires_at > ?2
+        AND contact.normalized_value = ?3`,
+  ).bind(
+    assertionDigest, new Date().toISOString(), registration.owner.email,
+  ).first<{
+    id: string;
+    subjectID: string;
+    providerMethod: string;
+    subjectWasCreated: number;
+  }>();
+  if (!verifiedAuthorization ||
+      verifiedAuthorization.providerMethod !== registration.authenticationMethod) {
+    return json({ error: "identity_verification_required" }, 401);
+  }
+  if (verifiedAuthorization.subjectWasCreated !== 1) {
+    return json({ error: "account_or_company_requires_sign_in" }, 409);
+  }
+
+  const duplicate = await env.DB.prepare(
+    `SELECT 1 AS found
+       FROM verified_contact_addresses
+      WHERE kind = 'email' AND normalized_value = ?1 AND subject_id != ?4
+      UNION ALL
+     SELECT 1 AS found
+       FROM account_registration_attempts
+      WHERE (
+        status IN ('provisioning', 'active') OR
+        (status IN (
+          'started', 'identityVerified', 'profileComplete', 'planAuthorized'
+        ) AND expires_at > ?3)
+      )
+        AND (normalized_email = ?1 OR normalized_company_name = ?2)
+      LIMIT 1`,
+  ).bind(
+    registration.owner.email,
+    registration.company.normalizedName,
+    new Date().toISOString(),
+    verifiedAuthorization.subjectID,
+  ).first<{ found: number }>();
+  if (duplicate) {
+    return json({ error: "account_or_company_requires_sign_in" }, 409);
+  }
+
+  const id = crypto.randomUUID();
+  const registrationToken = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+  const tokenDigest = await sha256(registrationToken);
+  const now = new Date();
+  const createdAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + 30 * 60_000).toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO account_registration_attempts
+        (id, idempotency_key, request_fingerprint, status,
+         normalized_email, owner_display_name, company_display_name,
+         normalized_company_name, time_zone_id, requested_plan_code,
+         identity_assertion_digest, registration_token_digest,
+         authentication_method, device_id, device_display_name,
+         subject_id, owner_authorization_attempt_id, expires_at, created_at,
+         updated_at)
+       VALUES (?1, ?2, ?3, 'started', ?4, ?5, ?6, ?7, ?8, ?9,
+               ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?18)`,
+    ).bind(
+      id, registration.idempotencyKey, fingerprint,
+      registration.owner.email, registration.owner.displayName,
+      registration.company.displayName, registration.company.normalizedName,
+      registration.company.timeZoneID, registration.requestedPlanCode,
+      assertionDigest, tokenDigest, registration.authenticationMethod,
+      registration.device.id, registration.device.displayName,
+      verifiedAuthorization.subjectID, verifiedAuthorization.id, expiresAt,
+      createdAt,
+    ),
+    env.DB.prepare(
+      `INSERT INTO legal_consents
+        (id, subject_id, registration_attempt_id, terms_version,
+         privacy_version, accepted_at, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+    ).bind(
+      crypto.randomUUID(), verifiedAuthorization.subjectID, id,
+      registration.consent.termsVersion,
+      registration.consent.privacyVersion,
+      registration.consent.acceptedAt, createdAt,
+    ),
+    env.DB.prepare(
+      `UPDATE owner_authorization_attempts
+          SET status = 'consumed', consumed_at = ?2, updated_at = ?2
+        WHERE id = ?1 AND status = 'verified'`,
+    ).bind(verifiedAuthorization.id, createdAt),
+  ]);
+  return registrationReceipt({
+    id,
+    requestFingerprint: fingerprint,
+    status: "started",
+    expiresAt,
+    createdAt,
+    updatedAt: createdAt,
+    cancelledAt: null,
+  }, registrationToken);
+}
+
+const stagingRegistrationEntitlements = {
+  employeeLimit: 25,
+  deviceLimit: 40,
+  ownerLimit: 4,
+  modules: ["sales", "service", "dispatch", "reporting"],
+};
+
+async function completeAccountRegistration(
+  request: Request,
+  env: Env,
+  id: string,
+): Promise<Response> {
+  const authenticated = await authenticatedRegistrationAttempt(request, env, id);
+  if (authenticated instanceof Response) return authenticated;
+  if (authenticated.status === "active") {
+    return json({
+      registrationAttempt: {
+        id: authenticated.id,
+        status: authenticated.status,
+        expiresAt: authenticated.expiresAt,
+        createdAt: authenticated.createdAt,
+        updatedAt: authenticated.updatedAt,
+      },
+      deviceToken: null,
+      tokenIssued: false,
+    });
+  }
+  if (authenticated.status !== "started") {
+    return json({ error: "registration_not_ready" }, 409);
+  }
+  if (env.PFSS_ENVIRONMENT !== "staging") {
+    return json({ error: "plan_authorization_required" }, 409);
+  }
+
+  const attempt = await env.DB.prepare(
+    `SELECT registration.id,
+            registration.request_fingerprint AS requestFingerprint,
+            registration.status,
+            registration.owner_display_name AS ownerDisplayName,
+            registration.company_display_name AS companyDisplayName,
+            registration.time_zone_id AS timeZoneID,
+            registration.requested_plan_code AS requestedPlanCode,
+            registration.device_id AS deviceID,
+            registration.device_display_name AS deviceDisplayName,
+            COALESCE(registration.subject_id, authorization.subject_id) AS subjectID,
+            registration.tenant_id AS tenantID,
+            registration.expires_at AS expiresAt,
+            registration.created_at AS createdAt,
+            registration.updated_at AS updatedAt,
+            registration.cancelled_at AS cancelledAt
+       FROM account_registration_attempts AS registration
+       JOIN owner_authorization_attempts AS authorization
+         ON authorization.id = registration.owner_authorization_attempt_id
+      WHERE registration.id = ?1`,
+  ).bind(id).first<ProvisioningRegistrationAttemptRow>();
+  if (!attempt?.subjectID) return json({ error: "identity_verification_required" }, 401);
+
+  const tenantID = crypto.randomUUID();
+  const memberID = crypto.randomUUID();
+  const subscriptionID = crypto.randomUUID();
+  const allocationID = crypto.randomUUID();
+  const deviceToken = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+  const deviceTokenDigest = await sha256(deviceToken);
+  const now = new Date().toISOString();
+  const entitlementsJSON = JSON.stringify(stagingRegistrationEntitlements);
+  let results: D1Result<unknown>[];
+  try {
+    results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE account_registration_attempts
+          SET status = 'provisioning', subject_id = ?2, updated_at = ?3
+        WHERE id = ?1 AND status = 'started' AND expires_at > ?3`,
+    ).bind(id, attempt.subjectID, now),
+    env.DB.prepare(
+      `INSERT INTO tenants (id, display_name, status, created_at)
+       SELECT ?2, company_display_name, 'active', ?3
+         FROM account_registration_attempts
+        WHERE id = ?1 AND status = 'provisioning' AND tenant_id IS NULL`,
+    ).bind(id, tenantID, now),
+    env.DB.prepare(
+      `UPDATE account_registration_attempts
+          SET tenant_id = ?2, updated_at = ?3
+        WHERE id = ?1 AND status = 'provisioning' AND tenant_id IS NULL
+          AND EXISTS (SELECT 1 FROM tenants WHERE id = ?2)`,
+    ).bind(id, tenantID, now),
+    env.DB.prepare(
+      `INSERT INTO tenant_members
+        (id, tenant_id, display_name, role, status, created_at, activated_at,
+         authentication_subject_id)
+       SELECT ?2, ?3, owner_display_name, 'owner', 'active', ?4, ?4, subject_id
+         FROM account_registration_attempts
+        WHERE id = ?1 AND status = 'provisioning' AND tenant_id = ?3`,
+    ).bind(id, memberID, tenantID, now),
+    env.DB.prepare(
+      `INSERT INTO subscription_accounts
+        (id, tenant_id, status, created_at, updated_at)
+       SELECT ?2, ?3, 'trialing', ?4, ?4
+         FROM account_registration_attempts
+        WHERE id = ?1 AND status = 'provisioning' AND tenant_id = ?3`,
+    ).bind(id, subscriptionID, tenantID, now),
+    env.DB.prepare(
+      `INSERT INTO plan_allocations
+        (id, tenant_id, access_source, source_reference, plan_code,
+         entitlements_json, effective_at, expires_at, granted_by_subject_id,
+         grant_reason, created_at)
+       SELECT ?2, ?3, 'betaGrant', ?1, requested_plan_code, ?4, ?5, ?6,
+              subject_id, 'Phase 17 staging registration', ?5
+         FROM account_registration_attempts
+        WHERE id = ?1 AND status = 'provisioning' AND tenant_id = ?3`,
+    ).bind(
+      id, allocationID, tenantID, entitlementsJSON, now,
+      new Date(Date.now() + 90 * 24 * 60 * 60_000).toISOString(),
+    ),
+    env.DB.prepare(
+      `INSERT INTO devices
+        (id, tenant_id, member_id, display_name, token_hash, created_at,
+         last_seen_at)
+       SELECT device_id, ?2, ?3, device_display_name, ?4, ?5, ?5
+         FROM account_registration_attempts
+        WHERE id = ?1 AND status = 'provisioning' AND tenant_id = ?2`,
+    ).bind(id, tenantID, memberID, deviceTokenDigest, now),
+    env.DB.prepare(
+      `UPDATE legal_consents
+          SET subject_id = ?2
+        WHERE registration_attempt_id = ?1 AND subject_id IS NULL`,
+    ).bind(id, attempt.subjectID),
+    env.DB.prepare(
+      `INSERT INTO access_audit_events
+        (id, tenant_id, actor_member_id, actor_device_id, event_type,
+         target_member_id, target_device_id, metadata_json, created_at)
+       SELECT ?2, ?3, ?4, device_id, 'account.registration_completed',
+              ?4, device_id, ?5, ?6
+         FROM account_registration_attempts
+        WHERE id = ?1 AND status = 'provisioning' AND tenant_id = ?3`,
+    ).bind(
+      id, crypto.randomUUID(), tenantID, memberID,
+      JSON.stringify({
+        registrationAttemptID: id,
+        planCode: attempt.requestedPlanCode,
+        accessSource: "betaGrant",
+      }),
+      now,
+    ),
+    env.DB.prepare(
+      `UPDATE account_registration_attempts
+          SET status = 'active', completed_at = ?3, updated_at = ?3
+        WHERE id = ?1 AND status = 'provisioning' AND tenant_id = ?2
+          AND EXISTS (
+            SELECT 1 FROM devices
+             WHERE tenant_id = ?2 AND id = account_registration_attempts.device_id
+          )`,
+    ).bind(id, tenantID, now),
+    ]);
+  } catch {
+    return json({ error: "registration_provisioning_failed" }, 503);
+  }
+  if (results[0].meta.changes !== 1 ||
+      results[results.length - 1].meta.changes !== 1) {
+    const current = await env.DB.prepare(
+      `SELECT status, tenant_id AS tenantID
+         FROM account_registration_attempts WHERE id = ?1`,
+    ).bind(id).first<{ status: string; tenantID: string | null }>();
+    if (current?.status === "active") {
+      return json({
+        registrationAttempt: { id, status: "active" },
+        tenant: current.tenantID ? { id: current.tenantID } : null,
+        deviceToken: null,
+        tokenIssued: false,
+      });
+    }
+    return json({ error: "registration_provisioning_failed" }, 503);
+  }
+  return json({
+    registrationAttempt: { id, status: "active", completedAt: now },
+    tenant: {
+      id: tenantID,
+      displayName: attempt.companyDisplayName,
+      timeZoneID: attempt.timeZoneID,
+    },
+    owner: { memberID, role: "owner" },
+    device: {
+      id: attempt.deviceID,
+      displayName: attempt.deviceDisplayName,
+      deviceToken,
+      enrolledAt: now,
+    },
+    plan: {
+      code: attempt.requestedPlanCode,
+      accessSource: "betaGrant",
+      entitlements: stagingRegistrationEntitlements,
+    },
+    initialSynchronizationCursor: now,
+    tokenIssued: true,
+  }, 201);
+}
+
+async function authenticatedRegistrationAttempt(
+  request: Request,
+  env: Env,
+  id: string,
+): Promise<AccountRegistrationAttemptRow | Response> {
+  const token = request.headers.get("x-pfss-registration-token")?.trim();
+  if (!token) return json({ error: "registration_authentication_required" }, 401);
+  const tokenDigest = await sha256(token);
+  const attempt = await env.DB.prepare(
+    `SELECT id, request_fingerprint AS requestFingerprint, status,
+            expires_at AS expiresAt, created_at AS createdAt,
+            updated_at AS updatedAt, cancelled_at AS cancelledAt
+       FROM account_registration_attempts
+      WHERE id = ?1 AND registration_token_digest = ?2`,
+  ).bind(id, tokenDigest).first<AccountRegistrationAttemptRow>();
+  if (!attempt) return json({ error: "registration_not_found" }, 404);
+  return expireRegistrationAttempt(env, attempt);
+}
+
+async function getAccountRegistrationAttempt(
+  request: Request,
+  env: Env,
+  id: string,
+): Promise<Response> {
+  const attempt = await authenticatedRegistrationAttempt(request, env, id);
+  if (attempt instanceof Response) return attempt;
+  return registrationReceipt(attempt, null);
+}
+
+async function cancelAccountRegistrationAttempt(
+  request: Request,
+  env: Env,
+  id: string,
+): Promise<Response> {
+  let attempt = await authenticatedRegistrationAttempt(request, env, id);
+  if (attempt instanceof Response) return attempt;
+  if (attempt.status === "cancelled") return registrationReceipt(attempt, null);
+  if (attempt.status === "expired") return registrationReceipt(attempt, null);
+  if (["provisioning", "active"].includes(attempt.status)) {
+    return json({ error: "registration_cannot_be_cancelled" }, 409);
+  }
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `UPDATE account_registration_attempts
+        SET status = 'cancelled', cancelled_at = ?2, updated_at = ?2
+      WHERE id = ?1`,
+  ).bind(id, now).run();
+  attempt = { ...attempt, status: "cancelled", cancelledAt: now, updatedAt: now };
+  return registrationReceipt(attempt, null);
 }
 
 function canManageMembers(identity: DeviceIdentity): boolean {
@@ -457,6 +1849,12 @@ async function authenticate(
             devices.member_id AS memberID,
             tenant_members.employee_id AS employeeID,
             tenant_members.display_name AS memberName,
+            (SELECT normalized_value
+               FROM verified_contact_addresses
+              WHERE subject_id = tenant_members.authentication_subject_id
+                AND kind = 'email'
+              ORDER BY verified_at DESC
+              LIMIT 1) AS memberEmail,
             tenant_members.role AS role,
             tenant_members.status AS memberStatus,
             devices.id AS deviceID,
@@ -646,6 +2044,7 @@ function session(identity: DeviceIdentity): Response {
     member: {
       id: identity.memberID,
       displayName: identity.memberName,
+      email: identity.memberEmail,
       role: identity.role,
       employeeID: identity.employeeID,
     },
@@ -1330,6 +2729,125 @@ async function acceptOperation(
   return json({ revision, duplicate: false }, 201);
 }
 
+async function configureOwnerWorkProfile(
+  request: Request,
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  if (identity.role !== "owner") return json({ error: "owner_required" }, 403);
+  const body = await request.json<Record<string, unknown>>();
+  const requested = Array.isArray(body.roles) ? body.roles : [];
+  const allowed = new Map([
+    ["salesperson", "Salesperson"],
+    ["technician", "Technician"],
+  ]);
+  const roles = [...new Set(requested.map((value) =>
+    typeof value === "string" ? allowed.get(value) : undefined,
+  ).filter((value): value is string => Boolean(value)))];
+  if (roles.length === 0 || roles.length !== requested.length) {
+    return json({ error: "invalid_owner_work_roles" }, 400);
+  }
+
+  const member = await env.DB.prepare(
+    `SELECT employee_id AS employeeID, display_name AS displayName
+       FROM tenant_members
+      WHERE tenant_id = ?1 AND id = ?2 AND status = 'active'`,
+  ).bind(identity.tenantID, identity.memberID).first<{
+    employeeID: string | null;
+    displayName: string;
+  }>();
+  if (!member) return json({ error: "member_not_found" }, 404);
+
+  const employeeID = member.employeeID ?? crypto.randomUUID();
+  const words = member.displayName.trim().split(/\s+/);
+  const firstName = words.shift() ?? "Owner";
+  const lastName = words.join(" ");
+  const now = new Date().toISOString();
+  const revision = crypto.randomUUID();
+  const operationID = crypto.randomUUID();
+  const recordData = utf8Base64({
+    id: employeeID,
+    firstName,
+    lastName,
+    role: roles[0],
+    roles,
+    isActive: true,
+    lifecycleStatus: "Active",
+    createdDate: now,
+  });
+  const mutation = utf8Base64({
+    entityType: "employee",
+    entityID: employeeID,
+    recordData,
+    modifiedAt: now,
+  });
+  const operation = {
+    id: operationID,
+    idempotencyKey: `owner-work-profile-${identity.memberID}-${revision}`,
+    sequenceNumber: 0,
+    type: "recordMutation",
+    entityType: "employee",
+    entityID: employeeID,
+    actionName: "upsertRecord",
+    payload: {
+      schemaVersion: 1,
+      contentType: "application/vnd.pfss.record-mutation+json",
+      body: mutation,
+    },
+    status: "synchronized",
+    createdAt: now,
+    updatedAt: now,
+    retryAttempts: [],
+    metadata: { source: "ownerWorkProfile" },
+  };
+  const operationJSON = JSON.stringify(operation);
+  const current = await env.DB.prepare(
+    `SELECT revision FROM synchronized_records
+      WHERE tenant_id = ?1 AND entity_type = 'employee' AND entity_id = ?2`,
+  ).bind(identity.tenantID, employeeID).first<{ revision: string }>();
+
+  const statements = [
+    current
+      ? env.DB.prepare(
+        `UPDATE synchronized_records
+            SET revision = ?1, operation_json = ?2,
+                updated_by_member_id = ?3, updated_by_device_id = ?4,
+                updated_at = ?5
+          WHERE tenant_id = ?6 AND entity_type = 'employee' AND entity_id = ?7`,
+      ).bind(revision, operationJSON, identity.memberID, identity.deviceID,
+        now, identity.tenantID, employeeID)
+      : env.DB.prepare(
+        `INSERT INTO synchronized_records
+          (tenant_id, entity_type, entity_id, revision, operation_json,
+           updated_by_member_id, updated_by_device_id, updated_at)
+         VALUES (?1, 'employee', ?2, ?3, ?4, ?5, ?6, ?7)`,
+      ).bind(identity.tenantID, employeeID, revision, operationJSON,
+        identity.memberID, identity.deviceID, now),
+    env.DB.prepare(
+      `INSERT INTO synchronized_operations
+        (id, tenant_id, device_id, idempotency_key, operation_type,
+         entity_type, entity_id, action_name, payload_json, created_at,
+         accepted_at, revision)
+       VALUES (?1, ?2, ?3, ?4, 'recordMutation', 'employee', ?5,
+               'upsertRecord', ?6, ?7, ?7, ?8)`,
+    ).bind(operationID, identity.tenantID, identity.deviceID,
+      operation.idempotencyKey, employeeID, operationJSON, now, revision),
+    env.DB.prepare(
+      `UPDATE tenant_members SET employee_id = ?1
+        WHERE tenant_id = ?2 AND id = ?3 AND role = 'owner'`,
+    ).bind(employeeID, identity.tenantID, identity.memberID),
+    accessAuditStatement(env, identity.tenantID, "owner.work_profile_updated", {
+      actorMemberID: identity.memberID,
+      actorDeviceID: identity.deviceID,
+      targetMemberID: identity.memberID,
+      metadata: { employeeID, roles: roles.join(",") },
+      createdAt: now,
+    }),
+  ];
+  await env.DB.batch(statements);
+  return json({ employeeID, roles, revision }, current ? 200 : 201);
+}
+
 async function synchronizationChanges(
   url: URL,
   env: Env,
@@ -1354,12 +2872,25 @@ async function synchronizationChanges(
     revision: string;
     payloadJSON: string;
   }>();
-  const changes = result.results.map((row) => ({
-    sequence: row.sequence,
-    sourceDeviceID: row.deviceID,
-    revision: row.revision,
-    operation: JSON.parse(row.payloadJSON),
-  }));
+  const changes = result.results.map((row) => {
+    const operation = JSON.parse(row.payloadJSON) as Record<string, unknown>;
+    const createdAt = typeof operation.createdAt === "string"
+      ? operation.createdAt
+      : new Date().toISOString();
+    return {
+      sequence: row.sequence,
+      sourceDeviceID: row.deviceID,
+      revision: row.revision,
+      operation: {
+        sequenceNumber: 0,
+        status: "synchronized",
+        updatedAt: createdAt,
+        retryAttempts: [],
+        metadata: {},
+        ...operation,
+      },
+    };
+  });
   const cursor = changes.length > 0
     ? changes[changes.length - 1].sequence
     : after;
@@ -1495,6 +3026,63 @@ export default {
       if (request.method === "GET" && url.pathname === "/health") {
         return json({ status: "ok" });
       }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/owner-auth/authorize"
+      ) {
+        return startOwnerAuthorization(request, env);
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/owner-auth/callback"
+      ) {
+        return completeOwnerAuthorization(request, env);
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/owner-auth/sign-in"
+      ) {
+        return signInExistingOwner(request, env);
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/account-recovery/redeem"
+      ) {
+        return redeemOwnerRecoveryCode(request, env);
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/owner-invitations/accept"
+      ) {
+        return acceptOwnerInvitation(request, env);
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/account-registration/validate"
+      ) {
+        return validateAccountRegistration(request);
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/account-registration/attempts"
+      ) {
+        return startAccountRegistration(request, env);
+      }
+      const registrationAttemptMatch = url.pathname.match(
+        /^\/v1\/account-registration\/attempts\/([^/]+)(\/(cancel|complete))?$/,
+      );
+      if (registrationAttemptMatch) {
+        const attemptID = decodeURIComponent(registrationAttemptMatch[1]);
+        if (request.method === "GET" && !registrationAttemptMatch[2]) {
+          return getAccountRegistrationAttempt(request, env, attemptID);
+        }
+        if (request.method === "POST" && registrationAttemptMatch[3] === "cancel") {
+          return cancelAccountRegistrationAttempt(request, env, attemptID);
+        }
+        if (request.method === "POST" && registrationAttemptMatch[3] === "complete") {
+          return completeAccountRegistration(request, env, attemptID);
+        }
+      }
       if (request.method === "POST" && url.pathname === "/v1/beta/enroll") {
         return enroll(request, env);
       }
@@ -1510,6 +3098,38 @@ export default {
 
       if (request.method === "GET" && url.pathname === "/v1/session") {
         return session(identity);
+      }
+      if (
+        request.method === "GET" &&
+        url.pathname === "/v1/account-recovery/codes"
+      ) {
+        return ownerRecoveryStatus(env, identity);
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/account-recovery/codes"
+      ) {
+        return replaceOwnerRecoveryCodes(env, identity);
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/owner-invitations"
+      ) {
+        return createOwnerInvitation(request, env, identity);
+      }
+      const ownerMemberMatch = url.pathname.match(
+        /^\/v1\/owner-members\/([^/]+)\/revoke$/,
+      );
+      if (request.method === "POST" && ownerMemberMatch) {
+        return revokeOwnerMember(
+          env, identity, decodeURIComponent(ownerMemberMatch[1]),
+        );
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/account/owner-work-profile"
+      ) {
+        return configureOwnerWorkProfile(request, env, identity);
       }
       if (request.method === "GET" && url.pathname === "/v1/members") {
         return listMembers(env, identity);

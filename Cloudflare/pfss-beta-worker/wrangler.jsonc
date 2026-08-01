@@ -7,6 +7,13 @@
   "triggers": {
     "crons": ["17 3 * * *"]
   },
+  "vars": {
+    "PFSS_ENVIRONMENT": "staging",
+    "WORKOS_ENVIRONMENT": "staging",
+    "WORKOS_API_BASE_URL": "https://api.workos.com",
+    "WORKOS_ISSUER": "https://api.workos.com/",
+    "WORKOS_REDIRECT_URIS": "[\"https://auth-staging.patriot-ok.com/callback/\"]"
+  },
   "d1_databases": [
     {
       "binding": "DB",
