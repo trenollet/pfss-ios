@@ -16,5 +16,8 @@
     "typescript": "latest",
     "vitest": "latest",
     "wrangler": "latest"
+  },
+  "dependencies": {
+    "@apple/app-store-server-library": "^3.1.0"
   }
 }

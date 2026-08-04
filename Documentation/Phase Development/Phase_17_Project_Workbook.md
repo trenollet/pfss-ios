@@ -146,7 +146,20 @@ ship to users.
 These remain required or planned pre-launch work in the product roadmap but do
 not expand the production account implementation boundary.
 
-## Step 8b — Private PFSS Operations Control Plane
+## Step 8 — Plan Entitlements and App Store Readiness
+
+### Step 8a — Account-State Enforcement and Apple Authority Foundation
+
+- [x] Enforce server-owned plan allocations, account lifecycle state, combined
+  user/device limits, and lead/customer/job creation limits.
+- [x] Preserve access to existing records after downgrade while blocking new
+  records beyond the effective plan limit.
+- [x] Add verified StoreKit transaction evidence, App Store Server API and
+  Notifications V2 adapters, and Owner-facing plan and usage receipts.
+- [ ] Approve trial length, billing-retry grace duration, cancellation effective
+  date, and final post-cancellation data-retention policy.
+
+### Step 8b — Private PFSS Operations Control Plane
 
 The product owner explicitly moved the private developer support and account
 operations application into active Phase 17 pre-launch work.
@@ -181,8 +194,25 @@ operations application into active Phase 17 pre-launch work.
   tests under the supported Node 22 runtime.
 - PFSS Operations compiled successfully for iOS and its latest signed build was
   installed and launched on iPhone17e and iPad Pro mini.
-- Migration filenames were normalized to unique sequential identifiers through
-  `0017` before the Phase 17 checkpoint.
+- Migration filenames were normalized to unique sequential identifiers: the
+  Operations control plane ends at `0017`, followed by App Store entitlement
+  migrations `0018` through `0020`.
+
+### Step 8c — App Store Connect and Sandbox Subscription Activation
+
+- [ ] Finalize the public app name, icon, category, description, privacy links,
+  screenshots, review notes, and subscription disclosures.
+- [ ] Create or align the App Store Connect app record using the existing bundle
+  identifier and approved product identity.
+- [ ] Create Base, Pro, and Expert products in one subscription group with the
+  approved product identifiers, pricing, limits, and metadata.
+- [ ] Configure TestFlight and expiring server-owned beta access without adding
+  a production payment-bypass key.
+- [ ] Register App Store Server Notifications V2 and verify purchase, restore,
+  upgrade, downgrade, billing retry, cancellation, expiration, and revocation
+  end to end on signed iPhone and iPad builds.
+- [ ] Preserve a known-good internal field build and verify upgrades retain the
+  existing workspace and synchronized company data.
 
 ## Phase 17 Completion Gate
 

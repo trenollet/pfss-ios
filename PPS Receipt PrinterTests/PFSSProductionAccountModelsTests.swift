@@ -139,6 +139,59 @@ final class PFSSProductionAccountModelsTests: XCTestCase {
         XCTAssertFalse(expired.isEffective(at: now))
     }
 
+    func testEntitlementSnapshotPreservesServerAuthority() throws {
+        let json = """
+        {
+          "appAccountToken": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "planCode": "beta-full",
+          "accessSource": "betaGrant",
+          "subscriptionStatus": "active",
+          "accessMode": "full",
+          "entitlements": {
+            "userLimit": 5,
+            "deviceLimit": 40,
+            "recordLimits": {
+              "leads": 1000,
+              "customers": 1000,
+              "jobs": 3000
+            },
+            "modules": ["sales", "service"]
+          },
+          "effectiveAt": "2027-01-15T08:00:00Z",
+          "expiresAt": null,
+          "usage": {
+            "users": 4, "employees": 3, "devices": 4, "owners": 1,
+            "leads": 20, "customers": 12, "jobs": 40
+          }
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let snapshot = try decoder.decode(
+            PFSSAccountEntitlementSnapshot.self,
+            from: Data(json.utf8)
+        )
+
+        XCTAssertTrue(snapshot.permitsChanges)
+        XCTAssertEqual(snapshot.accessSource, .betaGrant)
+        XCTAssertEqual(snapshot.entitlements.userLimit, 5)
+        XCTAssertEqual(snapshot.entitlements.recordLimits.jobs, 3_000)
+        XCTAssertEqual(snapshot.usage.devices, 4)
+
+        let readOnly = PFSSAccountEntitlementSnapshot(
+            appAccountToken: snapshot.appAccountToken,
+            planCode: snapshot.planCode,
+            accessSource: .appStoreSubscription,
+            subscriptionStatus: .pastDue,
+            accessMode: .readOnly,
+            entitlements: snapshot.entitlements,
+            effectiveAt: snapshot.effectiveAt,
+            expiresAt: snapshot.expiresAt,
+            usage: snapshot.usage
+        )
+        XCTAssertFalse(readOnly.permitsChanges)
+    }
+
     func testIdentityAuthorizationSessionUsesProviderNeutralContract() throws {
         let session = PFSSIdentityAuthorizationSession(
             authorizationURL: try XCTUnwrap(
