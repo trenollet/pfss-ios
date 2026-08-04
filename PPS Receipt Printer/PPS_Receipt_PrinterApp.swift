@@ -11,8 +11,44 @@ import UIKit
 @main
 @MainActor
 struct PPS_Receipt_PrinterApp: App {
-    @StateObject private var store: AppDataStore
     @StateObject private var printer = BluetoothPrinter()
+
+    var body: some Scene {
+        WindowGroup {
+            PFSSAppSessionHost()
+                .environmentObject(printer)
+        }
+    }
+}
+
+/// Recreates the complete company data session whenever device credentials
+/// change. This lets activation, Owner sign-in, and logout transition in place
+/// instead of requiring the process to be terminated and relaunched.
+private struct PFSSAppSessionHost: View {
+    @State private var sessionID = UUID()
+
+    var body: some View {
+        PFSSAppDataSessionView()
+            .id(sessionID)
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: .pfssCompanyAccessWasActivated
+                )
+            ) { _ in
+                sessionID = UUID()
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: .pfssUserDidLogOut
+                )
+            ) { _ in
+                sessionID = UUID()
+            }
+    }
+}
+
+private struct PFSSAppDataSessionView: View {
+    @StateObject private var store: AppDataStore
 
     init() {
         _store = StateObject(
@@ -20,12 +56,9 @@ struct PPS_Receipt_PrinterApp: App {
         )
     }
 
-    var body: some Scene {
-        WindowGroup {
-            PFSSProtectedRootView()
-                .environmentObject(store)
-                .environmentObject(printer)
-        }
+    var body: some View {
+        PFSSProtectedRootView()
+            .environmentObject(store)
     }
 }
 
@@ -52,7 +85,7 @@ private struct PFSSProtectedRootView: View {
                 }
                 .padding()
             } else if needsCompanyActivation {
-                PFSSCompanyActivationView()
+                PFSSFirstRunView()
             } else {
                 ContentView()
             }
@@ -73,6 +106,14 @@ private struct PFSSProtectedRootView: View {
             needsCompanyActivation = true
             isShowingRemovalMessage = true
         }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: .pfssUserDidLogOut
+            )
+        ) { _ in
+            needsCompanyActivation = true
+            isShowingRemovalMessage = false
+        }
         .alert(
             "Company Access Removed",
             isPresented: $isShowingRemovalMessage
@@ -86,6 +127,402 @@ private struct PFSSProtectedRootView: View {
     }
 }
 
+private struct PFSSFirstRunView: View {
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Image(systemName: "building.2.crop.circle")
+                            .font(.largeTitle)
+                            .foregroundStyle(.blue)
+                        Text("Welcome to PFSS")
+                            .font(.title2.weight(.semibold))
+                        Text(
+                            "Activate an employee device or create a new PFSS company as its first Owner."
+                        )
+                        .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 8)
+                }
+
+                Section("Choose How to Begin") {
+                    NavigationLink {
+                        PFSSExistingOwnerSignInView()
+                    } label: {
+                        Label(
+                            "Sign In as Existing Owner",
+                            systemImage: "person.crop.circle.badge.checkmark"
+                        )
+                    }
+
+                    NavigationLink {
+                        PFSSOwnerRecoveryView()
+                    } label: {
+                        Label(
+                            "Use Owner Recovery Code",
+                            systemImage: "key.viewfinder"
+                        )
+                    }
+
+                    NavigationLink {
+                        PFSSOwnerInvitationAcceptanceView()
+                    } label: {
+                        Label(
+                            "Accept Owner Invitation",
+                            systemImage: "person.2.badge.gearshape"
+                        )
+                    }
+
+                    NavigationLink {
+                        PFSSCompanyActivationView()
+                    } label: {
+                        Label(
+                            "Activate Employee Device",
+                            systemImage: "person.badge.key.fill"
+                        )
+                    }
+
+#if DEBUG
+                    NavigationLink {
+                        PFSSOwnerRegistrationStartView()
+                    } label: {
+                        Label(
+                            "Create New Company",
+                            systemImage: "building.2.fill"
+                        )
+                    }
+#endif
+                }
+
+                Section {
+                    Text(
+                        "Employee activation uses a one-time code from an authorized Manager or Owner. New-company registration verifies the first Owner before creating company access."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Get Started")
+        }
+    }
+}
+
+private struct PFSSOwnerInvitationAcceptanceView: View {
+    @StateObject private var coordinator: PFSSOwnerAuthenticationCoordinator
+    @StateObject private var browser = PFSSOwnerAuthenticationBrowser()
+    @StateObject private var manager = PFSSCloudflareBetaManager()
+    private let accountService = PFSSCloudflareOwnerAccountService()
+    @State private var invitationCode = ""
+    @State private var email = ""
+    @State private var deviceName = UIDevice.current.name
+    @State private var isWorking = false
+    @State private var isShowingEmailNotice = false
+    @State private var messageTitle = ""
+    @State private var message = ""
+    @State private var isShowingMessage = false
+
+    init() {
+        _coordinator = StateObject(wrappedValue:
+            PFSSOwnerAuthenticationCoordinator(
+                service: PFSSCloudflareOwnerAccountService(),
+                redirectURI:
+                    PFSSCloudflareOwnerAccountService.stagingRedirectURI
+            )
+        )
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                SecureField("Owner invitation code", text: $invitationCode)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                TextField("invited-owner@company.com", text: $email)
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.emailAddress)
+                    .textContentType(.emailAddress)
+                    .autocorrectionDisabled()
+                TextField("This device", text: $deviceName)
+            } header: {
+                Text("Join as an Owner")
+            } footer: {
+                Text(
+                    "PFSS activates the invitation only after WorkOS verifies the exact email address selected by the inviting Owner."
+                )
+            }
+
+            Section {
+                Button {
+                    isShowingEmailNotice = true
+                } label: {
+                    Label(
+                        isWorking ? "Verifying Invitation" : "Verify and Join Company",
+                        systemImage: "person.badge.shield.checkmark"
+                    )
+                }
+                .disabled(
+                    isWorking || invitationCode.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).isEmpty || email.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).isEmpty || deviceName.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).isEmpty
+                )
+            }
+        }
+        .navigationTitle("Owner Invitation")
+        .disabled(isWorking)
+        .alert(
+            "Watch for Your Verification Email",
+            isPresented: $isShowingEmailNotice
+        ) {
+            Button("Cancel", role: .cancel) { }
+            Button("Continue") { acceptInvitation() }
+        } message: {
+            Text(
+                "WorkOS will send a verification email. Check your Inbox and also your Junk or Spam folder if it does not arrive promptly."
+            )
+        }
+        .alert(messageTitle, isPresented: $isShowingMessage) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(message)
+        }
+    }
+
+    private func acceptInvitation() {
+        isWorking = true
+        Task {
+            defer { isWorking = false }
+            do {
+                let authorizationSession = try await coordinator.start(
+                    emailHint: email.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).lowercased()
+                )
+                let callback = try await browser.authenticate(
+                    at: authorizationSession.authorizationURL,
+                    callbackURL:
+                        PFSSCloudflareOwnerAccountService.stagingRedirectURI
+                )
+                let authorization = try coordinator.consumeCallback(callback)
+                let identity = try await accountService.exchange(authorization)
+                let receipt = try await accountService.acceptOwnerInvitation(
+                    invitationCode: invitationCode,
+                    identity: identity,
+                    deviceID: manager.registrationDeviceID(),
+                    deviceName: deviceName
+                )
+                try await manager.acceptProvisionedOwnerDevice(
+                    token: receipt.deviceToken,
+                    deviceID: receipt.deviceID
+                )
+                messageTitle = "Owner Access Activated"
+                message = "This device is connected to \(receipt.tenantName) with independent Owner access."
+            } catch {
+                messageTitle = "Unable to Accept Invitation"
+                message = error.localizedDescription
+            }
+            isShowingMessage = true
+        }
+    }
+}
+
+private struct PFSSOwnerRecoveryView: View {
+    @StateObject private var manager = PFSSCloudflareBetaManager()
+    private let accountService = PFSSCloudflareOwnerAccountService()
+    @State private var recoveryCode = ""
+    @State private var deviceName = UIDevice.current.name
+    @State private var isWorking = false
+    @State private var messageTitle = ""
+    @State private var message = ""
+    @State private var isShowingMessage = false
+
+    var body: some View {
+        Form {
+            Section {
+                SecureField("PFSS recovery code", text: $recoveryCode)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                TextField("This device", text: $deviceName)
+            } header: {
+                Text("Owner Account Recovery")
+            } footer: {
+                Text(
+                    "Use one unused recovery code that was previously saved by an Owner. Each code can connect one device only once."
+                )
+            }
+
+            Section {
+                Button {
+                    recover()
+                } label: {
+                    Label(
+                        isWorking ? "Recovering Access" : "Recover Company Access",
+                        systemImage: "lock.open.rotation"
+                    )
+                }
+                .disabled(
+                    isWorking ||
+                    recoveryCode.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).isEmpty ||
+                    deviceName.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).isEmpty
+                )
+            }
+        }
+        .navigationTitle("Owner Recovery")
+        .disabled(isWorking)
+        .alert(messageTitle, isPresented: $isShowingMessage) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(message)
+        }
+    }
+
+    private func recover() {
+        isWorking = true
+        Task {
+            defer { isWorking = false }
+            do {
+                let receipt = try await accountService.recover(
+                    recoveryCode: recoveryCode,
+                    deviceID: manager.registrationDeviceID(),
+                    deviceName: deviceName
+                )
+                try await manager.acceptProvisionedOwnerDevice(
+                    token: receipt.deviceToken,
+                    deviceID: receipt.deviceID
+                )
+                recoveryCode = ""
+                messageTitle = "Company Access Recovered"
+                message = "This device is connected to \(receipt.tenantName). The recovery code has been permanently consumed."
+            } catch {
+                messageTitle = "Unable to Recover Access"
+                message = error.localizedDescription
+            }
+            isShowingMessage = true
+        }
+    }
+}
+
+private struct PFSSExistingOwnerSignInView: View {
+    @StateObject private var coordinator: PFSSOwnerAuthenticationCoordinator
+    @StateObject private var browser = PFSSOwnerAuthenticationBrowser()
+    @StateObject private var manager = PFSSCloudflareBetaManager()
+    private let accountService = PFSSCloudflareOwnerAccountService()
+    @State private var email = ""
+    @State private var deviceName = UIDevice.current.name
+    @State private var isWorking = false
+    @State private var isShowingEmailNotice = false
+    @State private var messageTitle = ""
+    @State private var message = ""
+    @State private var isShowingMessage = false
+
+    init() {
+        _coordinator = StateObject(wrappedValue:
+            PFSSOwnerAuthenticationCoordinator(
+                service: PFSSCloudflareOwnerAccountService(),
+                redirectURI:
+                    PFSSCloudflareOwnerAccountService.stagingRedirectURI
+            )
+        )
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("owner@company.com", text: $email)
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.emailAddress)
+                    .textContentType(.emailAddress)
+                    .autocorrectionDisabled()
+                TextField("This device", text: $deviceName)
+            } header: {
+                Text("Owner Sign In")
+            } footer: {
+                Text(
+                    "Securely verify the existing Owner account to reconnect this device or add another Owner device."
+                )
+            }
+
+            Section {
+                Button {
+                    isShowingEmailNotice = true
+                } label: {
+                    Label(
+                        isWorking ? "Opening Secure Sign-In" : "Continue",
+                        systemImage: "lock.shield.fill"
+                    )
+                }
+                .disabled(
+                    isWorking ||
+                    email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    deviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+            }
+        }
+        .navigationTitle("Owner Sign In")
+        .disabled(isWorking)
+        .alert(
+            "Watch for Your Verification Email",
+            isPresented: $isShowingEmailNotice
+        ) {
+            Button("Cancel", role: .cancel) { }
+            Button("Continue") { signIn() }
+        } message: {
+            Text(
+                "WorkOS will send a verification email. Check your Inbox and also your Junk or Spam folder if it does not arrive promptly."
+            )
+        }
+        .alert(messageTitle, isPresented: $isShowingMessage) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(message)
+        }
+    }
+
+    private func signIn() {
+        isWorking = true
+        Task {
+            defer { isWorking = false }
+            do {
+                let authorizationSession = try await coordinator.start(
+                    emailHint: email.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).lowercased()
+                )
+                let callback = try await browser.authenticate(
+                    at: authorizationSession.authorizationURL,
+                    callbackURL:
+                        PFSSCloudflareOwnerAccountService.stagingRedirectURI
+                )
+                let authorization = try coordinator.consumeCallback(callback)
+                let identity = try await accountService.exchange(authorization)
+                let receipt = try await accountService.signIn(
+                    identity: identity,
+                    deviceID: manager.registrationDeviceID(),
+                    deviceName: deviceName
+                )
+                try await manager.acceptProvisionedOwnerDevice(
+                    token: receipt.deviceToken,
+                    deviceID: receipt.deviceID
+                )
+                messageTitle = "Owner Signed In"
+                message = "This device is connected to \(receipt.tenantName). PFSS is loading the company workspace now."
+            } catch {
+                messageTitle = "Unable to Sign In"
+                message = error.localizedDescription
+            }
+            isShowingMessage = true
+        }
+    }
+}
+
 private struct PFSSCompanyActivationView: View {
     @StateObject private var manager = PFSSCloudflareBetaManager()
     @State private var enrollmentCode = ""
@@ -95,8 +532,7 @@ private struct PFSSCompanyActivationView: View {
     @State private var isShowingMessage = false
 
     var body: some View {
-        NavigationStack {
-            Form {
+        Form {
                 Section {
                     VStack(alignment: .leading, spacing: 10) {
                         Label(
@@ -140,13 +576,12 @@ private struct PFSSCompanyActivationView: View {
                         "Activation codes are single-use and must be created from the employee's Company Access page."
                     )
                 }
-            }
-            .navigationTitle("Device Activation")
-            .alert(messageTitle, isPresented: $isShowingMessage) {
-                Button("OK", role: .cancel) { }
-            } message: {
-                Text(message)
-            }
+        }
+        .navigationTitle("Employee Activation")
+        .alert(messageTitle, isPresented: $isShowingMessage) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(message)
         }
     }
 
@@ -161,7 +596,7 @@ private struct PFSSCompanyActivationView: View {
                 )
                 enrollmentCode = ""
                 messageTitle = "Company Access Activated"
-                message = "Close and reopen PFSS to securely load the company workspace."
+                message = "PFSS is securely loading the company workspace now."
             } catch {
                 messageTitle = "Unable to Activate Device"
                 message = error.localizedDescription
@@ -170,3 +605,239 @@ private struct PFSSCompanyActivationView: View {
         }
     }
 }
+
+#if DEBUG
+private struct PFSSOwnerRegistrationStartView: View {
+    @StateObject private var coordinator: PFSSOwnerAuthenticationCoordinator
+    @StateObject private var browser = PFSSOwnerAuthenticationBrowser()
+    @StateObject private var manager = PFSSCloudflareBetaManager()
+    private let accountService = PFSSCloudflareOwnerAccountService()
+    @State private var email = ""
+    @State private var verifiedIdentity: PFSSVerifiedOwnerIdentity?
+    @State private var ownerName = ""
+    @State private var companyName = ""
+    @State private var deviceName = UIDevice.current.name
+    @State private var acceptedAgreements = false
+    @State private var ownerIsSalesperson = true
+    @State private var ownerIsTechnician = true
+    @State private var idempotencyKey = UUID()
+    @State private var isWorking = false
+    @State private var isShowingVerificationEmailNotice = false
+    @State private var messageTitle = ""
+    @State private var message = ""
+    @State private var isShowingMessage = false
+
+    init() {
+        _coordinator = StateObject(wrappedValue:
+            PFSSOwnerAuthenticationCoordinator(
+                service: PFSSCloudflareOwnerAccountService(),
+                redirectURI:
+                    PFSSCloudflareOwnerAccountService.stagingRedirectURI
+            )
+        )
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Label("Create Your Company", systemImage: "person.crop.circle.badge.checkmark")
+                    .font(.headline)
+                Text(
+                    "Verify the first Owner, then create the company and this device's secure access together."
+                )
+                .foregroundStyle(.secondary)
+            }
+
+            if let verifiedIdentity {
+                Section("Verified Owner") {
+                    LabeledContent("Email", value: verifiedIdentity.email)
+                    TextField("Full name", text: $ownerName)
+                        .textContentType(.name)
+                }
+
+                Section {
+                    TextField("Company name", text: $companyName)
+                        .textContentType(.organizationName)
+                    TextField("This device", text: $deviceName)
+                } header: {
+                    Text("Company")
+                } footer: {
+                    Text(
+                        "The staging company receives temporary beta access. Subscription selection will be added before production registration is enabled."
+                    )
+                }
+
+
+                Section {
+                    Toggle("Sales", isOn: $ownerIsSalesperson)
+                    Toggle("Technician", isOn: $ownerIsTechnician)
+                } header: {
+                    Text("Owner Work Roles")
+                } footer: {
+                    Text(
+                        "These roles add the Owner to the employee list so work can be assigned to them. Owner account authority is unchanged."
+                    )
+                }
+
+                Section("Agreements") {
+                    Toggle(
+                        "I accept the PFSS Terms and Privacy Policy",
+                        isOn: $acceptedAgreements
+                    )
+
+                    Button {
+                        createCompany(with: verifiedIdentity)
+                    } label: {
+                        Label(
+                            isWorking ? "Creating Company" : "Create Company",
+                            systemImage: "building.2.crop.circle.fill"
+                        )
+                    }
+                    .disabled(
+                        isWorking || !acceptedAgreements ||
+                        ownerName.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).isEmpty ||
+                        companyName.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).isEmpty ||
+                        deviceName.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).isEmpty ||
+                        (!ownerIsSalesperson && !ownerIsTechnician)
+                    )
+                }
+            } else {
+                Section("Owner Email") {
+                    TextField("owner@company.com", text: $email)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.emailAddress)
+                        .textContentType(.emailAddress)
+                        .autocorrectionDisabled()
+
+                    Button {
+                        isShowingVerificationEmailNotice = true
+                    } label: {
+                        Label(
+                            isWorking ? "Opening Secure Sign-In" : "Verify Owner",
+                            systemImage: "lock.shield.fill"
+                        )
+                    }
+                    .disabled(isWorking || email.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).isEmpty)
+                    .alert(
+                        "Watch for Your Verification Email",
+                        isPresented: $isShowingVerificationEmailNotice
+                    ) {
+                        Button("Cancel", role: .cancel) { }
+                        Button("Continue") {
+                            verifyOwner()
+                        }
+                    } message: {
+                        Text(
+                            "WorkOS will send a verification email to complete secure Owner setup. Check your Inbox and also your Junk or Spam folder if it does not arrive promptly."
+                        )
+                    }
+                }
+            }
+
+            Section {
+                Text(
+                    "This development build uses the isolated PFSS staging account system. It does not create a production subscription."
+                )
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("New Company")
+        .disabled(isWorking)
+        .alert(messageTitle, isPresented: $isShowingMessage) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(message)
+        }
+    }
+
+    private func verifyOwner() {
+        isWorking = true
+        Task {
+            defer { isWorking = false }
+            do {
+                let session = try await coordinator.start(
+                    emailHint: email.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).lowercased()
+                )
+                let callback = try await browser.authenticate(
+                    at: session.authorizationURL,
+                    callbackURL:
+                        PFSSCloudflareOwnerAccountService.stagingRedirectURI
+                )
+                let authorization = try coordinator.consumeCallback(callback)
+                let identity = try await accountService.exchange(authorization)
+                verifiedIdentity = identity
+                ownerName = identity.displayName
+                email = identity.email
+            } catch {
+                messageTitle = "Unable to Verify Owner"
+                message = error.localizedDescription
+                isShowingMessage = true
+            }
+        }
+    }
+
+    private func createCompany(
+        with identity: PFSSVerifiedOwnerIdentity
+    ) {
+        isWorking = true
+        Task {
+            defer { isWorking = false }
+            do {
+                let deviceID = manager.registrationDeviceID()
+                let request = PFSSOwnerRegistrationRequest(
+                    idempotencyKey: idempotencyKey,
+                    identityAssertion: identity.identityAssertion,
+                    authenticationMethod: identity.authenticationMethod,
+                    owner: PFSSOwnerRegistrationIdentity(
+                        displayName: ownerName,
+                        email: identity.email
+                    ),
+                    company: PFSSCompanyRegistrationProfile(
+                        displayName: companyName,
+                        timeZoneID: TimeZone.current.identifier
+                    ),
+                    requestedPlanCode: "team-annual",
+                    consent: PFSSRegistrationConsent(
+                        termsVersion: "terms-2026-07",
+                        privacyVersion: "privacy-2026-07",
+                        acceptedAt: Date()
+                    ),
+                    device: PFSSRegistrationDevice(
+                        id: deviceID,
+                        displayName: deviceName
+                    )
+                )
+                let receipt = try await accountService.register(request)
+                try await manager.acceptProvisionedOwnerDevice(
+                    token: receipt.deviceToken,
+                    deviceID: receipt.deviceID
+                )
+                var workRoles = Set<PFSSOwnerOperationalRole>()
+                if ownerIsSalesperson { workRoles.insert(.salesperson) }
+                if ownerIsTechnician { workRoles.insert(.technician) }
+                _ = try await manager.configureOwnerWorkProfile(
+                    roles: workRoles
+                )
+                messageTitle = "Company Created"
+                message = "\(receipt.tenantName) and this Owner device are active. PFSS is loading the new company workspace now."
+                isShowingMessage = true
+            } catch {
+                messageTitle = "Unable to Create Company"
+                message = error.localizedDescription
+                isShowingMessage = true
+            }
+        }
+    }
+}
+#endif

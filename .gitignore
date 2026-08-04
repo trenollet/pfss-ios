@@ -3,6 +3,7 @@ Cloudflare/**/node_modules/
 Cloudflare/**/.pnpm-store/
 .pnpm-store/
 Cloudflare/**/.wrangler/
+Cloudflare/**/*-upload.zip
 Cloudflare/**/.dev.vars*
 Cloudflare/**/.env*
 !Cloudflare/**/.env.example

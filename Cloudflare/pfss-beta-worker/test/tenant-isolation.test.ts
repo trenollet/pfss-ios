@@ -1,13 +1,73 @@
 import { createHash } from "node:crypto";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import worker from "../src/index";
+import worker, {
+  completeOwnerAuthorization,
+  startOwnerAuthorization,
+} from "../src/index";
+import {
+  IdentityConfigurationError,
+  LocalManagedOwnerIdentityProvider,
+  ManagedOwnerIdentityProvider,
+  WorkOSManagedOwnerIdentityProvider,
+  managedIdentityConfigurationFromBindings,
+  validateManagedIdentityConfiguration,
+} from "../src/account-identity-provider";
 
 interface SeededIdentity {
   tenantID: string;
   memberID: string;
   deviceID: string;
   token: string;
+}
+
+interface SeededOperationsIdentity {
+  administratorID: string;
+  token: string;
+}
+
+async function seedOperationsIdentity(
+  label: string,
+  role: "platformOwner" | "supportAdministrator" |
+    "billingAdministrator" | "readOnlyAuditor" = "platformOwner",
+): Promise<SeededOperationsIdentity> {
+  const administratorID = crypto.randomUUID();
+  const token = `operations-${crypto.randomUUID()}${crypto.randomUUID()}`;
+  const now = new Date();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO operations_administrators
+        (id, normalized_email, provider_subject, display_name, role, status,
+         created_at, activated_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?6, ?6)`,
+    ).bind(administratorID, `${label.toLowerCase().replace(/\s+/g, "-")}@pfss.test`,
+      `user_${crypto.randomUUID().replace(/-/g, "")}`, label, role,
+      now.toISOString()),
+    env.DB.prepare(
+      `INSERT INTO operations_sessions
+        (id, administrator_id, token_digest, device_id, device_name,
+         created_at, last_seen_at, expires_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)`,
+    ).bind(crypto.randomUUID(), administratorID,
+      createHash("sha256").update(token).digest("hex"), crypto.randomUUID(),
+      `${label} iPhone`, now.toISOString(),
+      new Date(now.getTime() + 60 * 60 * 1000).toISOString()),
+  ]);
+  return { administratorID, token };
+}
+
+function operationsRequest(
+  identity: SeededOperationsIdentity,
+  path: string,
+  init: RequestInit = {},
+): Request {
+  return new Request(`https://pfss.test${path}`, {
+    ...init,
+    headers: {
+      ...Object.fromEntries(new Headers(init.headers).entries()),
+      authorization: `Bearer ${identity.token}`,
+    },
+  });
 }
 
 async function seedIdentity(
@@ -135,6 +195,935 @@ async function seedEmployeeRecord(
     JSON.stringify(operation), identity.memberID, identity.deviceID, now,
   ).run();
 }
+
+function validAccountRegistrationBody(): Record<string, unknown> {
+  return {
+    idempotencyKey: crypto.randomUUID(),
+    identityAssertion: "verified-identity-assertion-reference",
+    authenticationMethod: "passkey",
+    owner: {
+      displayName: "  Geoff Nordmyer  ",
+      email: "  OWNER@EXAMPLE.COM  ",
+    },
+    company: {
+      displayName: "  PFSS Development  ",
+      timeZoneID: "America/Chicago",
+    },
+    requestedPlanCode: "  TEAM-ANNUAL  ",
+    consent: {
+      termsVersion: "terms-2026-07",
+      privacyVersion: "privacy-2026-07",
+      acceptedAt: new Date().toISOString(),
+    },
+    device: {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      displayName: "  Owner iPad  ",
+    },
+  };
+}
+
+function uniqueAccountRegistrationBody(): Record<string, unknown> {
+  const body = validAccountRegistrationBody();
+  const suffix = crypto.randomUUID();
+  body.identityAssertion = `verified-identity-assertion-${suffix}`;
+  (body.owner as Record<string, unknown>).email = `${suffix}@example.com`;
+  (body.company as Record<string, unknown>).displayName = `PFSS ${suffix}`;
+  return body;
+}
+
+async function startAccountRegistration(
+  body: Record<string, unknown> = uniqueAccountRegistrationBody(),
+): Promise<Response> {
+  const assertion = body.identityAssertion as string;
+  const assertionDigest = createHash("sha256").update(assertion).digest("hex");
+  const existing = await env.DB.prepare(
+    "SELECT id FROM owner_authorization_attempts WHERE identity_assertion_digest = ?1",
+  ).bind(assertionDigest).first<{ id: string }>();
+  if (!existing) {
+    const owner = body.owner as Record<string, unknown>;
+    const email = String(owner.email).trim().toLowerCase();
+    const existingContact = await env.DB.prepare(
+      `SELECT subject_id AS subjectID FROM verified_contact_addresses
+        WHERE kind = 'email' AND normalized_value = ?1`,
+    ).bind(email).first<{ subjectID: string }>();
+    const subjectID = existingContact?.subjectID ?? crypto.randomUUID();
+    const now = new Date();
+    const statements: D1PreparedStatement[] = [];
+    if (!existingContact) {
+      statements.push(env.DB.prepare(
+        `INSERT INTO authentication_subjects
+          (id, display_name, status, created_at, updated_at)
+         VALUES (?1, ?2, 'active', ?3, ?3)`,
+      ).bind(subjectID, String(owner.displayName).trim(), now.toISOString()));
+      statements.push(env.DB.prepare(
+        `INSERT INTO verified_contact_addresses
+          (id, subject_id, kind, normalized_value, verified_at, created_at)
+         VALUES (?1, ?2, 'email', ?3, ?4, ?4)`,
+      ).bind(
+        crypto.randomUUID(), subjectID, email, now.toISOString(),
+      ));
+    }
+    statements.push(env.DB.prepare(
+      `INSERT INTO owner_authorization_attempts
+        (id, state_digest, code_challenge, redirect_uri, status, subject_id,
+         subject_was_created, identity_assertion_digest, provider_method,
+         expires_at, verified_at, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, 'verified', ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10)`,
+    ).bind(
+      crypto.randomUUID(), createHash("sha256").update(crypto.randomUUID())
+        .digest("hex"), "c".repeat(43),
+      "https://identity.staging.pfss.test/callback", subjectID,
+      existingContact ? 0 : 1, assertionDigest, body.authenticationMethod,
+      new Date(now.getTime() + 300_000).toISOString(), now.toISOString(),
+    ));
+    await env.DB.batch(statements);
+  }
+  return worker.fetch(new Request(
+    "https://pfss.test/v1/account-registration/attempts",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  ), env);
+}
+
+describe("production account registration foundation", () => {
+  it("normalizes the public contract without echoing identity evidence", async () => {
+    const response = await worker.fetch(new Request(
+      "https://pfss.test/v1/account-registration/validate",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(validAccountRegistrationBody()),
+      },
+    ), env);
+    expect(response.status).toBe(200);
+    const body = await response.json<{
+      valid: boolean;
+      status: string;
+      registration: Record<string, unknown> & {
+        owner: { displayName: string; email: string };
+        company: { displayName: string };
+        requestedPlanCode: string;
+        device: { displayName: string };
+      };
+    }>();
+    expect(body.valid).toBe(true);
+    expect(body.status).toBe("started");
+    expect(body.registration.owner).toEqual({
+      displayName: "Geoff Nordmyer",
+      email: "owner@example.com",
+    });
+    expect(body.registration.company.displayName).toBe("PFSS Development");
+    expect(body.registration.requestedPlanCode).toBe("team-annual");
+    expect(body.registration.device.displayName).toBe("Owner iPad");
+    expect(body.registration).not.toHaveProperty("identityAssertion");
+    expect(body.registration).not.toHaveProperty("tenantID");
+    expect(body.registration).not.toHaveProperty("role");
+    expect(body.registration).not.toHaveProperty("entitlements");
+  });
+
+  it("rejects client-selected authority and infrastructure at any depth", async () => {
+    const privileged = validAccountRegistrationBody();
+    privileged.tenantID = crypto.randomUUID();
+    const tenantResponse = await worker.fetch(new Request(
+      "https://pfss.test/v1/account-registration/validate",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(privileged),
+      },
+    ), env);
+    expect(tenantResponse.status).toBe(400);
+    expect(await tenantResponse.json()).toEqual({
+      error: "forbidden_registration_field",
+      field: "tenantID",
+    });
+
+    const nested = validAccountRegistrationBody();
+    (nested.company as Record<string, unknown>).entitlements = {
+      employeeLimit: 9999,
+    };
+    const entitlementResponse = await worker.fetch(new Request(
+      "https://pfss.test/v1/account-registration/validate",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(nested),
+      },
+    ), env);
+    expect(entitlementResponse.status).toBe(400);
+    expect(await entitlementResponse.json()).toEqual({
+      error: "forbidden_registration_field",
+      field: "company.entitlements",
+    });
+
+    const clientGrant = validAccountRegistrationBody();
+    clientGrant.accessSource = "internalBusinessGrant";
+    const grantResponse = await worker.fetch(new Request(
+      "https://pfss.test/v1/account-registration/validate",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(clientGrant),
+      },
+    ), env);
+    expect(grantResponse.status).toBe(400);
+    expect(await grantResponse.json()).toEqual({
+      error: "forbidden_registration_field",
+      field: "accessSource",
+    });
+  });
+
+  it("rejects invalid identity, profile, plan, and consent inputs", async () => {
+    const invalid = validAccountRegistrationBody();
+    (invalid.owner as Record<string, unknown>).email = "not-an-email";
+    (invalid.company as Record<string, unknown>).timeZoneID = "PFSS/Unknown";
+    invalid.requestedPlanCode = "owner plan $1";
+    (invalid.consent as Record<string, unknown>).acceptedAt =
+      new Date(Date.now() - 86_400_001).toISOString();
+    const response = await worker.fetch(new Request(
+      "https://pfss.test/v1/account-registration/validate",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(invalid),
+      },
+    ), env);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "invalid_registration_request",
+    });
+  });
+
+  it("applies the versioned production-account schema and constraints", async () => {
+    const expectedTables = [
+      "authentication_subjects",
+      "authentication_identities",
+      "verified_contact_addresses",
+      "account_recovery_methods",
+      "account_registration_attempts",
+      "legal_consents",
+      "subscription_accounts",
+      "plan_allocations",
+    ];
+    const tables = await env.DB.prepare(
+      `SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name IN (${expectedTables.map(() => "?").join(",")})`,
+    ).bind(...expectedTables).all<{ name: string }>();
+    expect(new Set(tables.results.map((row) => row.name)))
+      .toEqual(new Set(expectedTables));
+
+    const memberColumns = await env.DB.prepare(
+      "PRAGMA table_info(tenant_members)",
+    ).all<{ name: string }>();
+    expect(memberColumns.results.map((column) => column.name))
+      .toContain("authentication_subject_id");
+
+    await expect(env.DB.prepare(
+      `INSERT INTO authentication_subjects
+        (id, display_name, status, created_at, updated_at)
+       VALUES (?1, ?2, 'unknown', ?3, ?3)`,
+    ).bind(crypto.randomUUID(), "Invalid", new Date().toISOString()).run())
+      .rejects.toThrow();
+
+    const identity = await seedIdentity("Allocation Constraint");
+    await expect(env.DB.prepare(
+      `INSERT INTO plan_allocations
+        (id, tenant_id, access_source, plan_code, effective_at, created_at)
+       VALUES (?1, ?2, 'internalBusinessGrant', 'internal-full', ?3, ?3)`,
+    ).bind(crypto.randomUUID(), identity.tenantID, new Date().toISOString()).run())
+      .rejects.toThrow();
+  });
+
+  it("starts once, stores only credential digests, and creates no company", async () => {
+    const companyTables = [
+      "tenants", "tenant_members", "devices", "subscription_accounts",
+    ];
+    const countsBefore = new Map<string, number>();
+    for (const table of companyTables) {
+      const count = await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM ${table}`,
+      ).first<{ count: number }>();
+      countsBefore.set(table, count?.count ?? 0);
+    }
+    const registration = uniqueAccountRegistrationBody();
+    const assertion = registration.identityAssertion as string;
+    const response = await startAccountRegistration(registration);
+    expect(response.status).toBe(201);
+    const receipt = await response.json<{
+      registrationAttempt: { id: string; status: string };
+      registrationToken: string;
+      tokenIssued: boolean;
+    }>();
+    expect(receipt.registrationAttempt.status).toBe("started");
+    expect(receipt.registrationToken.length).toBeGreaterThan(40);
+    expect(receipt.tokenIssued).toBe(true);
+
+    const stored = await env.DB.prepare(
+      `SELECT identity_assertion_digest AS assertionDigest,
+              registration_token_digest AS tokenDigest
+         FROM account_registration_attempts WHERE id = ?1`,
+    ).bind(receipt.registrationAttempt.id).first<{
+      assertionDigest: string;
+      tokenDigest: string;
+    }>();
+    expect(stored?.assertionDigest).toBe(
+      createHash("sha256").update(assertion).digest("hex"),
+    );
+    expect(stored?.assertionDigest).not.toContain(assertion);
+    expect(stored?.tokenDigest).toBe(
+      createHash("sha256").update(receipt.registrationToken).digest("hex"),
+    );
+    expect(stored?.tokenDigest).not.toBe(receipt.registrationToken);
+
+    for (const table of companyTables) {
+      const count = await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM ${table}`,
+      ).first<{ count: number }>();
+      expect(count?.count).toBe(countsBefore.get(table));
+    }
+  });
+
+  it("atomically provisions the first Owner, company, plan, device, consent, and audit", async () => {
+    const registration = uniqueAccountRegistrationBody();
+    const started = await startAccountRegistration(registration);
+    expect(started.status).toBe(201);
+    const startReceipt = await started.json<{
+      registrationAttempt: { id: string };
+      registrationToken: string;
+    }>();
+    const completionPath =
+      `/v1/account-registration/attempts/${startReceipt.registrationAttempt.id}/complete`;
+    const completed = await worker.fetch(new Request(
+      `https://pfss.test${completionPath}`,
+      {
+        method: "POST",
+        headers: {
+          "x-pfss-registration-token": startReceipt.registrationToken,
+        },
+      },
+    ), env);
+    expect(completed.status).toBe(201);
+    const receipt = await completed.json<{
+      registrationAttempt: { status: string };
+      tenant: { id: string; displayName: string };
+      owner: { memberID: string; role: string };
+      device: { id: string; deviceToken: string };
+      plan: { accessSource: string; entitlements: { employeeLimit: number } };
+      tokenIssued: boolean;
+    }>();
+    expect(receipt.registrationAttempt.status).toBe("active");
+    expect(receipt.tenant.displayName).toContain("PFSS");
+    expect(receipt.owner.role).toBe("owner");
+    expect(receipt.plan.accessSource).toBe("betaGrant");
+    expect(receipt.plan.entitlements.employeeLimit).toBe(25);
+    expect(receipt.tokenIssued).toBe(true);
+
+    const sessionResponse = await worker.fetch(new Request(
+      "https://pfss.test/v1/session",
+      { headers: { authorization: `Bearer ${receipt.device.deviceToken}` } },
+    ), env);
+    expect(sessionResponse.status).toBe(200);
+    const session = await sessionResponse.json<{
+      tenant: { displayName: string };
+      member: { id: string; role: string };
+    }>();
+    expect(session.tenant.displayName).toBe(receipt.tenant.displayName);
+    expect(session.member).toMatchObject({
+      id: receipt.owner.memberID,
+      role: "owner",
+    });
+
+    const persisted = await env.DB.prepare(
+      `SELECT registration.status,
+              registration.subject_id AS subjectID,
+              registration.tenant_id AS tenantID,
+              consent.subject_id AS consentSubjectID,
+              allocation.access_source AS accessSource,
+              audit.event_type AS auditEvent
+         FROM account_registration_attempts AS registration
+         JOIN legal_consents AS consent
+           ON consent.registration_attempt_id = registration.id
+         JOIN plan_allocations AS allocation
+           ON allocation.tenant_id = registration.tenant_id
+         JOIN access_audit_events AS audit
+           ON audit.tenant_id = registration.tenant_id
+          AND audit.event_type = 'account.registration_completed'
+        WHERE registration.id = ?1`,
+    ).bind(startReceipt.registrationAttempt.id).first<{
+      status: string;
+      subjectID: string;
+      tenantID: string;
+      consentSubjectID: string;
+      accessSource: string;
+      auditEvent: string;
+    }>();
+    expect(persisted).toMatchObject({
+      status: "active",
+      tenantID: receipt.tenant.id,
+      accessSource: "betaGrant",
+      auditEvent: "account.registration_completed",
+    });
+    expect(persisted?.consentSubjectID).toBe(persisted?.subjectID);
+
+    const repeated = await worker.fetch(new Request(
+      `https://pfss.test${completionPath}`,
+      {
+        method: "POST",
+        headers: {
+          "x-pfss-registration-token": startReceipt.registrationToken,
+        },
+      },
+    ), env);
+    expect(repeated.status).toBe(200);
+    expect(await repeated.json()).toMatchObject({
+      registrationAttempt: { status: "active" },
+      deviceToken: null,
+      tokenIssued: false,
+    });
+    const tenantCount = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM tenants WHERE id = ?1",
+    ).bind(receipt.tenant.id).first<{ count: number }>();
+    expect(tenantCount?.count).toBe(1);
+  });
+
+  it("rolls back every company resource when first-device provisioning fails", async () => {
+    const registration = uniqueAccountRegistrationBody();
+    (registration.device as Record<string, unknown>).displayName =
+      "Failure Injection Device";
+    const started = await startAccountRegistration(registration);
+    const receipt = await started.json<{
+      registrationAttempt: { id: string };
+      registrationToken: string;
+    }>();
+    await env.DB.prepare(
+      `CREATE TRIGGER fail_registration_device
+       BEFORE INSERT ON devices
+       WHEN NEW.display_name = 'Failure Injection Device'
+       BEGIN
+         SELECT RAISE(ABORT, 'injected registration device failure');
+       END`,
+    ).run();
+    const tenantCountBefore = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM tenants",
+    ).first<{ count: number }>();
+    const failed = await worker.fetch(new Request(
+      `https://pfss.test/v1/account-registration/attempts/${receipt.registrationAttempt.id}/complete`,
+      {
+        method: "POST",
+        headers: { "x-pfss-registration-token": receipt.registrationToken },
+      },
+    ), env);
+    await env.DB.prepare("DROP TRIGGER fail_registration_device").run();
+    expect(failed.status).toBe(503);
+    expect(await failed.json()).toEqual({
+      error: "registration_provisioning_failed",
+    });
+    const stored = await env.DB.prepare(
+      `SELECT status, tenant_id AS tenantID
+         FROM account_registration_attempts WHERE id = ?1`,
+    ).bind(receipt.registrationAttempt.id).first<{
+      status: string;
+      tenantID: string | null;
+    }>();
+    expect(stored).toMatchObject({ status: "started", tenantID: null });
+    const tenantCountAfter = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM tenants",
+    ).first<{ count: number }>();
+    expect(tenantCountAfter?.count).toBe(tenantCountBefore?.count);
+  });
+
+  it("requires external plan authorization outside staging", async () => {
+    const started = await startAccountRegistration();
+    const receipt = await started.json<{
+      registrationAttempt: { id: string };
+      registrationToken: string;
+    }>();
+    const productionEnv = Object.assign(Object.create(env), {
+      PFSS_ENVIRONMENT: "production",
+    });
+    const response = await worker.fetch(new Request(
+      `https://pfss.test/v1/account-registration/attempts/${receipt.registrationAttempt.id}/complete`,
+      {
+        method: "POST",
+        headers: { "x-pfss-registration-token": receipt.registrationToken },
+      },
+    ), productionEnv);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "plan_authorization_required",
+    });
+  });
+
+  it("retries the same request safely and rejects changed idempotent input", async () => {
+    const registration = uniqueAccountRegistrationBody();
+    const first = await startAccountRegistration(registration);
+    const firstReceipt = await first.json<{
+      registrationAttempt: { id: string };
+      registrationToken: string;
+    }>();
+    const retry = await startAccountRegistration(registration);
+    expect(retry.status).toBe(200);
+    const retryReceipt = await retry.json<{
+      registrationAttempt: { id: string };
+      registrationToken: null;
+      tokenIssued: boolean;
+    }>();
+    expect(retryReceipt.registrationAttempt.id)
+      .toBe(firstReceipt.registrationAttempt.id);
+    expect(retryReceipt.registrationToken).toBeNull();
+    expect(retryReceipt.tokenIssued).toBe(false);
+
+    const changed = structuredClone(registration);
+    (changed.company as Record<string, unknown>).displayName = "Changed Company";
+    const conflict = await startAccountRegistration(changed);
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({ error: "idempotency_key_reused" });
+  });
+
+  it("uses one safe outcome for duplicate identity and company requests", async () => {
+    const now = new Date().toISOString();
+    const subjectID = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO authentication_subjects
+          (id, display_name, status, created_at, updated_at)
+         VALUES (?1, 'Existing Owner', 'active', ?2, ?2)`,
+      ).bind(subjectID, now),
+      env.DB.prepare(
+        `INSERT INTO verified_contact_addresses
+          (id, subject_id, kind, normalized_value, verified_at, created_at)
+         VALUES (?1, ?2, 'email', 'owner@example.com', ?3, ?3)`,
+      ).bind(crypto.randomUUID(), subjectID, now),
+    ]);
+    const identityDuplicate = await startAccountRegistration(
+      validAccountRegistrationBody(),
+    );
+    expect(identityDuplicate.status).toBe(409);
+    const identityError = await identityDuplicate.json();
+
+    await env.DB.prepare(
+      "DELETE FROM verified_contact_addresses WHERE subject_id = ?1",
+    ).bind(subjectID).run();
+    const first = uniqueAccountRegistrationBody();
+    (first.owner as Record<string, unknown>).email = "different@example.com";
+    await startAccountRegistration(first);
+    const companyDuplicate = uniqueAccountRegistrationBody();
+    (companyDuplicate.company as Record<string, unknown>).displayName =
+      (first.company as Record<string, unknown>).displayName;
+    const companyResponse = await startAccountRegistration(companyDuplicate);
+    expect(companyResponse.status).toBe(409);
+    expect(await companyResponse.json()).toEqual(identityError);
+    expect(identityError).toEqual({
+      error: "account_or_company_requires_sign_in",
+    });
+  });
+
+  it("authenticates status, expires stale attempts, and cancels idempotently", async () => {
+    const started = await startAccountRegistration();
+    const receipt = await started.json<{
+      registrationAttempt: { id: string };
+      registrationToken: string;
+    }>();
+    const path = `/v1/account-registration/attempts/${receipt.registrationAttempt.id}`;
+    const unauthenticated = await worker.fetch(
+      new Request(`https://pfss.test${path}`), env,
+    );
+    expect(unauthenticated.status).toBe(401);
+    const wrongToken = await worker.fetch(new Request(`https://pfss.test${path}`, {
+      headers: { "x-pfss-registration-token": "incorrect-token" },
+    }), env);
+    expect(wrongToken.status).toBe(404);
+
+    const headers = {
+      "x-pfss-registration-token": receipt.registrationToken,
+    };
+    const cancelled = await worker.fetch(new Request(
+      `https://pfss.test${path}/cancel`, { method: "POST", headers },
+    ), env);
+    expect(cancelled.status).toBe(200);
+    const cancelledBody = await cancelled.json<{
+      registrationAttempt: { status: string; cancelledAt: string };
+    }>();
+    expect(cancelledBody.registrationAttempt.status).toBe("cancelled");
+    expect(cancelledBody.registrationAttempt.cancelledAt).toBeTruthy();
+    const repeated = await worker.fetch(new Request(
+      `https://pfss.test${path}/cancel`, { method: "POST", headers },
+    ), env);
+    expect((await repeated.json() as {
+      registrationAttempt: { status: string };
+    }).registrationAttempt.status).toBe("cancelled");
+
+    const expiringBody = uniqueAccountRegistrationBody();
+    const expiring = await startAccountRegistration(expiringBody);
+    const expiringReceipt = await expiring.json<{
+      registrationAttempt: { id: string };
+      registrationToken: string;
+    }>();
+    await env.DB.prepare(
+      `UPDATE account_registration_attempts SET expires_at = ?2 WHERE id = ?1`,
+    ).bind(
+      expiringReceipt.registrationAttempt.id,
+      new Date(Date.now() - 1000).toISOString(),
+    ).run();
+    const expired = await worker.fetch(new Request(
+      `https://pfss.test/v1/account-registration/attempts/${expiringReceipt.registrationAttempt.id}`,
+      { headers: {
+        "x-pfss-registration-token": expiringReceipt.registrationToken,
+      } },
+    ), env);
+    expect((await expired.json() as {
+      registrationAttempt: { status: string };
+    }).registrationAttempt.status).toBe("expired");
+  });
+});
+
+describe("managed Owner identity boundary", () => {
+  it("persists state, verifies WorkOS once, and consumes identity evidence", async () => {
+    const state = "s".repeat(43);
+    const verifier = "v".repeat(43);
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const redirectURI = "https://identity.staging.pfss.test/callback";
+    const verifiedEmail = `${crypto.randomUUID()}@example.com`;
+    const provider: ManagedOwnerIdentityProvider = {
+      async startAuthorization(request) {
+        return {
+          authorizationURL: `https://signin.workos.test/?state=${request.state}`,
+          state: request.state,
+          expiresAt: new Date(Date.now() + 300_000).toISOString(),
+        };
+      },
+      async exchangeAuthorizationCode() {
+        return {
+          providerKey: "workos",
+          providerSubject: `user_${crypto.randomUUID().replace(/-/g, "")}`,
+          verifiedEmail,
+          displayName: "Verified Owner",
+          authenticationMethod: "MagicAuth",
+        };
+      },
+    };
+    const started = await startOwnerAuthorization(new Request(
+      "https://pfss.test/v1/owner-auth/authorize",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          state, codeChallenge: challenge, redirectURI,
+          emailHint: verifiedEmail,
+        }),
+      },
+    ), env, provider);
+    expect(started.status).toBe(201);
+
+    const completed = await completeOwnerAuthorization(new Request(
+      "https://pfss.test/v1/owner-auth/callback",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          state,
+          code: "authorization_code_12345",
+          codeVerifier: verifier,
+          redirectURI,
+        }),
+      },
+    ), env, provider);
+    expect(completed.status).toBe(200);
+    const identity = await completed.json<{
+      identityAssertion: string;
+      authenticationMethod: "password" | "passkey" |
+        "signInWithApple" | "federated";
+      owner: { displayName: string; email: string };
+    }>();
+    expect(identity.identityAssertion).toMatch(/^pfss_owner_/);
+    expect(identity.authenticationMethod).toBe("federated");
+    expect(identity.owner.email).toBe(verifiedEmail);
+
+    const replayed = await completeOwnerAuthorization(new Request(
+      "https://pfss.test/v1/owner-auth/callback",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          state,
+          code: "authorization_code_12345",
+          codeVerifier: verifier,
+          redirectURI,
+        }),
+      },
+    ), env, provider);
+    expect(replayed.status).toBe(409);
+
+    const registration = uniqueAccountRegistrationBody();
+    registration.identityAssertion = identity.identityAssertion;
+    registration.authenticationMethod = identity.authenticationMethod;
+    (registration.owner as Record<string, unknown>).displayName =
+      identity.owner.displayName;
+    (registration.owner as Record<string, unknown>).email = identity.owner.email;
+    const receipt = await startAccountRegistration(registration);
+    expect(receipt.status).toBe(201);
+    const authorization = await env.DB.prepare(
+      `SELECT status FROM owner_authorization_attempts
+        WHERE identity_assertion_digest = ?1`,
+    ).bind(
+      createHash("sha256").update(identity.identityAssertion).digest("hex"),
+    ).first<{ status: string }>();
+    expect(authorization?.status).toBe("consumed");
+  });
+
+  it("rejects wrong PKCE verifier and expires stale authorization state", async () => {
+    const state = "x".repeat(43);
+    const verifier = "y".repeat(43);
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const redirectURI = "https://identity.staging.pfss.test/callback";
+    const provider = new LocalManagedOwnerIdentityProvider();
+    const startProvider: ManagedOwnerIdentityProvider = {
+      startAuthorization: async (request) => ({
+        authorizationURL: `https://signin.workos.test/?state=${request.state}`,
+        state: request.state,
+        expiresAt: new Date(Date.now() + 300_000).toISOString(),
+      }),
+      exchangeAuthorizationCode: (...arguments_) =>
+        provider.exchangeAuthorizationCode(...arguments_),
+    };
+    await startOwnerAuthorization(new Request(
+      "https://pfss.test/v1/owner-auth/authorize",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ state, codeChallenge: challenge, redirectURI }),
+      },
+    ), env, startProvider);
+    const wrongVerifier = await completeOwnerAuthorization(new Request(
+      "https://pfss.test/v1/owner-auth/callback",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          state,
+          code: "authorization_code_12345",
+          codeVerifier: "z".repeat(43),
+          redirectURI,
+        }),
+      },
+    ), env, provider);
+    expect(wrongVerifier.status).toBe(400);
+    await env.DB.prepare(
+      `UPDATE owner_authorization_attempts SET expires_at = ?2
+        WHERE state_digest = ?1`,
+    ).bind(
+      createHash("sha256").update(state).digest("hex"),
+      new Date(Date.now() - 1000).toISOString(),
+    ).run();
+    const expired = await completeOwnerAuthorization(new Request(
+      "https://pfss.test/v1/owner-auth/callback",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          state,
+          code: "authorization_code_12345",
+          codeVerifier: verifier,
+          redirectURI,
+        }),
+      },
+    ), env, provider);
+    expect(expired.status).toBe(410);
+  });
+
+  it("rejects cross-environment and insecure managed identity configuration", () => {
+    expect(() => validateManagedIdentityConfiguration({
+      providerKey: "workos",
+      deploymentEnvironment: "production",
+      providerEnvironment: "staging",
+      clientID: "client_production123",
+      apiKey: "sk_production_secret123",
+      apiBaseURL: "https://api.workos.com",
+      issuer: "https://identity.pfss.com",
+      redirectURIs: ["https://identity.pfss.com/callback"],
+    })).toThrow(IdentityConfigurationError);
+
+    expect(() => validateManagedIdentityConfiguration({
+      providerKey: "workos",
+      deploymentEnvironment: "staging",
+      providerEnvironment: "staging",
+      clientID: "client_staging123",
+      apiKey: "sk_staging_secret123",
+      apiBaseURL: "https://api.workos.com",
+      issuer: "http://identity.staging.pfss.test",
+      redirectURIs: ["https://identity.staging.pfss.test/callback"],
+    })).toThrow(IdentityConfigurationError);
+
+    expect(() => validateManagedIdentityConfiguration({
+      providerKey: "workos",
+      deploymentEnvironment: "staging",
+      providerEnvironment: "staging",
+      clientID: "client_staging123",
+      apiKey: "sk_staging_secret123",
+      apiBaseURL: "https://api.workos.com",
+      issuer: "https://identity.staging.pfss.test",
+      redirectURIs: ["https://identity.staging.pfss.test/callback"],
+    })).not.toThrow();
+  });
+
+  it("loads only explicit matching WorkOS environment bindings", () => {
+    const configuration = managedIdentityConfigurationFromBindings({
+      PFSS_ENVIRONMENT: "staging",
+      WORKOS_ENVIRONMENT: "staging",
+      WORKOS_CLIENT_ID: "client_staging123",
+      WORKOS_API_KEY: "sk_staging_secret123",
+      WORKOS_API_BASE_URL: "https://api.workos.com",
+      WORKOS_ISSUER: "https://identity.staging.pfss.test",
+      WORKOS_REDIRECT_URIS: JSON.stringify([
+        "https://identity.staging.pfss.test/callback",
+      ]),
+    });
+    expect(configuration.providerKey).toBe("workos");
+    expect(configuration.apiKey).toBe("sk_staging_secret123");
+    expect(configuration.redirectURIs).toEqual([
+      "https://identity.staging.pfss.test/callback",
+    ]);
+
+    expect(() => managedIdentityConfigurationFromBindings({
+      PFSS_ENVIRONMENT: "staging",
+      WORKOS_ENVIRONMENT: "staging",
+      WORKOS_CLIENT_ID: "client_staging123",
+      WORKOS_API_BASE_URL: "https://api.workos.com",
+      WORKOS_ISSUER: "https://identity.staging.pfss.test",
+      WORKOS_REDIRECT_URIS: JSON.stringify([
+        "https://identity.staging.pfss.test/callback",
+      ]),
+    })).toThrow("Invalid managed identity API key");
+
+    expect(() => managedIdentityConfigurationFromBindings({
+      PFSS_ENVIRONMENT: "production",
+      WORKOS_ENVIRONMENT: "staging",
+      WORKOS_CLIENT_ID: "client_staging123",
+      WORKOS_API_KEY: "sk_staging_secret123",
+      WORKOS_API_BASE_URL: "https://api.workos.com",
+      WORKOS_ISSUER: "https://identity.staging.pfss.test",
+      WORKOS_REDIRECT_URIS: "not-json",
+    })).toThrow(IdentityConfigurationError);
+  });
+
+  it("keeps local authorization deterministic and rejects untrusted callbacks", async () => {
+    const adapter = new LocalManagedOwnerIdentityProvider();
+    const state = "s".repeat(43);
+    const session = await adapter.startAuthorization({
+      state,
+      codeChallenge: "c".repeat(43),
+      redirectURI: "https://local.pfss.test/auth/callback",
+    });
+    expect(session.state).toBe(state);
+    expect(session.authorizationURL).toContain("https://local.pfss.test/authorize");
+
+    await expect(adapter.startAuthorization({
+      state,
+      codeChallenge: "c".repeat(43),
+      redirectURI: "https://attacker.example/callback",
+    })).rejects.toThrow(IdentityConfigurationError);
+
+    const identity = await adapter.exchangeAuthorizationCode(
+      "local-verified-code",
+      "v".repeat(43),
+      "https://local.pfss.test/auth/callback",
+    );
+    expect(identity.providerKey).toBe("workos");
+    expect(identity.verifiedEmail).toBe("owner@local.pfss.test");
+  });
+
+  it("builds WorkOS PKCE authorization and returns only verified identity", async () => {
+    let exchangeBody: Record<string, unknown> | undefined;
+    const adapter = new WorkOSManagedOwnerIdentityProvider({
+      providerKey: "workos",
+      deploymentEnvironment: "staging",
+      providerEnvironment: "staging",
+      clientID: "client_staging123",
+      apiKey: "sk_staging_secret123",
+      apiBaseURL: "https://api.workos.com",
+      issuer: "https://identity.staging.pfss.test",
+      redirectURIs: ["https://identity.staging.pfss.test/callback"],
+    }, async (_input, init) => {
+      exchangeBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        user: {
+          id: "user_verified123",
+          email: " OWNER@EXAMPLE.COM ",
+          email_verified: true,
+          first_name: "Geoff",
+          last_name: "Nordmyer",
+        },
+        authentication_method: "MagicAuth",
+        access_token: "must-not-be-returned",
+        refresh_token: "must-not-be-returned",
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    const state = "s".repeat(43);
+    const codeChallenge = "c".repeat(43);
+    const session = await adapter.startAuthorization({
+      state,
+      codeChallenge,
+      redirectURI: "https://identity.staging.pfss.test/callback",
+      emailHint: "owner@example.com",
+    });
+    const authorizationURL = new URL(session.authorizationURL);
+    expect(authorizationURL.origin).toBe("https://api.workos.com");
+    expect(authorizationURL.searchParams.get("provider")).toBe("authkit");
+    expect(authorizationURL.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(authorizationURL.searchParams.get("code_challenge"))
+      .toBe(codeChallenge);
+
+    const identity = await adapter.exchangeAuthorizationCode(
+      "authorization_code_12345",
+      "v".repeat(43),
+      "https://identity.staging.pfss.test/callback",
+    );
+    expect(exchangeBody).toEqual({
+      client_id: "client_staging123",
+      client_secret: "sk_staging_secret123",
+      grant_type: "authorization_code",
+      code: "authorization_code_12345",
+      code_verifier: "v".repeat(43),
+    });
+    expect(identity).toEqual({
+      providerKey: "workos",
+      providerSubject: "user_verified123",
+      verifiedEmail: "owner@example.com",
+      displayName: "Geoff Nordmyer",
+      authenticationMethod: "MagicAuth",
+    });
+    expect(identity).not.toHaveProperty("accessToken");
+    expect(identity).not.toHaveProperty("refreshToken");
+  });
+
+  it("rejects unverified WorkOS identities", async () => {
+    const adapter = new WorkOSManagedOwnerIdentityProvider({
+      providerKey: "workos",
+      deploymentEnvironment: "staging",
+      providerEnvironment: "staging",
+      clientID: "client_staging123",
+      apiKey: "sk_staging_secret123",
+      apiBaseURL: "https://api.workos.com",
+      issuer: "https://identity.staging.pfss.test",
+      redirectURIs: ["https://identity.staging.pfss.test/callback"],
+    }, async () => new Response(JSON.stringify({
+      user: {
+        id: "user_unverified123",
+        email: "owner@example.com",
+        email_verified: false,
+      },
+      authentication_method: "MagicAuth",
+    }), { status: 200 }));
+    await expect(adapter.exchangeAuthorizationCode(
+      "authorization_code_12345",
+      "v".repeat(43),
+      "https://identity.staging.pfss.test/callback",
+    )).rejects.toThrow("incomplete or unverified");
+  });
+});
 
 describe("tenant isolation", () => {
   it("publishes record changes only to devices in the same tenant", async () => {
@@ -1125,5 +2114,670 @@ describe("membership authorization", () => {
       "SELECT COUNT(*) AS count FROM enrollment_codes WHERE tenant_id = ?1 AND created_at = ?2",
     ).bind(owner.tenantID, oldDate).first<{ count: number }>();
     expect(oldCodes?.count).toBe(0);
+  });
+
+  it("creates and links an Owner employee profile with operational roles", async () => {
+    const owner = await seedIdentity("Working Owner");
+    const response = await worker.fetch(
+      request(owner, "/v1/account/owner-work-profile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ roles: ["salesperson", "technician"] }),
+      }),
+      env,
+    );
+    expect(response.status).toBe(201);
+    const receipt = await response.json<{ employeeID: string; roles: string[] }>();
+    expect(receipt.roles).toEqual(["Salesperson", "Technician"]);
+
+    const member = await env.DB.prepare(
+      "SELECT role, employee_id AS employeeID FROM tenant_members WHERE id = ?1",
+    ).bind(owner.memberID).first<{ role: string; employeeID: string }>();
+    expect(member).toEqual({ role: "owner", employeeID: receipt.employeeID });
+
+    const feed = await worker.fetch(request(owner, "/v1/sync/changes"), env);
+    const payload = await feed.json<{ changes: Array<{ operation: any }> }>();
+    const mutation = JSON.parse(Buffer.from(
+      payload.changes[0].operation.payload.body,
+      "base64",
+    ).toString());
+    const record = JSON.parse(Buffer.from(mutation.recordData, "base64").toString());
+    expect(record.roles).toEqual(["Salesperson", "Technician"]);
+    expect(record.lifecycleStatus).toBe("Active");
+  });
+
+  it("keeps Owner work roles separate from membership authority", async () => {
+    const owner = await seedIdentity("Owner Role Boundary");
+    const manager = await seedMemberInTenant(owner, "Manager", "manager");
+    const forbidden = await worker.fetch(
+      request(manager, "/v1/account/owner-work-profile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ roles: ["technician"] }),
+      }),
+      env,
+    );
+    expect(forbidden.status).toBe(403);
+
+    const escalation = await worker.fetch(
+      request(owner, "/v1/account/owner-work-profile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ roles: ["owner"] }),
+      }),
+      env,
+    );
+    expect(escalation.status).toBe(400);
+  });
+
+  it("signs an existing Owner into a second device and consumes the assertion", async () => {
+    const owner = await seedIdentity("Returning Owner");
+    const subjectID = crypto.randomUUID();
+    const assertion = `pfss_owner_${crypto.randomUUID()}${crypto.randomUUID()}`;
+    const now = new Date();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO authentication_subjects
+          (id, display_name, status, created_at, updated_at)
+         VALUES (?1, 'Returning Owner', 'active', ?2, ?2)`,
+      ).bind(subjectID, now.toISOString()),
+      env.DB.prepare(
+        `UPDATE tenant_members SET authentication_subject_id = ?1 WHERE id = ?2`,
+      ).bind(subjectID, owner.memberID),
+      env.DB.prepare(
+        `INSERT INTO verified_contact_addresses
+          (id, subject_id, kind, normalized_value, verified_at, created_at)
+         VALUES (?1, ?2, 'email', 'returning@example.com', ?3, ?3)`,
+      ).bind(crypto.randomUUID(), subjectID, now.toISOString()),
+      env.DB.prepare(
+        `INSERT INTO owner_authorization_attempts
+          (id, state_digest, code_challenge, redirect_uri, status, subject_id,
+           identity_assertion_digest, expires_at, created_at, updated_at)
+         VALUES (?1, ?2, 'challenge', 'https://pfss.test/callback', 'verified',
+                 ?3, ?4, ?5, ?6, ?6)`,
+      ).bind(
+        crypto.randomUUID(), crypto.randomUUID(), subjectID,
+        createHash("sha256").update(assertion).digest("hex"),
+        new Date(now.getTime() + 300_000).toISOString(), now.toISOString(),
+      ),
+    ]);
+    const deviceID = crypto.randomUUID();
+    const response = await worker.fetch(new Request(
+      "https://pfss.test/v1/owner-auth/sign-in",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          identityAssertion: assertion,
+          deviceID,
+          deviceName: "Second Owner iPad",
+        }),
+      },
+    ), env);
+    expect(response.status).toBe(201);
+    const receipt = await response.json<{
+      tenant: { id: string };
+      device: { id: string; deviceToken: string };
+    }>();
+    expect(receipt.tenant.id).toBe(owner.tenantID);
+    expect(receipt.device.id).toBe(deviceID);
+    const sessionResponse = await worker.fetch(new Request(
+      "https://pfss.test/v1/session",
+      { headers: { authorization: `Bearer ${receipt.device.deviceToken}` } },
+    ), env);
+    expect(sessionResponse.status).toBe(200);
+    expect((await sessionResponse.json<{ member: { email: string } }>())
+      .member.email).toBe("returning@example.com");
+
+    const replay = await worker.fetch(new Request(
+      "https://pfss.test/v1/owner-auth/sign-in",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          identityAssertion: assertion,
+          deviceID: crypto.randomUUID(),
+          deviceName: "Replay",
+        }),
+      },
+    ), env);
+    expect(replay.status).toBe(401);
+  });
+
+  it("issues one-time Owner recovery codes and restores a replacement device", async () => {
+    const owner = await seedIdentity("Recovery Owner");
+    const subjectID = crypto.randomUUID();
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO authentication_subjects
+          (id, display_name, status, created_at, updated_at)
+         VALUES (?1, 'Recovery Owner', 'active', ?2, ?2)`,
+      ).bind(subjectID, now),
+      env.DB.prepare(
+        `UPDATE tenant_members SET authentication_subject_id = ?1 WHERE id = ?2`,
+      ).bind(subjectID, owner.memberID),
+    ]);
+
+    const generated = await worker.fetch(request(
+      owner,
+      "/v1/account-recovery/codes",
+      { method: "POST" },
+    ), env);
+    expect(generated.status).toBe(201);
+    const codeReceipt = await generated.json<{ recoveryCodes: string[] }>();
+    expect(codeReceipt.recoveryCodes).toHaveLength(8);
+    expect(new Set(codeReceipt.recoveryCodes).size).toBe(8);
+
+    const status = await worker.fetch(request(
+      owner,
+      "/v1/account-recovery/codes",
+    ), env);
+    expect(await status.json()).toMatchObject({ availableCodes: 8 });
+
+    const deviceID = crypto.randomUUID();
+    const recovered = await worker.fetch(new Request(
+      "https://pfss.test/v1/account-recovery/redeem",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          recoveryCode: codeReceipt.recoveryCodes[0].toLowerCase(),
+          deviceID,
+          deviceName: "Recovered iPad",
+        }),
+      },
+    ), env);
+    expect(recovered.status).toBe(201);
+    const receipt = await recovered.json<{
+      device: { deviceToken: string };
+    }>();
+    expect((await worker.fetch(new Request(
+      "https://pfss.test/v1/session",
+      { headers: { authorization: `Bearer ${receipt.device.deviceToken}` } },
+    ), env)).status).toBe(200);
+
+    const replay = await worker.fetch(new Request(
+      "https://pfss.test/v1/account-recovery/redeem",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          recoveryCode: codeReceipt.recoveryCodes[0],
+          deviceID: crypto.randomUUID(),
+          deviceName: "Replay",
+        }),
+      },
+    ), env);
+    expect(replay.status).toBe(401);
+
+    const audit = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM access_audit_events
+        WHERE tenant_id = ?1 AND event_type = 'account.recovered'`,
+    ).bind(owner.tenantID).first<{ count: number }>();
+    expect(audit?.count).toBe(1);
+  });
+
+  it("does not allow non-Owners to replace recovery codes", async () => {
+    const member = await seedIdentity("Recovery Member", "member");
+    const response = await worker.fetch(request(
+      member,
+      "/v1/account-recovery/codes",
+      { method: "POST" },
+    ), env);
+    expect(response.status).toBe(403);
+  });
+
+  it("verifies an exact invited email before activating a second Owner", async () => {
+    const owner = await seedIdentity("Primary Owner");
+    const invitationResponse = await worker.fetch(request(
+      owner,
+      "/v1/owner-invitations",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          displayName: "Second Owner",
+          email: "second-owner@example.com",
+        }),
+      },
+    ), env);
+    expect(invitationResponse.status).toBe(201);
+    const invitation = await invitationResponse.json<{
+      memberID: string;
+      invitationCode: string;
+    }>();
+
+    const subjectID = crypto.randomUUID();
+    const assertion = `pfss_owner_${crypto.randomUUID()}${crypto.randomUUID()}`;
+    const now = new Date();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO authentication_subjects
+          (id, display_name, status, created_at, updated_at)
+         VALUES (?1, 'Second Owner', 'active', ?2, ?2)`,
+      ).bind(subjectID, now.toISOString()),
+      env.DB.prepare(
+        `INSERT INTO verified_contact_addresses
+          (id, subject_id, kind, normalized_value, verified_at, created_at)
+         VALUES (?1, ?2, 'email', 'second-owner@example.com', ?3, ?3)`,
+      ).bind(crypto.randomUUID(), subjectID, now.toISOString()),
+      env.DB.prepare(
+        `INSERT INTO owner_authorization_attempts
+          (id, state_digest, code_challenge, redirect_uri, status, subject_id,
+           identity_assertion_digest, expires_at, created_at, updated_at)
+         VALUES (?1, ?2, 'challenge', 'https://pfss.test/callback', 'verified',
+                 ?3, ?4, ?5, ?6, ?6)`,
+      ).bind(
+        crypto.randomUUID(), crypto.randomUUID(), subjectID,
+        createHash("sha256").update(assertion).digest("hex"),
+        new Date(now.getTime() + 300_000).toISOString(), now.toISOString(),
+      ),
+    ]);
+    const deviceID = crypto.randomUUID();
+    const accepted = await worker.fetch(new Request(
+      "https://pfss.test/v1/owner-invitations/accept",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          invitationCode: invitation.invitationCode,
+          identityAssertion: assertion,
+          deviceID,
+          deviceName: "Second Owner iPhone",
+        }),
+      },
+    ), env);
+    expect(accepted.status).toBe(201);
+    const membership = await env.DB.prepare(
+      `SELECT role, status, authentication_subject_id AS subjectID
+         FROM tenant_members WHERE id = ?1`,
+    ).bind(invitation.memberID).first<{
+      role: string;
+      status: string;
+      subjectID: string;
+    }>();
+    expect(membership).toEqual({
+      role: "owner",
+      status: "active",
+      subjectID,
+    });
+
+    const replay = await worker.fetch(new Request(
+      "https://pfss.test/v1/owner-invitations/accept",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          invitationCode: invitation.invitationCode,
+          identityAssertion: assertion,
+          deviceID: crypto.randomUUID(),
+          deviceName: "Replay",
+        }),
+      },
+    ), env);
+    expect(replay.status).toBe(401);
+
+    const revoked = await worker.fetch(request(
+      owner,
+      `/v1/owner-members/${invitation.memberID}/revoke`,
+      { method: "POST" },
+    ), env);
+    expect(revoked.status).toBe(200);
+    const protectedSelf = await worker.fetch(request(
+      owner,
+      `/v1/owner-members/${owner.memberID}/revoke`,
+      { method: "POST" },
+    ), env);
+    expect(protectedSelf.status).toBe(409);
+  });
+
+  it("rejects a verified identity that does not match the Owner invitation", async () => {
+    const owner = await seedIdentity("Invitation Mismatch");
+    const created = await worker.fetch(request(owner, "/v1/owner-invitations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        displayName: "Expected Owner",
+        email: "expected@example.com",
+      }),
+    }), env);
+    const invitation = await created.json<{ invitationCode: string }>();
+    const subjectID = crypto.randomUUID();
+    const assertion = `pfss_owner_${crypto.randomUUID()}${crypto.randomUUID()}`;
+    const now = new Date();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO authentication_subjects
+          (id, display_name, status, created_at, updated_at)
+         VALUES (?1, 'Wrong Owner', 'active', ?2, ?2)`,
+      ).bind(subjectID, now.toISOString()),
+      env.DB.prepare(
+        `INSERT INTO verified_contact_addresses
+          (id, subject_id, kind, normalized_value, verified_at, created_at)
+         VALUES (?1, ?2, 'email', 'wrong@example.com', ?3, ?3)`,
+      ).bind(crypto.randomUUID(), subjectID, now.toISOString()),
+      env.DB.prepare(
+        `INSERT INTO owner_authorization_attempts
+          (id, state_digest, code_challenge, redirect_uri, status, subject_id,
+           identity_assertion_digest, expires_at, created_at, updated_at)
+         VALUES (?1, ?2, 'challenge', 'https://pfss.test/callback', 'verified',
+                 ?3, ?4, ?5, ?6, ?6)`,
+      ).bind(crypto.randomUUID(), crypto.randomUUID(), subjectID,
+        createHash("sha256").update(assertion).digest("hex"),
+        new Date(now.getTime() + 300_000).toISOString(), now.toISOString()),
+    ]);
+    const response = await worker.fetch(new Request(
+      "https://pfss.test/v1/owner-invitations/accept",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          invitationCode: invitation.invitationCode,
+          identityAssertion: assertion,
+          deviceID: crypto.randomUUID(),
+          deviceName: "Wrong Device",
+        }),
+      },
+    ), env);
+    expect(response.status).toBe(403);
+  });
+
+  it("keeps Operations APIs isolated from company device credentials", async () => {
+    const owner = await seedIdentity("Operations Isolation");
+    const response = await worker.fetch(request(
+      owner,
+      "/v1/operations/accounts",
+    ), env);
+    expect(response.status).toBe(401);
+  });
+
+  it("lists accounts and returns tenant-scoped Operations detail", async () => {
+    const first = await seedIdentity("Operations Alpha");
+    const second = await seedIdentity("Operations Bravo");
+    await seedMemberInTenant(first, "Alpha Technician");
+    const administrator = await seedOperationsIdentity("Platform Owner");
+    const subjectID = crypto.randomUUID();
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO authentication_subjects
+          (id, display_name, status, created_at, updated_at)
+         VALUES (?1, 'Operations Alpha Owner', 'active', ?2, ?2)`,
+      ).bind(subjectID, now),
+      env.DB.prepare(
+        `INSERT INTO verified_contact_addresses
+          (id, subject_id, kind, normalized_value, verified_at, created_at)
+         VALUES (?1, ?2, 'email', 'alpha.owner@example.com', ?3, ?3)`,
+      ).bind(crypto.randomUUID(), subjectID, now),
+      env.DB.prepare(
+        `UPDATE tenant_members SET authentication_subject_id = ?1
+          WHERE tenant_id = ?2 AND id = ?3`,
+      ).bind(subjectID, first.tenantID, first.memberID),
+    ]);
+
+    const listing = await worker.fetch(operationsRequest(
+      administrator,
+      "/v1/operations/accounts?search=Operations%20Alpha&status=active",
+    ), env);
+    expect(listing.status).toBe(200);
+    const listBody = await listing.json<{
+      accounts: Array<{ id: string; displayName: string; activeUsers: number }>;
+    }>();
+    expect(listBody.accounts).toHaveLength(1);
+    expect(listBody.accounts[0]).toMatchObject({
+      id: first.tenantID,
+      displayName: "Operations Alpha Business",
+      activeUsers: 2,
+    });
+
+    const detail = await worker.fetch(operationsRequest(
+      administrator,
+      `/v1/operations/accounts/${first.tenantID}`,
+    ), env);
+    expect(detail.status).toBe(200);
+    const detailBody = await detail.json<{
+      account: { id: string };
+      members: Array<{ id: string; email: string | null }>;
+      devices: Array<{
+        id: string;
+        memberID: string;
+        memberName: string;
+        memberEmail: string | null;
+        status: string;
+        lastSeenAt: string;
+      }>;
+    }>();
+    expect(detailBody.account.id).toBe(first.tenantID);
+    expect(detailBody.members).toHaveLength(2);
+    expect(detailBody.devices.length).toBeGreaterThanOrEqual(2);
+    expect(detailBody.members.find((member) => member.id === first.memberID)?.email)
+      .toBe("alpha.owner@example.com");
+    const ownerDevice = detailBody.devices.find(
+      (device) => device.memberID === first.memberID,
+    );
+    expect(ownerDevice).toMatchObject({
+      memberName: "Operations Alpha Member",
+      memberEmail: "alpha.owner@example.com",
+      status: "active",
+    });
+    expect(ownerDevice?.lastSeenAt).toBeTruthy();
+    expect(detailBody.members.some((member) => member.id === second.memberID))
+      .toBe(false);
+  });
+
+  it("finds every account containing a matching user email", async () => {
+    const first = await seedIdentity("Email Search Alpha");
+    const second = await seedIdentity("Email Search Bravo");
+    const third = await seedIdentity("Email Search Charlie");
+    const administrator = await seedOperationsIdentity("Email Search Owner");
+    const subjectID = crypto.randomUUID();
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO authentication_subjects
+          (id, display_name, status, created_at, updated_at)
+         VALUES (?1, 'Shared Owner', 'active', ?2, ?2)`,
+      ).bind(subjectID, now),
+      env.DB.prepare(
+        `INSERT INTO verified_contact_addresses
+          (id, subject_id, kind, normalized_value, verified_at, created_at)
+         VALUES (?1, ?2, 'email', 'shared.owner@example.com', ?3, ?3)`,
+      ).bind(crypto.randomUUID(), subjectID, now),
+      env.DB.prepare(
+        `UPDATE tenant_members SET authentication_subject_id = ?1
+          WHERE id = ?2 AND tenant_id = ?3`,
+      ).bind(subjectID, first.memberID, first.tenantID),
+      env.DB.prepare(
+        `UPDATE tenant_members SET authentication_subject_id = ?1
+          WHERE id = ?2 AND tenant_id = ?3`,
+      ).bind(subjectID, second.memberID, second.tenantID),
+      env.DB.prepare(
+        `INSERT INTO operations_account_email_index
+          (tenant_id, source_kind, source_id, normalized_email,
+           display_name, role_hint, updated_at)
+         VALUES (?1, 'employeeRecord', ?2, 'field.tech@example.com',
+                 'Field Technician', 'Technician', ?3)`,
+      ).bind(third.tenantID, crypto.randomUUID(), now),
+    ]);
+
+    const sharedResult = await worker.fetch(operationsRequest(
+      administrator,
+      "/v1/operations/accounts?search=SHARED.OWNER%40EXAMPLE.COM&status=all",
+    ), env);
+    expect(sharedResult.status).toBe(200);
+    const sharedBody = await sharedResult.json<{
+      accounts: Array<{ id: string }>;
+    }>();
+    expect(sharedBody.accounts.map((account) => account.id).sort())
+      .toEqual([first.tenantID, second.tenantID].sort());
+
+    const employeeResult = await worker.fetch(operationsRequest(
+      administrator,
+      "/v1/operations/accounts?search=field.tech%40example.com&status=all",
+    ), env);
+    expect(employeeResult.status).toBe(200);
+    const employeeBody = await employeeResult.json<{
+      accounts: Array<{ id: string }>;
+    }>();
+    expect(employeeBody.accounts.map((account) => account.id))
+      .toEqual([third.tenantID]);
+  });
+
+  it("grants an audited, immediately visible Operations plan override", async () => {
+    const account = await seedIdentity("Override Target");
+    const administrator = await seedOperationsIdentity("Override Owner");
+    const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000)
+      .toISOString();
+    const response = await worker.fetch(operationsRequest(
+      administrator,
+      `/v1/operations/accounts/${account.tenantID}/plan-override`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          planCode: "beta",
+          reason: "Approved invited beta testing account",
+          permanent: false,
+          expiresAt,
+        }),
+      },
+    ), env);
+    expect(response.status).toBe(201);
+    const receipt = await response.json<{
+      planCode: string;
+      entitlements: { userLimit: number; jobLimit: number };
+    }>();
+    expect(receipt).toMatchObject({
+      planCode: "beta",
+      entitlements: { userLimit: 5, jobLimit: 3000 },
+    });
+
+    const detail = await worker.fetch(operationsRequest(
+      administrator,
+      `/v1/operations/accounts/${account.tenantID}`,
+    ), env);
+    expect(await detail.json()).toMatchObject({
+      account: {
+        planCode: "beta",
+        accessSource: "betaGrant",
+        overrideReason: "Approved invited beta testing account",
+      },
+    });
+    const audit = await env.DB.prepare(
+      `SELECT event_type AS eventType, reason FROM operations_audit_events
+        WHERE target_tenant_id = ?1 AND event_type =
+          'operations.plan_override.granted'`,
+    ).bind(account.tenantID).first<{ eventType: string; reason: string }>();
+    expect(audit).toEqual({
+      eventType: "operations.plan_override.granted",
+      reason: "Approved invited beta testing account",
+    });
+  });
+
+  it("rejects plan overrides from support and read-only roles", async () => {
+    const account = await seedIdentity("Protected Override Target");
+    const support = await seedOperationsIdentity(
+      "Support Only", "supportAdministrator",
+    );
+    const response = await worker.fetch(operationsRequest(
+      support,
+      `/v1/operations/accounts/${account.tenantID}/plan-override`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          planCode: "pro",
+          reason: "Support must not grant billing access",
+          permanent: true,
+        }),
+      },
+    ), env);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: "operations_plan_override_forbidden",
+    });
+  });
+
+  it("enforces an audited account hold immediately and restores access", async () => {
+    const account = await seedIdentity("Held Account");
+    const administrator = await seedOperationsIdentity("Security Owner");
+    const hold = await worker.fetch(operationsRequest(
+      administrator, `/v1/operations/accounts/${account.tenantID}/hold`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          status: "securityHold",
+          reason: "Investigating suspicious account access",
+          permanent: true,
+        }),
+      },
+    ), env);
+    expect(hold.status).toBe(200);
+    const blocked = await worker.fetch(request(account, "/v1/session"), env);
+    expect(blocked.status).toBe(403);
+    expect(await blocked.json()).toMatchObject({
+      error: "account_access_on_hold",
+      hold: { type: "securityHold" },
+    });
+
+    const restored = await worker.fetch(operationsRequest(
+      administrator, `/v1/operations/accounts/${account.tenantID}/reactivate`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason: "Security review completed successfully" }),
+      },
+    ), env);
+    expect(restored.status).toBe(200);
+    expect((await worker.fetch(request(account, "/v1/session"), env)).status)
+      .toBe(200);
+    const events = await env.DB.prepare(
+      `SELECT action FROM operations_account_lifecycle_events
+        WHERE tenant_id = ?1 ORDER BY created_at`,
+    ).bind(account.tenantID).all<{ action: string }>();
+    expect(events.results.map((event) => event.action))
+      .toEqual(["hold", "reactivate"]);
+  });
+
+  it("restricts billing and support holds to their authorized roles", async () => {
+    const account = await seedIdentity("Role Matrix Account");
+    const billing = await seedOperationsIdentity(
+      "Billing Admin", "billingAdministrator",
+    );
+    const support = await seedOperationsIdentity(
+      "Support Admin", "supportAdministrator",
+    );
+    const apply = (administrator: SeededOperationsIdentity, status: string) =>
+      worker.fetch(operationsRequest(
+        administrator, `/v1/operations/accounts/${account.tenantID}/hold`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            status, reason: "Authorized operational hold reason", permanent: true,
+          }),
+        },
+      ), env);
+    expect((await apply(billing, "billingHold")).status).toBe(200);
+    expect((await apply(billing, "securityHold")).status).toBe(403);
+    expect((await apply(support, "supportHold")).status).toBe(200);
+    expect((await apply(support, "billingHold")).status).toBe(403);
+  });
+
+  it("returns a read-only platform summary to an authorized auditor", async () => {
+    await seedIdentity("Operations Summary");
+    const auditor = await seedOperationsIdentity(
+      "Read Only Auditor",
+      "readOnlyAuditor",
+    );
+    const response = await worker.fetch(operationsRequest(
+      auditor,
+      "/v1/operations/summary",
+    ), env);
+    expect(response.status).toBe(200);
+    const summary = await response.json<{
+      accounts: { total: number };
+      users: { active: number };
+      devices: { active: number };
+    }>();
+    expect(summary.accounts.total).toBeGreaterThan(0);
+    expect(summary.users.active).toBeGreaterThan(0);
+    expect(summary.devices.active).toBeGreaterThan(0);
   });
 });

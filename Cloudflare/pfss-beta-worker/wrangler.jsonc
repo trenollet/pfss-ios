@@ -3,9 +3,27 @@
   "name": "pfss-beta-api",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
+  "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "triggers": {
     "crons": ["17 3 * * *"]
+  },
+  "vars": {
+    "PFSS_ENVIRONMENT": "staging",
+    "APP_STORE_BUNDLE_ID": "com.patriot.PPS-Receipt-Printer",
+    "APP_STORE_ENVIRONMENT": "sandbox",
+    "WORKOS_ENVIRONMENT": "staging",
+    "WORKOS_API_BASE_URL": "https://api.workos.com",
+    "WORKOS_ISSUER": "https://api.workos.com/",
+    "WORKOS_REDIRECT_URIS": "[\"https://auth-staging.patriot-ok.com/callback/\"]",
+    "WORKOS_OPERATIONS_CLIENT_ID": "client_01KZ3WJE67JMAG6PVAZGRBPV7F",
+    "WORKOS_OPERATIONS_REDIRECT_URIS": "[\"https://auth-staging.patriot-ok.com/operations-callback/\"]",
+    "CLOUDFLARE_WORKERS_DAILY_REQUEST_LIMIT": "100000",
+    "CLOUDFLARE_R2_STORAGE_LIMIT_BYTES": "10737418240",
+    "WORKOS_AUTHKIT_MONTHLY_ACTIVE_USER_LIMIT": "1000000",
+    "CLOUDFLARE_ACCOUNT_ID": "2ccd4802e0a862c62add4f7ab5b702bf",
+    "CLOUDFLARE_D1_DATABASE_ID": "1648cb57-4d75-41bb-9268-71caa9569905",
+    "CLOUDFLARE_WORKER_SCRIPT_NAME": "pfss-beta-api"
   },
   "d1_databases": [
     {

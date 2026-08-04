@@ -106,6 +106,8 @@ enum OfflineSyncStatusResolver {
         switch cloudAccessStatus {
         case .suspended:
             return .accessSuspended
+        case .accountHold:
+            return .accessSuspended
         case .unavailable where connectivity != .offline:
             return .cloudUnavailable
         case .checking where connectivity == .unknown:

@@ -20,6 +20,7 @@ enum PFSSCloudSynchronizationAccessStatus: Equatable {
     case checking
     case available
     case suspended
+    case accountHold(PFSSAccountHold)
     case unavailable(String)
 }
 
@@ -158,6 +159,7 @@ final class AppDataStore: ObservableObject {
     private static let cloudRoleCacheKey = "PFSSAuthenticatedCloudRole"
     private static let cloudEmployeeIDCacheKey =
         "PFSSAuthenticatedCloudEmployeeID"
+    private static let cloudAccountHoldCacheKey = "PFSSCloudAccountHold"
     private var isApplyingRestoredSnapshot = false
     var isApplyingRemoteSynchronization = false
     var synchronizedRecordState: [String: Data] = [:]
@@ -193,6 +195,16 @@ final class AppDataStore: ObservableObject {
             cloudEmployeeID = self.cloudIdentityDefaults.string(
                 forKey: Self.cloudEmployeeIDCacheKey
             ).flatMap(UUID.init(uuidString:))
+        }
+        if self.persistsCloudIdentity,
+           let cachedHoldData = self.cloudIdentityDefaults.data(
+               forKey: Self.cloudAccountHoldCacheKey
+           ),
+           let cachedHold = try? JSONDecoder().decode(
+               PFSSAccountHold.self,
+               from: cachedHoldData
+           ) {
+            cloudSynchronizationAccessStatus = .accountHold(cachedHold)
         }
         self.synchronizedRecordRevisions = UserDefaults.standard
             .dictionary(forKey: "PFSSSynchronizedRecordRevisions")
@@ -307,7 +319,28 @@ final class AppDataStore: ObservableObject {
     func updateCloudSynchronizationAccessStatus(
         _ status: PFSSCloudSynchronizationAccessStatus
     ) {
+        if case .accountHold = cloudSynchronizationAccessStatus,
+           case .unavailable = status {
+            // A cached server hold remains authoritative while offline. Only a
+            // successful authenticated request may restore local operations.
+            return
+        }
         cloudSynchronizationAccessStatus = status
+        switch status {
+        case let .accountHold(hold):
+            if let data = try? JSONEncoder().encode(hold) {
+                cloudIdentityDefaults.set(
+                    data,
+                    forKey: Self.cloudAccountHoldCacheKey
+                )
+            }
+        case .available:
+            cloudIdentityDefaults.removeObject(
+                forKey: Self.cloudAccountHoldCacheKey
+            )
+        case .checking, .suspended, .unavailable:
+            break
+        }
     }
 
     private func removeOwnerRecoveryAccessIfNeeded(for role: PFSSTenantRole) {
