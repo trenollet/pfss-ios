@@ -198,6 +198,33 @@ operations application into active Phase 17 pre-launch work.
   Operations control plane ends at `0017`, followed by App Store entitlement
   migrations `0018` through `0020`.
 
+### Phase 17 Field Stabilization Record — 2026-08-06
+
+- Reconciled legacy assignment technician identifiers with the authenticated
+  Owner/employee identity so pre-authentication assignments appear correctly in
+  My Day.
+- Hardened conflict resolution to propagate the accepted server revision,
+  rebase dependent offline operations, and prevent resolved catalog and
+  assignment conflicts from immediately recurring.
+- Removed catalog usage counters and last-used timestamps from human conflict
+  review because they are operational metadata that PFSS can merge safely.
+- Restored replacement-device invitation creation for active employees and
+  added per-user arrival-to-setup and setup-to-work reminder preferences with
+  local notifications.
+- Added direct schedule editing from Operations Timeline assignment management,
+  including return-to-timeline refresh after saving.
+- Expanded Lead entry with Location, Notes, an organized Sales Info section,
+  Door Knock as the default source, and multiple quoted-price/frequency options
+  that remain editable on existing records.
+- Improved invoice payment entry with select-all behavior, exposed the effective
+  account plan in App Information, and advanced the application build to 4.
+- The Cloudflare Worker passed TypeScript validation and all 55 tests. The iOS
+  application passed all 185 unit tests on an iPhone 17 simulator with zero
+  failures or skips.
+- The signed build was compiled and installed on the paired field-test iPhone
+  and iPad devices. Native standalone Mac support remains deferred as the
+  post-v1.0 Mac Catalyst parking-lot enhancement.
+
 ### Step 8c — App Store Connect and Sandbox Subscription Activation
 
 - [ ] Finalize the public app name, icon, category, description, privacy links,

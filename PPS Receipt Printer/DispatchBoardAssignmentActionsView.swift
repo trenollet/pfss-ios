@@ -13,6 +13,7 @@ struct DispatchBoardAssignmentActionsView: View {
 
     let assignmentID: UUID
     let boardDate: Date
+    var onEditSchedule: (() -> Void)? = nil
 
     @State private var selectedTechnicianID: UUID?
     @State private var reasonPrompt: DispatchBoardReasonPrompt?
@@ -161,12 +162,34 @@ struct DispatchBoardAssignmentActionsView: View {
 
                 Divider()
 
-                workMetadataRow("Scheduled") {
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text(assignment.scheduling.displayDateText)
-                        Text(assignment.scheduling.displayTimeText)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                if let onEditSchedule {
+                    Button(action: onEditSchedule) {
+                        workMetadataRow("Scheduled") {
+                            HStack(spacing: 8) {
+                                VStack(alignment: .trailing, spacing: 2) {
+                                    Text(assignment.scheduling.displayDateText)
+                                    Text(assignment.scheduling.displayTimeText)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(
+                        "Change scheduled date and time, \(assignment.scheduling.displayDateText), \(assignment.scheduling.displayTimeText)"
+                    )
+                } else {
+                    workMetadataRow("Scheduled") {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(assignment.scheduling.displayDateText)
+                            Text(assignment.scheduling.displayTimeText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
 

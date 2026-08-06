@@ -43,7 +43,8 @@ final class AppDataStore: ObservableObject {
         PFSSCloudSynchronizationAccessStatus = .checking
     var onPersistentDataSaved: (() -> Void)?
     var onServerConflictResolutionRequested:
-        ((String, OfflineConflictResolution, String, [String]) async throws -> Void)?
+        ((String, OfflineConflictResolution, String, [String]) async throws
+            -> PFSSCloudflareConflictResolutionReceipt)?
     @Published var customers: [Customer] = [] {
         didSet { saveData() }
     }
@@ -262,6 +263,19 @@ final class AppDataStore: ObservableObject {
         return employees.first { $0.id == cloudEmployeeID }
     }
 
+    @discardableResult
+    func updateAuthenticatedJobTimerReminderPreferences(
+        _ preferences: JobTimerReminderPreferences
+    ) -> Bool {
+        guard let cloudEmployeeID,
+              let index = employees.firstIndex(where: {
+                  $0.id == cloudEmployeeID
+              }) else { return false }
+        employees[index].jobTimerReminderPreferences = preferences
+        saveData()
+        return true
+    }
+
     var shouldPresentAuthenticatedUserInfo: Bool {
         cloudRole != .owner
     }
@@ -307,6 +321,7 @@ final class AppDataStore: ObservableObject {
             }
         }
         removeOwnerRecoveryAccessIfNeeded(for: role)
+        relinkActiveOperationsToAuthenticatedEmployeeIfNeeded()
     }
 
     func clearCachedCloudIdentity() {
@@ -1199,7 +1214,36 @@ final class AppDataStore: ObservableObject {
             note: note,
             timestamp: timestamp
         )
+        updateJobStartReminder(for: updated, after: action)
         return true
+    }
+
+    private func updateJobStartReminder(
+        for job: JobRecord,
+        after action: JobWorkflowAction
+    ) {
+        switch action {
+        case .markArrived:
+            let minutes = authenticatedCloudEmployee?
+                .jobTimerReminderPreferences.arrivalToSetupMinutes ?? 5
+            PFSSJobStartReminderService.shared.scheduleAfterArrival(
+                for: job,
+                minutes: minutes
+            )
+        case .startSetup:
+            let minutes = authenticatedCloudEmployee?
+                .jobTimerReminderPreferences.setupToWorkMinutes ?? 5
+            PFSSJobStartReminderService.shared.scheduleAfterSetup(
+                for: job,
+                minutes: minutes
+            )
+        case .startWork, .finishWork, .completeJob:
+            PFSSJobStartReminderService.shared.cancel(for: job.id)
+        case .startTravel, .pauseTravel, .resumeTravel, .pauseWork,
+             .resumeWork, .startPackUp, .createInvoice, .recordPayment,
+             .viewDetails:
+            break
+        }
     }
 
     /// Keeps the Assignment lifecycle aligned with the established My Day
@@ -1358,8 +1402,10 @@ final class AppDataStore: ObservableObject {
     }
     func recordCatalogItemUsed(_ item: ServiceCatalogItem) {
         if let index = serviceCatalogItems.firstIndex(where: { $0.id == item.id }) {
-            serviceCatalogItems[index].usageCount += 1
-            serviceCatalogItems[index].lastUsedDate = Date()
+            var updated = serviceCatalogItems[index]
+            updated.usageCount += 1
+            updated.lastUsedDate = Date()
+            serviceCatalogItems[index] = updated
         }
     }
     func archiveServiceCatalogItem(_ item: ServiceCatalogItem) {

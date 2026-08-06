@@ -218,14 +218,18 @@ final class PFSSOwnerAuthenticationCoordinator: ObservableObject {
         self.redirectURI = redirectURI
     }
 
-    func start(emailHint: String? = nil) async throws
+    func start(
+        emailHint: String? = nil,
+        screenHint: String = "sign-up"
+    ) async throws
         -> PFSSIdentityAuthorizationSession {
         let pkce = try PFSSPKCEGenerator.make()
         let request = PFSSIdentityAuthorizationRequest(
             state: pkce.state,
             codeChallenge: pkce.challenge,
             redirectURI: redirectURI,
-            emailHint: emailHint
+            emailHint: emailHint,
+            screenHint: screenHint
         )
         let session = try await service.startAuthorization(request)
         guard session.state == pkce.state,

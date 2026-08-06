@@ -511,14 +511,20 @@ describe("production account registration foundation", () => {
       tenant: { id: string; displayName: string };
       owner: { memberID: string; role: string };
       device: { id: string; deviceToken: string };
-      plan: { accessSource: string; entitlements: { employeeLimit: number } };
+      plan: {
+        code: string;
+        accessSource: string;
+        entitlements: { userLimit: number; jobLimit: number };
+      };
       tokenIssued: boolean;
     }>();
     expect(receipt.registrationAttempt.status).toBe("active");
     expect(receipt.tenant.displayName).toContain("PFSS");
     expect(receipt.owner.role).toBe("owner");
+    expect(receipt.plan.code).toBe("beta");
     expect(receipt.plan.accessSource).toBe("betaGrant");
-    expect(receipt.plan.entitlements.employeeLimit).toBe(25);
+    expect(receipt.plan.entitlements.userLimit).toBe(5);
+    expect(receipt.plan.entitlements.jobLimit).toBe(3_000);
     expect(receipt.tokenIssued).toBe(true);
 
     const sessionResponse = await worker.fetch(new Request(
@@ -1367,6 +1373,16 @@ describe("tenant isolation", () => {
       env,
     );
     expect(resolved.status).toBe(200);
+    const resolvedBody = await resolved.json<{
+      entityType: string;
+      entityID: string;
+      finalRevision: string;
+    }>();
+    expect(resolvedBody).toMatchObject({
+      entityType: "customer",
+      entityID: entityID.toLowerCase(),
+    });
+    expect(resolvedBody.finalRevision).not.toBe(secondRevision);
     const acceptedResolution = await env.DB.prepare(
       `SELECT operation_json AS operationJSON
          FROM synchronized_records
@@ -1384,11 +1400,20 @@ describe("tenant isolation", () => {
       request(secondDevice, "/v1/sync/conflict-resolutions"), env,
     );
     const sourceReceiptBody = await sourceReceipts.json<{
-      resolutions: Array<{ id: string; resolution: string }>;
+      resolutions: Array<{
+        id: string;
+        entityType: string;
+        entityID: string;
+        resolution: string;
+        finalRevision: string;
+      }>;
     }>();
     expect(sourceReceiptBody.resolutions).toContainEqual(expect.objectContaining({
       id: conflict.conflictID,
+      entityType: "customer",
+      entityID: entityID.toLowerCase(),
       resolution: "keptDevice",
+      finalRevision: resolvedBody.finalRevision,
     }));
     const managerAudit = await worker.fetch(
       request(manager, "/v1/sync/conflict-audit"), env,
@@ -2144,6 +2169,51 @@ describe("membership authorization", () => {
     const record = JSON.parse(Buffer.from(mutation.recordData, "base64").toString());
     expect(record.roles).toEqual(["Salesperson", "Technician"]);
     expect(record.lifecycleStatus).toBe("Active");
+  });
+
+  it("returns the current Owner account entitlement and usage receipt", async () => {
+    const owner = await seedIdentity("Entitlement Owner");
+    const accountID = crypto.randomUUID();
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO subscription_accounts
+          (id, tenant_id, status, created_at, updated_at)
+         VALUES (?1, ?2, 'trialing', ?3, ?3)`,
+      ).bind(accountID, owner.tenantID, now),
+      env.DB.prepare(
+        `INSERT INTO plan_allocations
+          (id, tenant_id, subscription_account_id, access_source, plan_code,
+           entitlements_json, effective_at, created_at)
+         VALUES (?1, ?2, ?3, 'appStoreSubscription', 'trial-14-day', ?4, ?5, ?5)`,
+      ).bind(crypto.randomUUID(), owner.tenantID, accountID, JSON.stringify({
+        userLimit: 2,
+        deviceLimit: 4,
+        recordLimits: { leads: 5, customers: 5, jobs: 10 },
+        modules: ["sales", "service", "dispatch", "reporting"],
+      }), now),
+    ]);
+
+    const response = await worker.fetch(
+      request(owner, "/v1/account/entitlements"),
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      appAccountToken: owner.tenantID.toLowerCase(),
+      planCode: "trial-14-day",
+      subscriptionStatus: "trialing",
+      accessMode: "full",
+      usage: {
+        users: 1,
+        employees: 0,
+        devices: 1,
+        owners: 1,
+        leads: 0,
+        customers: 0,
+        jobs: 0,
+      },
+    });
   });
 
   it("keeps Owner work roles separate from membership authority", async () => {

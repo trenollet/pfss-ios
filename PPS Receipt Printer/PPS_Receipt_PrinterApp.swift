@@ -11,6 +11,8 @@ import UIKit
 @main
 @MainActor
 struct PPS_Receipt_PrinterApp: App {
+    @UIApplicationDelegateAdaptor(PFSSApplicationDelegate.self)
+    private var applicationDelegate
     @StateObject private var printer = BluetoothPrinter()
 
     var body: some Scene {

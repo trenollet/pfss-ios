@@ -3,7 +3,7 @@
 - Status: Active
 - Owner: PFSS Project
 - Applies To: Future Work
-- Last Updated: 2026-07-18
+- Last Updated: 2026-08-06
 
 This document holds approved ideas and important work that are intentionally deferred. Scheduled work belongs in `Roadmap.md`; completed work belongs in release documentation.
 
@@ -116,6 +116,27 @@ Support pause/resume, travel time separate from job labor, per-technician timers
 
 ## Post v1.0
 
+### PFSS for Mac via Mac Catalyst
+
+Create a standalone Mac Catalyst edition of PFSS from the shared iPhone/iPad
+codebase. The Mac edition must install and run independently of Xcode, preserve
+the same authenticated account and PFSS Cloud synchronization boundaries, and
+support normal macOS signing, archiving, updating, and distribution. Complete a
+Mac-specific interface pass for window resizing, keyboard and pointer input,
+menus, navigation, printing, file sharing, and platform-inappropriate iOS APIs
+before treating the Catalyst build as supported. This replaces reliance on the
+temporary `My Mac (Designed for iPad)` development runtime; it does not create a
+separate product fork or independent data model.
+
+### GPS and Map-Assisted Address Capture
+
+When creating a Lead or Customer, provide a map button beside the address
+entry. A field user standing at the property can open the map, verify their
+current GPS location, select the correct building or map point, and have PFSS
+reverse-geocode that selection into the address fields automatically. Retain
+manual address entry and allow the user to review or correct the resulting
+address before saving.
+
 ### Track mileage
 
 track technician mileage in the app for job assignments
@@ -132,5 +153,3 @@ no more long lists
 ### REvamp the Dashboard
 Use tiles to navigate Operations, Tech My Day, Leads, Customers, Estimates, and Invoices
 rename the Page to something else
-
-

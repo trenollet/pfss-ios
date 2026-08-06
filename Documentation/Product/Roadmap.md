@@ -276,8 +276,14 @@ Required capabilities:
 - Web application
 - Customer portal
 - Photos, attachments, and signatures
+- GPS and map-assisted address capture for new Leads and Customers
 - Reporting and dashboards
 - Industry packs and configurable workflows
 - AI-assisted recommendations
+- Mileage tracking and reporting for techs
+- New My Day screen for both Sales and Tech.  - Shows # of sales follow up and / or services and click the card shows the activity (sales or service) list for the day.
+- Create a calendar style view for the week, similar to jobber
+- iPhone Widget for My Day
+- Window Pricing Calc tool - could be for anything really - just want a tool that i can enter a base price and have it automatically calc weekly, bi-weekly, monthly, quarterly, or annual service prices and make those multipliers configurable.
 
 Detailed deferred items belong in `ParkingLot.md`; completed release details belong in release notes and release history.

@@ -6,6 +6,7 @@ import {
   WorkOSManagedOwnerIdentityProvider,
   managedIdentityConfigurationFromBindings,
 } from "./account-identity-provider";
+import { resolveAccountEntitlements } from "./account-entitlements";
 
 interface Env extends ManagedIdentityConfigurationBindings {
   DB: D1Database;
@@ -965,6 +966,69 @@ async function enforceNewRecordLimit(
   ).bind(tenantID, entityType).first<{ count: number }>();
   if ((count?.count ?? 0) < limit) return null;
   return json({ error: "plan_record_limit_reached", entityType, limit }, 409);
+}
+
+async function accountResourceCount(
+  env: Env,
+  tenantID: string,
+  resource: "devices" | "users" | "employees" | "owners",
+): Promise<number> {
+  const sql = resource === "devices"
+    ? `SELECT COUNT(*) AS count FROM devices
+        WHERE tenant_id = ?1 AND revoked_at IS NULL`
+    : resource === "users"
+    ? `SELECT COUNT(*) AS count FROM tenant_members
+        WHERE tenant_id = ?1
+          AND status IN ('invited', 'active', 'suspended')`
+    : resource === "owners"
+    ? `SELECT COUNT(*) AS count FROM tenant_members
+        WHERE tenant_id = ?1 AND role = 'owner'
+          AND status IN ('invited', 'active', 'suspended')`
+    : `SELECT COUNT(*) AS count FROM tenant_members
+        WHERE tenant_id = ?1 AND role != 'owner'
+          AND status IN ('invited', 'active', 'suspended')`;
+  const row = await env.DB.prepare(sql).bind(tenantID)
+    .first<{ count: number }>();
+  return row?.count ?? 0;
+}
+
+async function accountRecordCount(
+  env: Env,
+  tenantID: string,
+  entityType: "lead" | "customer" | "job",
+): Promise<number> {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS count FROM synchronized_records
+      WHERE tenant_id = ?1 AND entity_type = ?2`,
+  ).bind(tenantID, entityType).first<{ count: number }>();
+  return row?.count ?? 0;
+}
+
+async function accountEntitlementStatus(
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  if (identity.role !== "owner") return json({ error: "owner_required" }, 403);
+  const snapshot = await resolveAccountEntitlements(env.DB, identity.tenantID);
+  if (!snapshot) {
+    return json({ error: "account_entitlements_unavailable" }, 404);
+  }
+  const [users, employees, devices, owners, leads, customers, jobs] =
+    await Promise.all([
+      accountResourceCount(env, identity.tenantID, "users"),
+      accountResourceCount(env, identity.tenantID, "employees"),
+      accountResourceCount(env, identity.tenantID, "devices"),
+      accountResourceCount(env, identity.tenantID, "owners"),
+      accountRecordCount(env, identity.tenantID, "lead"),
+      accountRecordCount(env, identity.tenantID, "customer"),
+      accountRecordCount(env, identity.tenantID, "job"),
+    ]);
+  return json({
+    ...snapshot,
+    // The tenant UUID is the stable, server-authoritative StoreKit account token.
+    appAccountToken: identity.tenantID.toLowerCase(),
+    usage: { users, employees, devices, owners, leads, customers, jobs },
+  });
 }
 
 async function createOperationsPlanOverride(
@@ -2815,9 +2879,11 @@ async function startAccountRegistration(
 }
 
 const stagingRegistrationEntitlements = {
-  employeeLimit: 25,
-  deviceLimit: 40,
-  ownerLimit: 4,
+  userLimit: 5,
+  deviceLimit: 10,
+  leadLimit: 1_000,
+  customerLimit: 1_000,
+  jobLimit: 3_000,
   modules: ["sales", "service", "dispatch", "reporting"],
 };
 
@@ -2919,7 +2985,7 @@ async function completeAccountRegistration(
         (id, tenant_id, access_source, source_reference, plan_code,
          entitlements_json, effective_at, expires_at, granted_by_subject_id,
          grant_reason, created_at)
-       SELECT ?2, ?3, 'betaGrant', ?1, requested_plan_code, ?4, ?5, ?6,
+       SELECT ?2, ?3, 'betaGrant', ?1, 'beta', ?4, ?5, ?6,
               subject_id, 'Phase 17 staging registration', ?5
          FROM account_registration_attempts
         WHERE id = ?1 AND status = 'provisioning' AND tenant_id = ?3`,
@@ -2952,7 +3018,7 @@ async function completeAccountRegistration(
       id, crypto.randomUUID(), tenantID, memberID,
       JSON.stringify({
         registrationAttemptID: id,
-        planCode: attempt.requestedPlanCode,
+        planCode: "beta",
         accessSource: "betaGrant",
       }),
       now,
@@ -3001,7 +3067,7 @@ async function completeAccountRegistration(
       enrolledAt: now,
     },
     plan: {
-      code: attempt.requestedPlanCode,
+      code: "beta",
       accessSource: "betaGrant",
       entitlements: stagingRegistrationEntitlements,
     },
@@ -3149,15 +3215,20 @@ async function listSourceConflictResolutions(
   identity: DeviceIdentity,
 ): Promise<Response> {
   const result = await env.DB.prepare(
-    `SELECT id, status AS resolution, resolved_at AS resolvedAt
+    `SELECT id, entity_type AS entityType, entity_id AS entityID,
+            status AS resolution, resolved_at AS resolvedAt,
+            final_revision AS finalRevision
        FROM synchronization_conflicts
       WHERE tenant_id = ?1 AND source_device_id = ?2
         AND status IN ('keptCloud', 'keptDevice')
       ORDER BY resolved_at ASC`,
   ).bind(identity.tenantID, identity.deviceID).all<{
     id: string;
+    entityType: string;
+    entityID: string;
     resolution: "keptCloud" | "keptDevice";
     resolvedAt: string;
+    finalRevision: string;
   }>();
   return json({ resolutions: result.results });
 }
@@ -3281,12 +3352,15 @@ async function resolveSynchronizationConflict(
     return json({ error: "invalid_conflict_resolution" }, 400);
   }
   const conflict = await env.DB.prepare(
-    `SELECT local_operation_json AS localOperationJSON,
+    `SELECT entity_type AS entityType, entity_id AS entityID,
+            local_operation_json AS localOperationJSON,
             cloud_operation_json AS cloudOperationJSON,
             cloud_revision AS cloudRevision
        FROM synchronization_conflicts
       WHERE tenant_id = ?1 AND id = ?2 AND status = 'unresolved'`,
   ).bind(identity.tenantID, conflictID).first<{
+    entityType: string;
+    entityID: string;
     localOperationJSON: string;
     cloudOperationJSON: string;
     cloudRevision: string;
@@ -3297,9 +3371,17 @@ async function resolveSynchronizationConflict(
   if (body.resolution === "keptDevice") {
     const operation = JSON.parse(conflict.localOperationJSON) as
       Record<string, unknown>;
+    const current = await env.DB.prepare(
+      `SELECT revision
+         FROM synchronized_records
+        WHERE tenant_id = ?1 AND entity_type = ?2 AND entity_id = ?3`,
+    ).bind(
+      identity.tenantID, conflict.entityType, conflict.entityID,
+    ).first<{ revision: string }>();
+    if (!current) return json({ error: "conflict_record_not_found" }, 404);
     operation.id = crypto.randomUUID();
     operation.idempotencyKey = `conflict-resolution-${conflictID}`;
-    operation.baseRevision = conflict.cloudRevision;
+    operation.baseRevision = current.revision;
     operation.metadata = {
       ...(operation.metadata && typeof operation.metadata === "object"
         ? operation.metadata as Record<string, unknown>
@@ -3379,7 +3461,14 @@ async function resolveSynchronizationConflict(
     },
     createdAt: now,
   }).run();
-  return json({ id: conflictID, resolution: body.resolution, resolvedAt: now });
+  return json({
+    id: conflictID,
+    entityType: conflict.entityType,
+    entityID: conflict.entityID,
+    resolution: body.resolution,
+    resolvedAt: now,
+    finalRevision,
+  });
 }
 
 function accessAuditStatement(
@@ -3822,6 +3911,62 @@ async function createInvitation(
   return json({
     memberID,
     employeeID: employeeID || null,
+    enrollmentCode,
+    expiresAt: expiresAt.toISOString(),
+  }, 201);
+}
+
+async function createDeviceInvitation(
+  env: Env,
+  identity: DeviceIdentity,
+  memberID: string,
+): Promise<Response> {
+  if (!canManageMembers(identity)) return json({ error: "forbidden" }, 403);
+  const target = await env.DB.prepare(
+    `SELECT employee_id AS employeeID, display_name AS displayName, role, status
+       FROM tenant_members
+      WHERE tenant_id = ?1 AND id = ?2`,
+  ).bind(identity.tenantID, memberID).first<{
+    employeeID: string | null;
+    displayName: string;
+    role: TenantRole;
+    status: string;
+  }>();
+  if (!target) return json({ error: "not_found" }, 404);
+  if (!canManageTarget(identity, target.role)) {
+    return json({ error: "protected_role" }, 403);
+  }
+  if (target.status !== "active") {
+    return json({ error: "member_not_active" }, 409);
+  }
+
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const enrollmentCode = `PFSS-${crypto.randomUUID()}${crypto.randomUUID()}`;
+  const codeHash = await sha256(enrollmentCode);
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO enrollment_codes
+        (code_hash, tenant_id, member_id, expires_at, redeemed_at, created_at)
+       VALUES (?1, ?2, ?3, ?4, NULL, ?5)`,
+    ).bind(
+      codeHash,
+      identity.tenantID,
+      memberID,
+      expiresAt.toISOString(),
+      now.toISOString(),
+    ),
+    accessAuditStatement(env, identity.tenantID, "device.invitation_created", {
+      actorMemberID: identity.memberID,
+      actorDeviceID: identity.deviceID,
+      targetMemberID: memberID,
+      metadata: target.employeeID ? { employeeID: target.employeeID } : {},
+      createdAt: now.toISOString(),
+    }),
+  ]);
+  return json({
+    memberID,
+    employeeID: target.employeeID,
     enrollmentCode,
     expiresAt: expiresAt.toISOString(),
   }, 201);
@@ -4425,6 +4570,25 @@ async function acceptOperation(
     acceptedAt,
     revision,
   ).run();
+  const automaticallyResolvedConflictID = typeof metadata
+      .automaticallyResolvedConflictID === "string"
+    ? metadata.automaticallyResolvedConflictID
+    : null;
+  if (automaticallyResolvedConflictID) {
+    await env.DB.prepare(
+      `UPDATE synchronization_conflicts
+          SET status = 'keptDevice', resolved_at = ?1,
+              resolved_by_member_id = ?2, resolved_by_device_id = ?3,
+              resolver_role = ?4,
+              resolution_reason = 'Automatically merged catalog usage statistics.',
+              affected_fields_json = '["usageCount","lastUsedDate"]',
+              final_revision = ?5
+        WHERE tenant_id = ?6 AND id = ?7 AND status = 'unresolved'`,
+    ).bind(
+      acceptedAt, identity.memberID, identity.deviceID, identity.role,
+      revision, identity.tenantID, automaticallyResolvedConflictID,
+    ).run();
+  }
   return json({ revision, duplicate: false }, 201);
 }
 
@@ -4930,6 +5094,12 @@ export default {
       }
       if (
         request.method === "GET" &&
+        url.pathname === "/v1/account/entitlements"
+      ) {
+        return accountEntitlementStatus(env, identity);
+      }
+      if (
+        request.method === "GET" &&
         url.pathname === "/v1/account-recovery/codes"
       ) {
         return ownerRecoveryStatus(env, identity);
@@ -4965,6 +5135,16 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/v1/invitations") {
         return createInvitation(request, env, identity);
+      }
+      const deviceInvitationMatch = url.pathname.match(
+        /^\/v1\/members\/([^/]+)\/device-invitations$/,
+      );
+      if (request.method === "POST" && deviceInvitationMatch) {
+        return createDeviceInvitation(
+          env,
+          identity,
+          decodeURIComponent(deviceInvitationMatch[1]),
+        );
       }
       const cancelInvitationMatch = url.pathname.match(
         /^\/v1\/invitations\/([^/]+)\/cancel$/,

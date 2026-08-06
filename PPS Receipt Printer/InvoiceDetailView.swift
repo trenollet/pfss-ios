@@ -163,15 +163,10 @@ struct InvoiceDetailView: View {
                         Text("$")
                             .foregroundStyle(.secondary)
 
-                        TextField(
-                            "0.00",
-                            value: $invoice.amountPaid,
-                            format: .number.precision(
-                                .fractionLength(2)
-                            )
+                        SelectAllDecimalField(
+                            placeholder: "0.00",
+                            value: $invoice.amountPaid
                         )
-                        .keyboardType(.decimalPad)
-                        .multilineTextAlignment(.trailing)
                         .focused($isInputFocused)
                     }
                     .frame(maxWidth: 150)

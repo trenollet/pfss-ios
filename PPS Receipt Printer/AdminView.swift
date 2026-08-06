@@ -26,6 +26,22 @@ struct AdminView: View {
         ) as? String ?? "Unknown"
     }
 
+    private var accountPlanName: String {
+        guard cloudManager.isEnrolled else { return "Not Activated" }
+        if let planCode = cloudManager.accountEntitlementSnapshot?.planCode {
+            switch planCode {
+            case "beta-90-day": return "Beta Test"
+            case "trial-14-day": return "Trial"
+            case "base-monthly": return "Base"
+            case "pro-monthly": return "Pro"
+            case "expert-monthly": return "Expert"
+            case "enterprise-custom": return "Enterprise / Custom"
+            default: return planCode
+            }
+        }
+        return cloudManager.currentSession == nil ? "Loading…" : "Unavailable"
+    }
+
     private var syncPresentationState: OfflineSyncPresentationState {
         OfflineSyncStatusResolver.resolve(
             mode: store.offlineSynchronizationMode,
@@ -53,6 +69,19 @@ struct AdminView: View {
                                 systemImage: "person.crop.circle.badge.exclamationmark"
                             )
                             .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                if store.authenticatedCloudEmployee != nil {
+                    Section("Field Workflow") {
+                        NavigationLink {
+                            JobTimerReminderSettingsView()
+                        } label: {
+                            Label(
+                                "Job Timer Reminders",
+                                systemImage: "timer"
+                            )
                         }
                     }
                 }
@@ -187,6 +216,9 @@ struct AdminView: View {
                             .accessibilityHint(syncPresentationState.detail)
                         }
                     }
+                    if cloudManager.currentSession?.member.role == .owner {
+                        LabeledContent("Account Plan", value: accountPlanName)
+                    }
                     LabeledContent("Version", value: appVersion)
                     LabeledContent("Build", value: buildNumber)
                 }
@@ -230,6 +262,9 @@ struct AdminView: View {
         .task {
             if cloudManager.isEnrolled {
                 try? await cloudManager.refreshSession()
+                if cloudManager.currentSession?.member.role == .owner {
+                    try? await cloudManager.refreshAccountEntitlements()
+                }
             }
         }
         .navigationTitle("Settings")
@@ -258,6 +293,69 @@ struct AdminView: View {
         } message: {
             Text(logoutError)
         }
+    }
+}
+
+private struct JobTimerReminderSettingsView: View {
+    @EnvironmentObject private var store: AppDataStore
+    @State private var arrivalToSetupMinutes = 5
+    @State private var setupToWorkMinutes = 5
+    @State private var didLoad = false
+    @State private var isShowingSaved = false
+
+    private let choices = [0, 1, 3, 5, 10, 15, 20, 30]
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("After Arriving", selection: $arrivalToSetupMinutes) {
+                    ForEach(choices, id: \.self) { minutes in
+                        Text(label(for: minutes)).tag(minutes)
+                    }
+                }
+                Picker("After Starting Setup", selection: $setupToWorkMinutes) {
+                    ForEach(choices, id: \.self) { minutes in
+                        Text(label(for: minutes)).tag(minutes)
+                    }
+                }
+            } header: {
+                Text("Reminder Timing")
+            } footer: {
+                Text(
+                    "PFSS reminds you if Setup has not started after arrival, or Work has not started after Setup. These settings belong to your user profile."
+                )
+            }
+
+            Section {
+                Button("Save Reminder Times") {
+                    let saved = store
+                        .updateAuthenticatedJobTimerReminderPreferences(
+                            JobTimerReminderPreferences(
+                                arrivalToSetupMinutes: arrivalToSetupMinutes,
+                                setupToWorkMinutes: setupToWorkMinutes
+                            )
+                        )
+                    isShowingSaved = saved
+                }
+            }
+        }
+        .navigationTitle("Job Timer Reminders")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            guard !didLoad,
+                  let preferences = store.authenticatedCloudEmployee?
+                    .jobTimerReminderPreferences else { return }
+            arrivalToSetupMinutes = preferences.arrivalToSetupMinutes
+            setupToWorkMinutes = preferences.setupToWorkMinutes
+            didLoad = true
+        }
+        .alert("Reminder Times Saved", isPresented: $isShowingSaved) {
+            Button("OK", role: .cancel) { }
+        }
+    }
+
+    private func label(for minutes: Int) -> String {
+        minutes == 0 ? "Off" : "\(minutes) min"
     }
 }
 

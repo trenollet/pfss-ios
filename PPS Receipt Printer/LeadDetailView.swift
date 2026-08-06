@@ -14,10 +14,10 @@ struct LeadDetailView: View {
     @State var lead: Lead
     @FocusState private var isInputFocused: Bool
 
-    private var estimatedValueBinding: Binding<Double> {
+    private var notesBinding: Binding<String> {
         Binding(
-            get: { lead.estimatedValue },
-            set: { lead.estimatedValue = $0 }
+            get: { lead.notes ?? "" },
+            set: { lead.notes = $0 }
         )
     }
 
@@ -33,6 +33,12 @@ struct LeadDetailView: View {
                 TextField("Contact Name", text: $lead.contactName)
                     .focused($isInputFocused)
 
+                TextField("Location", text: Binding(
+                    get: { lead.location ?? "" },
+                    set: { lead.location = $0 }
+                ))
+                .focused($isInputFocused)
+
                 TextField("Phone", text: $lead.phone)
                     .keyboardType(.phonePad)
                     .focused($isInputFocused)
@@ -43,7 +49,18 @@ struct LeadDetailView: View {
                     .focused($isInputFocused)
             }
 
-            Section("Sales") {
+            Section("Sales Info") {
+                TextField("Assigned Salesperson", text: $lead.assignedSalesperson)
+                    .focused($isInputFocused)
+
+                Picker("Status", selection: $lead.status) {
+                    ForEach(LeadStatus.allCases) { status in
+                        Text(status.rawValue).tag(status)
+                    }
+                }
+
+                DatePicker("Follow-Up Date", selection: $lead.followUpDate, displayedComponents: .date)
+
                 Picker("Lead Source", selection: $lead.leadSource) {
                     ForEach(LeadSource.allCases) { source in
                         Text(source.rawValue).tag(source)
@@ -61,20 +78,22 @@ struct LeadDetailView: View {
                         .focused($isInputFocused)
                 }
 
-                TextField("Estimated Value", value: estimatedValueBinding, format: .number)
-                    .keyboardType(.decimalPad)
+                LeadQuoteOptionsEditor(
+                    quoteOptions: Binding(
+                        get: { lead.quoteOptions ?? [] },
+                        set: { options in
+                            lead.quoteOptions = options
+                            lead.estimatedValue = options.first?.quotedPrice ?? 0
+                        }
+                    ),
+                    isInputFocused: $isInputFocused
+                )
+            }
+
+            Section("Notes") {
+                TextEditor(text: notesBinding)
+                    .frame(minHeight: 110)
                     .focused($isInputFocused)
-
-                TextField("Assigned Salesperson", text: $lead.assignedSalesperson)
-                    .focused($isInputFocused)
-
-                Picker("Status", selection: $lead.status) {
-                    ForEach(LeadStatus.allCases) { status in
-                        Text(status.rawValue).tag(status)
-                    }
-                }
-
-                DatePicker("Follow-Up Date", selection: $lead.followUpDate, displayedComponents: .date)
             }
 
             Section {
@@ -104,6 +123,16 @@ struct LeadDetailView: View {
             }
         }
         .navigationTitle("Edit Lead")
+        .onAppear {
+            if lead.quoteOptions?.isEmpty != false {
+                lead.quoteOptions = [
+                    LeadQuoteOption(
+                        quotedPrice: lead.estimatedValue,
+                        frequency: .oneTime
+                    )
+                ]
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {

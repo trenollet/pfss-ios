@@ -18,6 +18,9 @@ struct JobDetailView: View {
     @EnvironmentObject var store: AppDataStore
     @Environment(\.dismiss) private var dismiss
 
+    let scrollToScheduleOnAppear: Bool
+    let onSave: (() -> Void)?
+
     @AppStorage("selectedTechnicianID")
     private var selectedTechnicianIDString = ""
     
@@ -30,6 +33,18 @@ struct JobDetailView: View {
     @State private var presentedInvoice: InvoiceRecord?
     @State private var showingRecurrencePicker = false
     @State private var timelineCorrectionEvent: JobTimelineEvent?
+
+    private let scheduleSectionID = "job-schedule-section"
+
+    init(
+        job: JobRecord,
+        scrollToScheduleOnAppear: Bool = false,
+        onSave: (() -> Void)? = nil
+    ) {
+        _job = State(initialValue: job)
+        self.scrollToScheduleOnAppear = scrollToScheduleOnAppear
+        self.onSave = onSave
+    }
     
     private enum ActiveSheet: Identifiable {
         case catalogPicker
@@ -170,6 +185,7 @@ struct JobDetailView: View {
     }
     
     var body: some View {
+        ScrollViewReader { scrollProxy in
         Form {
             Section("Job") {
                 Text(job.jobNumber)
@@ -453,6 +469,7 @@ struct JobDetailView: View {
                 .fontWeight(.semibold)
                 .foregroundStyle(.blue)
             }
+            .id(scheduleSectionID)
             
             Toggle("Recurring Job", isOn: $job.isRecurring)
 
@@ -500,6 +517,15 @@ struct JobDetailView: View {
             }
         }
         .onAppear {
+            if scrollToScheduleOnAppear {
+                Task { @MainActor in
+                    await Task.yield()
+                    withAnimation {
+                        scrollProxy.scrollTo(scheduleSectionID, anchor: .top)
+                    }
+                }
+            }
+
             guard let overrideMinutes =
                     job.scheduledDurationOverrideMinutes,
                   overrideMinutes > 0 else {
@@ -599,6 +625,7 @@ struct JobDetailView: View {
                     return saved != nil
                 }
             }
+        }
         }
     }
 
@@ -863,6 +890,7 @@ struct JobDetailView: View {
         job.subtotal = PricingCalculator.subtotal(for: job)
         job.total = PricingCalculator.total(for: job)
         store.updateJob(job)
+        onSave?()
 
         if shouldDismiss {
             dismiss()

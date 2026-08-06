@@ -151,9 +151,11 @@ function parseEntitlements(value: string): AccountEntitlements | null {
         : null);
     const deviceLimit = positiveInteger(parsed.deviceLimit);
     const recordLimits = parsed.recordLimits as Record<string, unknown> | undefined;
-    const leads = limitOrUnlimited(recordLimits?.leads);
-    const customers = limitOrUnlimited(recordLimits?.customers);
-    const jobs = limitOrUnlimited(recordLimits?.jobs);
+    const leads = limitOrUnlimited(recordLimits?.leads ?? parsed.leadLimit);
+    const customers = limitOrUnlimited(
+      recordLimits?.customers ?? parsed.customerLimit,
+    );
+    const jobs = limitOrUnlimited(recordLimits?.jobs ?? parsed.jobLimit);
     const modules = Array.isArray(parsed.modules)
       ? parsed.modules.filter((module): module is string =>
         typeof module === "string" && module.trim().length > 0

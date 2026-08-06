@@ -14,6 +14,7 @@ struct OperationsTimelineView: View {
     @State private var generatedAt = Date()
     @State private var selectedAssignmentID: UUID?
     @State private var managedAssignmentID: UUID?
+    @State private var scheduleJobID: UUID?
 
     private let calendar = Calendar.current
 
@@ -89,15 +90,53 @@ struct OperationsTimelineView: View {
                 )
             }
         }
+        .navigationDestination(item: $scheduleJobID) { jobID in
+            if let job = store.activeJobs.first(where: { $0.id == jobID }) {
+                JobDetailView(
+                    job: job,
+                    scrollToScheduleOnAppear: true,
+                    onSave: timelineScheduleDidSave
+                )
+            } else {
+                ContentUnavailableView(
+                    "Job Unavailable",
+                    systemImage: "calendar.badge.exclamationmark",
+                    description: Text("Return to the Timeline and refresh to try again.")
+                )
+            }
+        }
         .sheet(isPresented: isManagingAssignment) {
             if let assignmentID = managedAssignmentID {
                 DispatchBoardAssignmentActionsView(
                     assignmentID: assignmentID,
-                    boardDate: selectedDate
+                    boardDate: selectedDate,
+                    onEditSchedule: {
+                        openScheduleEditor(for: assignmentID)
+                    }
                 )
                 .environmentObject(store)
             }
         }
+    }
+
+    @MainActor
+    private func openScheduleEditor(for assignmentID: UUID) {
+        guard let jobID = store.assignmentEngine
+            .assignment(id: assignmentID)?.jobID else {
+            return
+        }
+
+        managedAssignmentID = nil
+        Task { @MainActor in
+            await Task.yield()
+            scheduleJobID = jobID
+        }
+    }
+
+    @MainActor
+    private func timelineScheduleDidSave() {
+        generatedAt = Date()
+        Task { await refreshMappedTravel() }
     }
 
     @MainActor
