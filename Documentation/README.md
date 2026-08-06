@@ -3,7 +3,7 @@
 - Status: Active
 - Owner: PFSS Project
 - Applies To: v0.9+
-- Last Updated: 2026-07-31
+- Last Updated: 2026-08-06
 
 ## Purpose
 
@@ -22,6 +22,8 @@ This folder is the permanent system of record for PFSS product direction, archit
   Phase 17 provider decisions are recorded in ADR-003 and ADR-004.
 - `Phase Development/` — active and completed phase workbooks, acceptance
   criteria, and verification records.
+  Phase 17 is closed, Phase 18 holds the upcoming product-expansion plan, and
+  Phase 19 owns App Store deployment and the production release.
 - `ReleaseNotes/` — release-by-release user and developer notes.
 - `ReleaseHistory/` — durable milestone snapshots and historical release records.
 

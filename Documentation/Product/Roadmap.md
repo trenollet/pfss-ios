@@ -3,7 +3,7 @@
 - Status: Active
 - Owner: PFSS Project
 - Applies To: v0.9+
-- Last Updated: 2026-07-31
+- Last Updated: 2026-08-06
 
 ## Current Foundation
 
@@ -100,7 +100,7 @@ Goals:
 
 ## Production Account Platform
 
-**Status:** Active — Phase 17
+**Status:** Completed — Phase 17
 
 PFSS Cloud production onboarding and support must replace beta enrollment with
 a durable identity, tenant-provisioning, and recovery system.
@@ -226,13 +226,38 @@ isolated read-only server control plane implemented in Phase 17 Step 8b.
 - Remove the beta endpoint from production builds and prevent production
   credentials from authenticating against beta infrastructure.
 
-These capabilities are production requirements, but implementation begins only
-after the current development phase is completed and accepted.
+These capabilities remain production requirements and are assigned to Phase 19
+rather than expanding the completed Phase 17 account-platform scope.
 
-Phase 17 implementation and acceptance are tracked in
+Phase 17 implementation and acceptance are closed in
 `../Phase Development/Phase_17_Project_Workbook.md`. The durable identity and
 registration boundary is defined in
 `../Architecture/ProductionAccountPlatform.md`.
+
+## Phase 18 — Product Expansion
+
+**Status:** Planning
+
+Phase 18 will expand PFSS with a product-owner-approved set of new features.
+Its scope will be planned after Phase 17 closeout instead of automatically
+promoting every parking-lot idea into active work.
+
+Planning and acceptance are tracked in
+`../Phase Development/Phase_18_Project_Workbook.md`.
+
+## Phase 19 — App Store Deployment and Production Release
+
+**Status:** Planned
+
+Phase 19 owns the public app name and identity, permanent production domain and
+infrastructure, launch legal and commercial policies, App Store Connect,
+subscription products, TestFlight, sandbox billing verification, review
+materials, and production-release acceptance. This work was transferred from
+Phase 17 so Phase 18 product expansion can be completed before the public store
+release candidate is frozen.
+
+Planning and acceptance are tracked in
+`../Phase Development/Phase_19_Project_Workbook.md`.
 
 ## Final Pre-Launch UI Consistency Pass
 

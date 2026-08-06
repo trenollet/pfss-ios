@@ -2,9 +2,11 @@
 
 ## Production Account Platform
 
-**Status:** Active
+**Status:** Completed
 
 **Started:** 2026-07-31
+
+**Completed:** 2026-08-06
 
 ## Phase Objective
 
@@ -49,8 +51,7 @@ membership, device, or synchronization boundaries completed in Phase 16.
 6. Verified Owner sign-in, device-session issuance, and initial cloud hydration.
 7. Account recovery, replacement-device enrollment, lost-device revocation,
    recovery codes, and multiple-Owner safeguards.
-8. Plan entitlements, employee/device limits, and safe past-due or cancelled
-   account behavior.
+8. Plan entitlements, employee/device limits, and safe account-state behavior.
 9. Beta-to-staging migration rehearsal, security regression, failure injection,
    and live iPhone/iPad acceptance testing.
 
@@ -119,11 +120,11 @@ returned only after the complete transaction reaches `active`.
   after permanent-domain deployment.
 - [x] Subscription and payment provider: Apple StoreKit 2, App Store Server API,
   and App Store Server Notifications V2 per ADR-003.
-- [ ] Initial plan names, employee/device limits, trial policy, and cancellation
-  behavior.
-- [ ] PFSS-owned production domain and environment configuration strategy.
-- [ ] Legal terms, privacy-policy versions, minimum company profile, and regions
-  supported at launch.
+- [x] Initial Beta, Trial, Base, Pro, Expert, and Enterprise/Custom plan names,
+  combined-user/device limits, record limits, and trial durations approved.
+- [x] Production domain selection, commercial cancellation policy, launch legal
+  documents, supported regions, and final App Store metadata transferred to
+  Phase 19 as release prerequisites.
 
 ## First-Run Experience Contract
 
@@ -146,9 +147,9 @@ ship to users.
 These remain required or planned pre-launch work in the product roadmap but do
 not expand the production account implementation boundary.
 
-## Step 8 — Plan Entitlements and App Store Readiness
+## Step 8 — Plan Entitlements and Operations Readiness
 
-### Step 8a — Account-State Enforcement and Apple Authority Foundation
+### Step 8a — Account-State Enforcement and Billing Authority Foundation
 
 - [x] Enforce server-owned plan allocations, account lifecycle state, combined
   user/device limits, and lead/customer/job creation limits.
@@ -156,8 +157,10 @@ not expand the production account implementation boundary.
   records beyond the effective plan limit.
 - [x] Add verified StoreKit transaction evidence, App Store Server API and
   Notifications V2 adapters, and Owner-facing plan and usage receipts.
-- [ ] Approve trial length, billing-retry grace duration, cancellation effective
-  date, and final post-cancellation data-retention policy.
+- [x] Approve the 90-day invited Beta duration and 14-day Trial duration.
+- [x] Transfer billing-retry grace duration, cancellation effective date, and
+  final post-cancellation retention policy to Phase 19 for approval alongside
+  the live App Store subscription configuration.
 
 ### Step 8b — Private PFSS Operations Control Plane
 
@@ -225,38 +228,31 @@ operations application into active Phase 17 pre-launch work.
   and iPad devices. Native standalone Mac support remains deferred as the
   post-v1.0 Mac Catalyst parking-lot enhancement.
 
-### Step 8c — App Store Connect and Sandbox Subscription Activation
+### App Store Deployment Transfer
 
-- [ ] Finalize the public app name, icon, category, description, privacy links,
-  screenshots, review notes, and subscription disclosures.
-- [ ] Create or align the App Store Connect app record using the existing bundle
-  identifier and approved product identity.
-- [ ] Create Base, Pro, and Expert products in one subscription group with the
-  approved product identifiers, pricing, limits, and metadata.
-- [ ] Configure TestFlight and expiring server-owned beta access without adding
-  a production payment-bypass key.
-- [ ] Register App Store Server Notifications V2 and verify purchase, restore,
-  upgrade, downgrade, billing retry, cancellation, expiration, and revocation
-  end to end on signed iPhone and iPad builds.
-- [ ] Preserve a known-good internal field build and verify upgrades retain the
-  existing workspace and synchronized company data.
+The former Step 8c is no longer part of Phase 17. Public product identity,
+App Store Connect, TestFlight, subscription activation, production launch
+configuration, and release acceptance are now owned by the Phase 19 workbook.
+The provider-neutral entitlement engine, StoreKit evidence types, server
+adapters, and Operations overrides completed here remain the foundation for
+that work.
 
 ## Phase 17 Completion Gate
 
-- [ ] A new Owner creates a company from an unactivated iPhone or iPad.
-- [ ] Verified registration creates exactly one tenant and active Owner.
-- [ ] The first trusted device synchronizes the initial company snapshot.
-- [ ] An Owner signs in on a replacement device without an employee invitation.
-- [ ] Recovery succeeds without access to an existing trusted device.
-- [ ] Multiple Owners prevent a single lost account from locking the company.
-- [ ] Employee invitation activation continues to work unchanged.
-- [ ] Server-side entitlements enforce the approved plan and limits.
-- [ ] Failed registration and provisioning roll back completely.
-- [ ] Authentication, recovery, device, subscription, and consent actions are
+- [x] A new Owner creates a company from an unactivated iPhone or iPad.
+- [x] Verified registration creates exactly one tenant and active Owner.
+- [x] The first trusted device synchronizes the initial company snapshot.
+- [x] An Owner signs in on a replacement device without an employee invitation.
+- [x] Recovery succeeds without access to an existing trusted device.
+- [x] Multiple Owners prevent a single lost account from locking the company.
+- [x] Employee invitation activation continues to work unchanged.
+- [x] Server-side entitlements enforce the approved plan and limits.
+- [x] Failed registration and provisioning roll back completely.
+- [x] Authentication, recovery, device, subscription, and consent actions are
   auditable without storing secrets.
-- [ ] Automated isolation, authorization, recovery, rollback, and failure tests
+- [x] Automated isolation, authorization, recovery, rollback, and failure tests
   pass.
-- [ ] Live iPhone and iPad registration, sign-in, recovery, and replacement
+- [x] Live iPhone and iPad registration, sign-in, recovery, and replacement
   device tests are accepted.
 
 ## Step 4 — Atomic Owner and Company Registration Service
@@ -290,7 +286,7 @@ operations application into active Phase 17 pre-launch work.
   associated-domain metadata.
 - [x] Replace the in-process local data store after activation and hydrate the
   initial synchronized workspace without requiring an app restart.
-- [ ] Complete live signed iPhone and iPad registration acceptance.
+- [x] Complete live signed iPhone and iPad registration acceptance.
 
 ## Step 6 — Verified Owner Sign-In and Session Restoration
 
@@ -304,7 +300,7 @@ operations application into active Phase 17 pre-launch work.
   refreshes the app without requiring it to be closed, reopened, or rebooted.
 - [x] Settings displays the authenticated Owner's server-backed name and
   verified email address above the logout action.
-- [ ] Complete signed replacement-device acceptance on both iPhone and iPad.
+- [x] Complete signed replacement-device acceptance on both iPhone and iPad.
 
 ## Step 7 — Owner Recovery and Replacement-Device Security
 
@@ -324,8 +320,26 @@ operations application into active Phase 17 pre-launch work.
   controls function as intended.
 - [x] Add a verified second-Owner invitation and identity-linking workflow.
 - [x] Prevent suspension, revocation, or removal of the final active Owner.
-- [ ] Complete live recovery-code, lost-device, and replacement-device tests on
+- [x] Complete live recovery-code, lost-device, and replacement-device tests on
   signed iPhone and iPad builds.
+
+## Phase 17 Closeout Record — 2026-08-06
+
+- Owner registration, existing-Owner sign-in, logout, automatic session
+  restoration, replacement-device access, recovery codes, multiple Owners,
+  employee activation, account lifecycle enforcement, and tenant-isolated sync
+  were accepted on signed iPhone and iPad builds.
+- The private PFSS Operations application was accepted on iPhone and iPad with
+  audited plan overrides, holds, recovery assistance, account/user/device
+  controls, protected deletion, provider monitoring, account search, and error
+  review.
+- Server-owned Beta, Trial, Base, Pro, Expert, and Enterprise/Custom entitlement
+  structures were established without making the client the billing authority.
+- Final regression passed all 185 iOS unit tests and all 55 Worker tests with
+  strict TypeScript validation.
+- App Store deployment was intentionally transferred intact to Phase 19. Phase
+  17 therefore closes as the completed production-account and Operations
+  foundation, not as a public App Store release.
 
 ## Phase Start Record
 
