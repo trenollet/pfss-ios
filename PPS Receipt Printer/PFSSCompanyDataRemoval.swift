@@ -14,6 +14,9 @@ extension Notification.Name {
     static let pfssCompanyDataRemovalStateDidChange = Notification.Name(
         "PFSSCompanyDataRemovalStateDidChange"
     )
+    static let pfssUserDidLogOut = Notification.Name(
+        "PFSSUserDidLogOut"
+    )
 }
 
 struct PFSSCompanyDataRemovalDirective: Codable, Equatable {
@@ -119,6 +122,21 @@ final class PFSSCompanyDataRemovalCoordinator {
     }
 
     func removeLocalCompanyData() throws {
+        try removeLocalCompanyData(postRemovalNotice: true)
+    }
+
+    func logOut(removeCredential: @MainActor () -> Void) throws {
+        try removeLocalCompanyData(postRemovalNotice: false)
+        removeCredential()
+        NotificationCenter.default.post(
+            name: .pfssUserDidLogOut,
+            object: nil
+        )
+    }
+
+    private func removeLocalCompanyData(
+        postRemovalNotice: Bool
+    ) throws {
         guard let store else {
             throw PFSSCompanyDataRemovalError.storeUnavailable
         }
@@ -128,10 +146,12 @@ final class PFSSCompanyDataRemovalCoordinator {
         PFSSOwnerRecoverySecurity.revokeLocalAccess()
         defaults.removeObject(forKey: synchronizationCursorKey)
         defaults.removeObject(forKey: synchronizedRecordRevisionsKey)
-        NotificationCenter.default.post(
-            name: .pfssCompanyDataWasRemoved,
-            object: nil
-        )
+        if postRemovalNotice {
+            NotificationCenter.default.post(
+                name: .pfssCompanyDataWasRemoved,
+                object: nil
+            )
+        }
     }
 
     private func setRemovalPending(_ isPending: Bool) {

@@ -9,6 +9,12 @@ import Combine
 import Foundation
 import Security
 
+extension Notification.Name {
+    static let pfssCompanyAccessWasActivated = Notification.Name(
+        "PFSSCompanyAccessWasActivated"
+    )
+}
+
 struct PFSSCloudflareBetaConfiguration: Equatable {
     var endpoint: URL
 }
@@ -153,6 +159,27 @@ struct PFSSAccessCleanupResult: Decodable, Equatable {
     var deviceCredentialsPurged: Int
 }
 
+struct PFSSOwnerRecoveryCodeStatus: Decodable, Equatable {
+    var availableCodes: Int
+    var createdAt: Date?
+}
+
+struct PFSSOwnerRecoveryCodeReceipt: Decodable, Equatable {
+    var recoveryCodes: [String]
+    var createdAt: Date
+}
+
+struct PFSSOwnerAccountInvitation: Decodable, Identifiable, Equatable {
+    var invitationID: String
+    var memberID: String
+    var displayName: String
+    var email: String
+    var invitationCode: String
+    var expiresAt: Date
+
+    var id: String { invitationID }
+}
+
 struct PFSSEmployeeArchiveAccessResult: Decodable, Equatable {
     enum Action: String, Decodable {
         case none
@@ -172,6 +199,7 @@ struct PFSSCloudflareSession: Codable, Equatable {
     struct Member: Codable, Equatable {
         var id: String
         var displayName: String
+        var email: String?
         var role: PFSSTenantRole
         var employeeID: String?
     }
@@ -212,6 +240,7 @@ enum PFSSCloudflareBetaError: LocalizedError {
     case noBackup
     case invalidResponse
     case companyDataRemoved
+    case accountHold(PFSSAccountHold)
     case server(String)
 
     var errorDescription: String? {
@@ -226,10 +255,47 @@ enum PFSSCloudflareBetaError: LocalizedError {
             return "The PFSS beta service returned an unreadable response."
         case .companyDataRemoved:
             return "This device no longer has company access. Company-owned data was removed."
+        case let .accountHold(hold):
+            return hold.message
         case let .server(message):
             return message
         }
     }
+}
+
+struct PFSSAccountHold: Codable, Equatable {
+    enum HoldType: String, Codable {
+        case billingHold
+        case securityHold
+        case supportHold
+    }
+
+    var type: HoldType
+    var expiresAt: Date?
+
+    var title: String {
+        switch type {
+        case .billingHold: return "Account Needs Billing Attention"
+        case .securityHold: return "Account Paused for Security Review"
+        case .supportHold: return "Account Temporarily Paused"
+        }
+    }
+
+    var message: String {
+        switch type {
+        case .billingHold:
+            return "Company access is paused while a billing issue is resolved. Contact your system administrator or PFSS Support for assistance."
+        case .securityHold:
+            return "Company access is paused to protect your account while a security issue is reviewed. Contact your system administrator or PFSS Support for assistance."
+        case .supportHold:
+            return "Company access is temporarily paused while a support issue is resolved. Contact your system administrator or PFSS Support for assistance."
+        }
+    }
+}
+
+private struct PFSSAccountHoldResponse: Decodable {
+    var error: String
+    var hold: PFSSAccountHold
 }
 
 private struct PFSSCloudflareEnrollmentResponse: Decodable {
@@ -280,8 +346,11 @@ private struct PFSSCloudflareConflictReportResponse: Decodable {
 
 struct PFSSCloudflareConflictResolutionReceipt: Decodable {
     var id: String
+    var entityType: OfflineEntityType
+    var entityID: UUID
     var resolution: String
     var resolvedAt: Date
+    var finalRevision: String
 }
 
 struct PFSSConflictAuditEvent: Decodable, Identifiable {
@@ -394,6 +463,8 @@ final class PFSSCloudflareBetaManager: ObservableObject {
     @Published private(set) var state: PFSSCloudflareBetaState
     @Published private(set) var backups: [PFSSCloudflareBackup] = []
     @Published private(set) var currentSession: PFSSCloudflareSession?
+    @Published private(set) var accountEntitlementSnapshot:
+        PFSSAccountEntitlementSnapshot?
     @Published private(set) var members: [PFSSTenantMember] = []
     @Published private(set) var devices: [PFSSTenantDevice] = []
 
@@ -422,6 +493,61 @@ final class PFSSCloudflareBetaManager: ObservableObject {
     var savedEndpoint: String { Self.defaultEndpoint }
     var isEnrolled: Bool { credentialStore.load() != nil }
 
+    func registrationDeviceID() -> UUID {
+        if let saved = defaults.string(forKey: deviceIDKey),
+           let id = UUID(uuidString: saved) {
+            return id
+        }
+        let id = UUID()
+        defaults.set(id.uuidString.lowercased(), forKey: deviceIDKey)
+        return id
+    }
+
+    func acceptProvisionedOwnerDevice(
+        token: String,
+        deviceID: UUID
+    ) async throws {
+        guard !token.isEmpty else {
+            throw PFSSCloudflareBetaError.invalidResponse
+        }
+        credentialStore.save(token)
+        defaults.set(deviceID.uuidString.lowercased(), forKey: deviceIDKey)
+        state = .connected
+        try await refreshSession()
+        NotificationCenter.default.post(
+            name: .pfssCompanyAccessWasActivated,
+            object: nil
+        )
+    }
+
+    func configureOwnerWorkProfile(
+        roles: Set<PFSSOwnerOperationalRole>
+    ) async throws -> PFSSOwnerWorkProfileReceipt {
+        guard currentSession?.member.role == .owner else {
+            throw PFSSCloudflareBetaError.server("owner_required")
+        }
+        guard !roles.isEmpty else {
+            throw PFSSCloudflareBetaError.server(
+                "Select Sales, Technician, or both."
+            )
+        }
+        var request = try request(
+            path: "/v1/account/owner-work-profile",
+            method: "POST",
+            authenticated: true
+        )
+        request.httpBody = try Self.encoder.encode([
+            "roles": roles.sorted { $0.rawValue < $1.rawValue }
+        ])
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let receipt = try Self.decoder.decode(
+            PFSSOwnerWorkProfileReceipt.self,
+            from: try await perform(request)
+        )
+        try await refreshSession()
+        return receipt
+    }
+
     func enroll(code: String, deviceName: String) async throws {
         state = .enrolling
         let enrollmentDeviceID = UUID().uuidString.lowercased()
@@ -441,6 +567,10 @@ final class PFSSCloudflareBetaManager: ObservableObject {
             credentialStore.save(response.deviceToken)
             defaults.set(enrollmentDeviceID, forKey: deviceIDKey)
             state = .connected
+            NotificationCenter.default.post(
+                name: .pfssCompanyAccessWasActivated,
+                object: nil
+            )
             // Enrollment codes are single-use. Once the credential is safely
             // stored, a transient status refresh must not misreport enrollment
             // as failed and tempt the owner to retry a consumed code.
@@ -461,9 +591,22 @@ final class PFSSCloudflareBetaManager: ObservableObject {
         credentialStore.delete()
         backups = []
         currentSession = nil
+        accountEntitlementSnapshot = nil
         members = []
         devices = []
         state = savedEndpoint.isEmpty ? .notConfigured : .notEnrolled
+    }
+
+    func logOut() throws {
+        try PFSSCompanyDataRemovalCoordinator.shared.logOut {
+            self.credentialStore.delete()
+        }
+        backups = []
+        currentSession = nil
+        accountEntitlementSnapshot = nil
+        members = []
+        devices = []
+        state = .notEnrolled
     }
 
     func refreshSession() async throws {
@@ -476,10 +619,29 @@ final class PFSSCloudflareBetaManager: ObservableObject {
         )
     }
 
+    func refreshAccountEntitlements() async throws {
+        guard currentSession?.member.role == .owner else {
+            accountEntitlementSnapshot = nil
+            throw PFSSCloudflareBetaError.server("owner_required")
+        }
+        let data = try await perform(
+            try request(path: "/v1/account/entitlements", authenticated: true)
+        )
+        accountEntitlementSnapshot = try Self.decoder.decode(
+            PFSSAccountEntitlementSnapshot.self,
+            from: data
+        )
+    }
+
     func refresh() async throws {
         state = .working
         do {
             try await refreshSession()
+            if currentSession?.member.role == .owner {
+                try await refreshAccountEntitlements()
+            } else {
+                accountEntitlementSnapshot = nil
+            }
             if currentSession?.member.role.canManageRecovery == true {
                 try await refreshBackups()
             } else {
@@ -552,6 +714,26 @@ final class PFSSCloudflareBetaManager: ObservableObject {
         return invitation
     }
 
+    func createDeviceInvitation(
+        for member: PFSSTenantMember
+    ) async throws -> PFSSTenantInvitation {
+        guard currentSession?.member.role.canManageAccess == true else {
+            throw PFSSCloudflareBetaError.server("forbidden")
+        }
+        let invitation = try Self.decoder.decode(
+            PFSSTenantInvitation.self,
+            from: try await perform(
+                try request(
+                    path: "/v1/members/\(member.id)/device-invitations",
+                    method: "POST",
+                    authenticated: true
+                )
+            )
+        )
+        try await refreshAdministration()
+        return invitation
+    }
+
     func secureEmployeeAccessForArchive(
         employeeID: UUID
     ) async throws -> PFSSEmployeeArchiveAccessResult {
@@ -587,6 +769,75 @@ final class PFSSCloudflareBetaManager: ObservableObject {
             currentSession = nil
             state = .notEnrolled
         }
+    }
+
+    func ownerRecoveryCodeStatus() async throws
+        -> PFSSOwnerRecoveryCodeStatus {
+        let data = try await perform(
+            try request(
+                path: "/v1/account-recovery/codes",
+                authenticated: true
+            )
+        )
+        return try Self.decoder.decode(
+            PFSSOwnerRecoveryCodeStatus.self,
+            from: data
+        )
+    }
+
+    func replaceOwnerRecoveryCodes() async throws
+        -> PFSSOwnerRecoveryCodeReceipt {
+        let data = try await perform(
+            try request(
+                path: "/v1/account-recovery/codes",
+                method: "POST",
+                authenticated: true
+            )
+        )
+        return try Self.decoder.decode(
+            PFSSOwnerRecoveryCodeReceipt.self,
+            from: data
+        )
+    }
+
+    func createOwnerInvitation(
+        displayName: String,
+        email: String
+    ) async throws -> PFSSOwnerAccountInvitation {
+        var invitationRequest = try request(
+            path: "/v1/owner-invitations",
+            method: "POST",
+            authenticated: true
+        )
+        invitationRequest.httpBody = try Self.encoder.encode([
+            "displayName": displayName.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ),
+            "email": email.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).lowercased()
+        ])
+        invitationRequest.setValue(
+            "application/json",
+            forHTTPHeaderField: "Content-Type"
+        )
+        let invitation = try Self.decoder.decode(
+            PFSSOwnerAccountInvitation.self,
+            from: try await perform(invitationRequest)
+        )
+        try await refreshAdministration()
+        return invitation
+    }
+
+    func revokeOwnerMember(_ member: PFSSTenantMember) async throws {
+        _ = try await perform(
+            try request(
+                path: "/v1/owner-members/\(member.id)/revoke",
+                method: "POST",
+                authenticated: true
+            )
+        )
+        try await refreshAdministration()
     }
 
     func cancelInvitation(for member: PFSSTenantMember) async throws {
@@ -769,7 +1020,7 @@ final class PFSSCloudflareBetaManager: ObservableObject {
         resolution: OfflineConflictResolution,
         reason: String,
         affectedFields: [String]
-    ) async throws {
+    ) async throws -> PFSSCloudflareConflictResolutionReceipt {
         let value: String
         switch resolution {
         case .keptRemote: value = "keptCloud"
@@ -787,7 +1038,10 @@ final class PFSSCloudflareBetaManager: ObservableObject {
             "affectedFields": affectedFields
         ])
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        _ = try await perform(request)
+        return try Self.decoder.decode(
+            PFSSCloudflareConflictResolutionReceipt.self,
+            from: try await perform(request)
+        )
     }
 
     func conflictAuditEvents() async throws -> [PFSSConflictAuditEvent] {
@@ -900,6 +1154,12 @@ final class PFSSCloudflareBetaManager: ObservableObject {
                 state = .notEnrolled
                 throw PFSSCloudflareBetaError.companyDataRemoved
             }
+            if let response = try? Self.decoder.decode(
+                PFSSAccountHoldResponse.self,
+                from: data
+            ), response.error == "account_access_on_hold" {
+                throw PFSSCloudflareBetaError.accountHold(response.hold)
+            }
             let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             throw PFSSCloudflareBetaError.server(
                 object?["error"] as? String
@@ -971,15 +1231,28 @@ private final class PFSSCloudSnapshotPublisher {
 
     private func synchronizeNow() async {
         guard let store else { return }
-        if manager.currentSession == nil {
-            try? await manager.refreshSession()
-        }
+        // Membership-to-employee links and access lifecycle can change on the
+        // server while this device remains enrolled, so refresh every poll.
+        try? await manager.refreshSession()
         if let member = manager.currentSession?.member {
             store.updateCloudIdentity(
                 role: member.role,
                 employeeID: member.employeeID
             )
         }
+
+        // Apply completed Manager/Owner decisions before sending newly queued
+        // work. An app resuming from suspension can otherwise submit a change
+        // against the revision that existed before its prior conflict was
+        // resolved.
+        do {
+            store.applyServerConflictResolutionReceipts(
+                try await manager.conflictResolutionReceipts()
+            )
+        } catch {
+            // A later poll reconciles any missed Manager decision.
+        }
+
         await store.offlineSynchronizationService?
             .processPendingOperations(forceRetry: true)
 
@@ -1004,14 +1277,6 @@ private final class PFSSCloudSnapshotPublisher {
         }
 
         do {
-            store.applyServerConflictResolutionReceipts(
-                try await manager.conflictResolutionReceipts()
-            )
-        } catch {
-            // A later poll reconciles any missed Manager decision.
-        }
-
-        do {
             var cursor = UserDefaults.standard.integer(forKey: cursorKey)
             var hasMore = true
             while hasMore {
@@ -1023,8 +1288,10 @@ private final class PFSSCloudSnapshotPublisher {
             }
             store.updateCloudSynchronizationAccessStatus(.available)
         } catch {
-            if case let PFSSCloudflareBetaError.server(message) = error,
-               message == "access_suspended" {
+            if case let PFSSCloudflareBetaError.accountHold(hold) = error {
+                store.updateCloudSynchronizationAccessStatus(.accountHold(hold))
+            } else if case let PFSSCloudflareBetaError.server(message) = error,
+                      message == "access_suspended" {
                 store.updateCloudSynchronizationAccessStatus(.suspended)
             } else {
                 store.updateCloudSynchronizationAccessStatus(
@@ -1122,7 +1389,17 @@ final class PFSSCloudflareSynchronizationAdapter: OfflineSynchronizationAdapter 
                         from: data
                    ),
                    conflictResponse.error == "record_conflict",
+                   let conflictID = conflictResponse.conflictID,
+                   let currentRevision = conflictResponse.currentRevision,
                    let remoteOperation = conflictResponse.currentOperation {
+                    if let revision = await automaticallyRebaseCatalogUsage(
+                        operation,
+                        onto: remoteOperation,
+                        revision: currentRevision,
+                        conflictID: conflictID
+                    ) {
+                        return .synchronized(remoteRevision: revision)
+                    }
                     return .conflicted(OfflineConflictInformation(
                         kind: .concurrentModification,
                         localVersion: OfflineRecordVersion(
@@ -1132,7 +1409,7 @@ final class PFSSCloudflareSynchronizationAdapter: OfflineSynchronizationAdapter 
                             payload: operation.payload
                         ),
                         remoteVersion: OfflineRecordVersion(
-                            revision: conflictResponse.currentRevision,
+                            revision: currentRevision,
                             modifiedAt: remoteOperation.createdAt,
                             source: .remote,
                             payload: remoteOperation.payload
@@ -1157,6 +1434,82 @@ final class PFSSCloudflareSynchronizationAdapter: OfflineSynchronizationAdapter 
         }
     }
 
+    /// Catalog usage count and last-used date are system-maintained telemetry,
+    /// not competing human edits. When those are the only differences, safely
+    /// place the newer usage snapshot on the current cloud revision instead of
+    /// sending routine job creation to the conflict inbox.
+    private func automaticallyRebaseCatalogUsage(
+        _ localOperation: PendingOfflineOperation,
+        onto remoteOperation: PendingOfflineOperation,
+        revision: String,
+        conflictID: String
+    ) async -> String? {
+        guard localOperation.entityType == .catalog,
+              let localMutation = try? localOperation.payload.decode(
+                OfflineRecordMutationPayload.self,
+                decoder: Self.decoder
+              ),
+              let remoteMutation = try? remoteOperation.payload.decode(
+                OfflineRecordMutationPayload.self,
+                decoder: Self.decoder
+              ),
+              let localItem = try? Self.decoder.decode(
+                ServiceCatalogItem.self,
+                from: localMutation.recordData
+              ),
+              let remoteItem = try? Self.decoder.decode(
+                ServiceCatalogItem.self,
+                from: remoteMutation.recordData
+              ),
+              Self.catalogBusinessFieldsMatch(localItem, remoteItem),
+              localItem.usageCount >= remoteItem.usageCount else {
+            return nil
+        }
+
+        do {
+            var rebased = localOperation
+            rebased.baseRevision = revision
+            rebased.metadata["automaticallyResolvedConflictID"] = conflictID
+            var request = URLRequest(
+                url: configuration.endpoint.appendingPathComponent("v1/operations")
+            )
+            request.httpMethod = "POST"
+            request.httpBody = try Self.encoder.encode(rebased)
+            request.setValue(
+                "Bearer \(deviceToken)",
+                forHTTPHeaderField: "Authorization"
+            )
+            request.setValue(
+                "application/json",
+                forHTTPHeaderField: "Content-Type"
+            )
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else { return nil }
+            return try Self.decoder.decode(
+                PFSSCloudflareOperationResponse.self,
+                from: data
+            ).revision
+        } catch {
+            return nil
+        }
+    }
+
+    nonisolated private static func catalogBusinessFieldsMatch(
+        _ lhs: ServiceCatalogItem,
+        _ rhs: ServiceCatalogItem
+    ) -> Bool {
+        lhs.id == rhs.id &&
+        lhs.itemName == rhs.itemName &&
+        lhs.itemDescription == rhs.itemDescription &&
+        lhs.defaultQuantity == rhs.defaultQuantity &&
+        lhs.defaultPrice == rhs.defaultPrice &&
+        lhs.estimatedMinutesPerUnit == rhs.estimatedMinutesPerUnit &&
+        lhs.itemType == rhs.itemType &&
+        lhs.taxTreatment == rhs.taxTreatment &&
+        lhs.lifecycleStatus == rhs.lifecycleStatus
+    }
+
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -1171,9 +1524,9 @@ final class PFSSCloudflareSynchronizationAdapter: OfflineSynchronizationAdapter 
 }
 
 /// Selects remote queueing only when this installation already has a valid
-/// Cloudflare endpoint and protected device credential. A newly enrolled
-/// installation begins remote synchronization on its next app launch; an
-/// unenrolled installation retains the established local-only behavior.
+/// Cloudflare endpoint and protected device credential. The app session host
+/// recreates this store immediately after enrollment or sign-in so remote
+/// synchronization can begin without relaunching the app.
 @MainActor
 enum PFSSCloudflareAppDataStoreFactory {
     static func make() -> AppDataStore {

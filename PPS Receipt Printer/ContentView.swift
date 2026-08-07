@@ -9,7 +9,15 @@ enum AppSection: Hashable {
 }
 
 struct ContentView: View {
+    @EnvironmentObject private var store: AppDataStore
     @State private var selectedSection: AppSection = .dashboard
+
+    private var isOperationalAccessBlocked: Bool {
+        switch store.cloudSynchronizationAccessStatus {
+        case .accountHold, .suspended: return true
+        case .checking, .available, .unavailable: return false
+        }
+    }
 
     var body: some View {
         TabView(selection: $selectedSection) {
@@ -19,26 +27,28 @@ struct ContentView: View {
                 }
                 .tag(AppSection.dashboard)
 
-            SalesDashboardView()
-                .tabItem {
-                    Label("Sales", systemImage: "chart.line.uptrend.xyaxis")
-                }
-                .tag(AppSection.sales)
+            if !isOperationalAccessBlocked {
+                SalesDashboardView()
+                    .tabItem {
+                        Label("Sales", systemImage: "chart.line.uptrend.xyaxis")
+                    }
+                    .tag(AppSection.sales)
 
-            TechnicianWorkspaceView()
-                .tabItem {
-                    Label(
-                        "My Day",
-                        systemImage: "calendar.day.timeline.left"
-                    )
-                }
-                .tag(AppSection.myDay)
+                TechnicianWorkspaceView()
+                    .tabItem {
+                        Label(
+                            "My Day",
+                            systemImage: "calendar.day.timeline.left"
+                        )
+                    }
+                    .tag(AppSection.myDay)
 
-            ServiceDashboardView()
-                .tabItem {
-                    Label("Service", systemImage: "wrench.and.screwdriver")
-                }
-                .tag(AppSection.service)
+                ServiceDashboardView()
+                    .tabItem {
+                        Label("Service", systemImage: "wrench.and.screwdriver")
+                    }
+                    .tag(AppSection.service)
+            }
 
             NavigationStack {
                 AdminView()
@@ -47,6 +57,11 @@ struct ContentView: View {
                     Label("Settings", systemImage: "gear")
                 }
                 .tag(AppSection.admin)
+        }
+        .onChange(of: isOperationalAccessBlocked) { _, blocked in
+            if blocked && selectedSection != .admin {
+                selectedSection = .dashboard
+            }
         }
     }
 }

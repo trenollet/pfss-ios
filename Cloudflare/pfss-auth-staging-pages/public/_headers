@@ -1,0 +1,23 @@
+/.well-known/apple-app-site-association
+  Content-Type: application/json
+  Cache-Control: public, max-age=300
+  X-Content-Type-Options: nosniff
+
+/callback*
+  Cache-Control: no-store
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+
+/operations-callback*
+  Cache-Control: no-store
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+
+/*
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY

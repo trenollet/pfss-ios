@@ -46,6 +46,21 @@ enum LeadSource: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
 }
 
+enum LeadServiceFrequency: String, CaseIterable, Identifiable, Codable {
+    case monthly = "Monthly"
+    case biWeekly = "Bi-Weekly"
+    case weekly = "Weekly"
+    case oneTime = "One time"
+
+    var id: String { rawValue }
+}
+
+struct LeadQuoteOption: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var quotedPrice: Double
+    var frequency: LeadServiceFrequency
+}
+
 enum EstimateStatus: String, CaseIterable, Identifiable, Codable {
     case newLead = "New Lead"
     case estimateGiven = "Estimate Given"
@@ -305,6 +320,10 @@ struct EmployeeRecord: Identifiable, Codable {
     /// Existing employees decode with an empty profile.
     var workforceProfile: WorkforceOperationalProfile
 
+    /// Per-user field workflow reminder timing. A value of zero disables that
+    /// reminder without affecting the other reminder.
+    var jobTimerReminderPreferences: JobTimerReminderPreferences
+
     init(
         id: UUID = UUID(),
         firstName: String,
@@ -322,7 +341,9 @@ struct EmployeeRecord: Identifiable, Codable {
         isActive: Bool = true,
         createdDate: Date = Date(),
         lifecycleStatus: RecordLifecycleStatus = .active,
-        workforceProfile: WorkforceOperationalProfile = WorkforceOperationalProfile()
+        workforceProfile: WorkforceOperationalProfile = WorkforceOperationalProfile(),
+        jobTimerReminderPreferences: JobTimerReminderPreferences =
+            JobTimerReminderPreferences()
     ) {
         self.id = id
         self.firstName = firstName
@@ -344,6 +365,7 @@ struct EmployeeRecord: Identifiable, Codable {
         self.createdDate = createdDate
         self.lifecycleStatus = lifecycleStatus
         self.workforceProfile = workforceProfile
+        self.jobTimerReminderPreferences = jobTimerReminderPreferences
     }
 
     var displayName: String {
@@ -428,6 +450,7 @@ extension EmployeeRecord {
         case createdDate
         case lifecycleStatus
         case workforceProfile
+        case jobTimerReminderPreferences
     }
 
     init(from decoder: Decoder) throws {
@@ -490,6 +513,54 @@ extension EmployeeRecord {
             WorkforceOperationalProfile.self,
             forKey: .workforceProfile
         ) ?? WorkforceOperationalProfile()
+        jobTimerReminderPreferences = try container.decodeIfPresent(
+            JobTimerReminderPreferences.self,
+            forKey: .jobTimerReminderPreferences
+        ) ?? JobTimerReminderPreferences()
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(firstName, forKey: .firstName)
+        try container.encode(lastName, forKey: .lastName)
+        try container.encode(phone, forKey: .phone)
+        try container.encode(email, forKey: .email)
+        try container.encode(baseAddress, forKey: .baseAddress)
+        try container.encode(role, forKey: .role)
+        try container.encode(
+            roles.sorted { $0.rawValue < $1.rawValue },
+            forKey: .roles
+        )
+        try container.encode(defaultStartMinutes, forKey: .defaultStartMinutes)
+        try container.encode(defaultEndMinutes, forKey: .defaultEndMinutes)
+        try container.encode(lunchDurationMinutes, forKey: .lunchDurationMinutes)
+        try container.encode(
+            workingDays.sorted { $0.rawValue < $1.rawValue },
+            forKey: .workingDays
+        )
+        try container.encode(colorName, forKey: .colorName)
+        try container.encode(isActive, forKey: .isActive)
+        try container.encode(createdDate, forKey: .createdDate)
+        try container.encode(lifecycleStatus, forKey: .lifecycleStatus)
+        try container.encode(workforceProfile, forKey: .workforceProfile)
+        try container.encode(
+            jobTimerReminderPreferences,
+            forKey: .jobTimerReminderPreferences
+        )
+    }
+}
+
+struct JobTimerReminderPreferences: Codable, Equatable {
+    var arrivalToSetupMinutes: Int
+    var setupToWorkMinutes: Int
+
+    init(
+        arrivalToSetupMinutes: Int = 5,
+        setupToWorkMinutes: Int = 5
+    ) {
+        self.arrivalToSetupMinutes = max(arrivalToSetupMinutes, 0)
+        self.setupToWorkMinutes = max(setupToWorkMinutes, 0)
     }
 }
 
@@ -512,12 +583,20 @@ struct Lead: Identifiable, Codable {
     var leadNumber: String
     var businessName: String
     var contactName: String
+    /// Optional for backward compatibility with leads created before Location.
+    var location: String? = nil
     var phone: String
     var email: String
+    /// Free-form sales context retained throughout the lead lifecycle.
+    /// Optional for backward compatibility with leads created before this field.
+    var notes: String? = nil
     var leadSource: LeadSource
     var serviceRequested: ServiceType
     var otherService: String
     var estimatedValue: Double
+    /// Each proposed price and its corresponding service frequency.
+    /// The first price remains mirrored to `estimatedValue` for compatibility.
+    var quoteOptions: [LeadQuoteOption]? = nil
     var assignedSalesperson: String
     var status: LeadStatus
     var followUpDate: Date

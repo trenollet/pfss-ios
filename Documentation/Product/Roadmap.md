@@ -3,7 +3,7 @@
 - Status: Active
 - Owner: PFSS Project
 - Applies To: v0.9+
-- Last Updated: 2026-07-31
+- Last Updated: 2026-08-06
 
 ## Current Foundation
 
@@ -100,7 +100,7 @@ Goals:
 
 ## Production Account Platform
 
-**Status:** Planned after the current development phase
+**Status:** Completed — Phase 17
 
 PFSS Cloud production onboarding and support must replace beta enrollment with
 a durable identity, tenant-provisioning, and recovery system.
@@ -144,6 +144,9 @@ a durable identity, tenant-provisioning, and recovery system.
   company-data removal if that device contacts PFSS again.
 
 ### Developer Support and Database Operations Console
+
+**Status:** Active foundation — private PFSS Operations iPhone/iPad app and
+isolated read-only server control plane implemented in Phase 17 Step 8b.
 
 - Build a separate developer-only operations tool for customer support,
   provisioning diagnostics, migration status, backup verification, tenant
@@ -223,8 +226,38 @@ a durable identity, tenant-provisioning, and recovery system.
 - Remove the beta endpoint from production builds and prevent production
   credentials from authenticating against beta infrastructure.
 
-These capabilities are production requirements, but implementation begins only
-after the current development phase is completed and accepted.
+These capabilities remain production requirements and are assigned to Phase 19
+rather than expanding the completed Phase 17 account-platform scope.
+
+Phase 17 implementation and acceptance are closed in
+`../Phase Development/Phase_17_Project_Workbook.md`. The durable identity and
+registration boundary is defined in
+`../Architecture/ProductionAccountPlatform.md`.
+
+## Phase 18 — Product Expansion
+
+**Status:** Planning
+
+Phase 18 will expand PFSS with a product-owner-approved set of new features.
+Its scope will be planned after Phase 17 closeout instead of automatically
+promoting every parking-lot idea into active work.
+
+Planning and acceptance are tracked in
+`../Phase Development/Phase_18_Project_Workbook.md`.
+
+## Phase 19 — App Store Deployment and Production Release
+
+**Status:** Planned
+
+Phase 19 owns the public app name and identity, permanent production domain and
+infrastructure, launch legal and commercial policies, App Store Connect,
+subscription products, TestFlight, sandbox billing verification, review
+materials, and production-release acceptance. This work was transferred from
+Phase 17 so Phase 18 product expansion can be completed before the public store
+release candidate is frozen.
+
+Planning and acceptance are tracked in
+`../Phase Development/Phase_19_Project_Workbook.md`.
 
 ## Final Pre-Launch UI Consistency Pass
 
@@ -268,8 +301,14 @@ Required capabilities:
 - Web application
 - Customer portal
 - Photos, attachments, and signatures
+- GPS and map-assisted address capture for new Leads and Customers
 - Reporting and dashboards
 - Industry packs and configurable workflows
 - AI-assisted recommendations
+- Mileage tracking and reporting for techs
+- New My Day screen for both Sales and Tech.  - Shows # of sales follow up and / or services and click the card shows the activity (sales or service) list for the day.
+- Create a calendar style view for the week, similar to jobber
+- iPhone Widget for My Day
+- Window Pricing Calc tool - could be for anything really - just want a tool that i can enter a base price and have it automatically calc weekly, bi-weekly, monthly, quarterly, or annual service prices and make those multipliers configurable.
 
 Detailed deferred items belong in `ParkingLot.md`; completed release details belong in release notes and release history.

@@ -80,6 +80,22 @@ extension AppDataStore {
         _ receipts: [PFSSCloudflareConflictResolutionReceipt]
     ) {
         for receipt in receipts {
+            synchronizedRecordRevisions[
+                synchronizationKey(
+                    type: receipt.entityType,
+                    id: receipt.entityID
+                )
+            ] = receipt.finalRevision
+            for queued in offlineOperationQueue.operations where
+                queued.type == .recordMutation &&
+                queued.entityType == receipt.entityType &&
+                queued.entityID == receipt.entityID &&
+                queued.createdAt >= receipt.resolvedAt &&
+                [.pending, .waitingForRetry, .failed].contains(queued.status) {
+                try? offlineOperationQueue.mutate(id: queued.id) {
+                    $0.baseRevision = receipt.finalRevision
+                }
+            }
             guard let local = offlineOperationQueue.operations.first(where: {
                 $0.status == .conflicted &&
                 $0.metadata["serverConflictID"] == receipt.id
@@ -101,6 +117,7 @@ extension AppDataStore {
                 resubmitLocal: false
             )
         }
+        saveSynchronizedRecordRevisions()
     }
 
     func reconcileServerConflictInbox(
@@ -167,7 +184,7 @@ extension AppDataStore {
               let requestResolution = onServerConflictResolutionRequested else {
             throw OfflineConflictResolutionError.operationNotFound
         }
-        try await requestResolution(
+        let receipt = try await requestResolution(
             conflictID,
             resolution,
             reason,
@@ -178,11 +195,8 @@ extension AppDataStore {
         if resolution == .keptRemote,
            let remote = operation.conflict?.remoteVersion {
             selected.payload = remote.payload
-            selected.metadata["remoteRevision"] = remote.revision
-        } else if resolution == .keptLocal {
-            selected.metadata["remoteRevision"] =
-                operation.conflict?.remoteVersion?.revision
         }
+        selected.metadata["remoteRevision"] = receipt.finalRevision
         applyRemoteRecordOperations([selected])
 
         try OfflineConflictResolutionService(queue: offlineOperationQueue).resolve(
@@ -253,7 +267,93 @@ extension AppDataStore {
                 ] = revision
             }
         }
+        relinkActiveOperationsToAuthenticatedEmployeeIfNeeded()
         saveSynchronizedRecordRevisions()
+    }
+
+    /// Repairs operational references created before a cloud membership was
+    /// linked to its canonical Employee record. Historical timeline and crew
+    /// entries remain unchanged; only live work ownership is relinked.
+    func relinkActiveOperationsToAuthenticatedEmployeeIfNeeded() {
+        guard let canonicalID = cloudEmployeeID,
+              let canonical = employees.first(where: { $0.id == canonicalID }) else {
+            return
+        }
+
+        let canonicalEmail = Self.normalizedEmployeeIdentityEmail(canonical.email)
+        guard !canonicalEmail.isEmpty else { return }
+
+        let legacyIDs = Set(employees.compactMap { employee -> UUID? in
+            guard employee.id != canonicalID,
+                  Self.normalizedEmployeeIdentityEmail(employee.email) == canonicalEmail,
+                  !employee.isActive || employee.lifecycleStatus == .archived else {
+                return nil
+            }
+            return employee.id
+        })
+        guard !legacyIDs.isEmpty else { return }
+
+        var repairedJobs = jobs
+        var repairedJobIDs = Set<UUID>()
+        for index in repairedJobs.indices where
+            repairedJobs[index].lifecycleStatus == .active &&
+            repairedJobs[index].status != .completed &&
+            repairedJobs[index].status != .cancelled {
+            var changed = false
+            if let technicianID = repairedJobs[index].primaryTechnicianID,
+               legacyIDs.contains(technicianID) {
+                repairedJobs[index].primaryTechnicianID = canonicalID
+                changed = true
+            }
+            if let technicianID = repairedJobs[index].secondaryTechnicianID,
+               legacyIDs.contains(technicianID) {
+                repairedJobs[index].secondaryTechnicianID = canonicalID
+                changed = true
+            }
+            if changed {
+                repairedJobIDs.insert(repairedJobs[index].id)
+            }
+        }
+
+        var repairedAssignments = assignmentStore.assignments
+        var repairedAssignmentIDs = Set<UUID>()
+        for assignmentIndex in repairedAssignments.indices where
+            repairedAssignments[assignmentIndex].isOperationallyActive {
+            let alreadyContainsCanonical = repairedAssignments[assignmentIndex]
+                .crew.activeMembers.contains { $0.employeeID == canonicalID }
+            for memberIndex in repairedAssignments[assignmentIndex].crew.members.indices {
+                guard repairedAssignments[assignmentIndex].crew.members[memberIndex].isActive,
+                      legacyIDs.contains(
+                        repairedAssignments[assignmentIndex].crew.members[memberIndex].employeeID
+                      ) else { continue }
+                if alreadyContainsCanonical {
+                    repairedAssignments[assignmentIndex].crew.members[memberIndex].removedDate = Date()
+                } else {
+                    repairedAssignments[assignmentIndex].crew.members[memberIndex].employeeID = canonicalID
+                }
+                repairedAssignmentIDs.insert(repairedAssignments[assignmentIndex].id)
+            }
+        }
+
+        guard !repairedJobIDs.isEmpty || !repairedAssignmentIDs.isEmpty else { return }
+
+        let wasApplyingRemoteSynchronization = isApplyingRemoteSynchronization
+        isApplyingRemoteSynchronization = true
+        defer {
+            synchronizedRecordState = makeSynchronizedRecordState()
+            isApplyingRemoteSynchronization = wasApplyingRemoteSynchronization
+        }
+
+        if !repairedAssignmentIDs.isEmpty {
+            try? assignmentStore.replaceAll(with: repairedAssignments)
+        }
+        if !repairedJobIDs.isEmpty {
+            jobs = repairedJobs
+        }
+    }
+
+    private static func normalizedEmployeeIdentityEmail(_ email: String) -> String {
+        email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private func applyRemoteConflictResolutionReceipts(

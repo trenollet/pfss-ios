@@ -691,6 +691,14 @@ private struct EmployeeCompanyAccessView: View {
                 cancelInvitation(member)
             }
         case .active:
+            Button {
+                createDeviceInvitation(for: member)
+            } label: {
+                Label(
+                    "Create Device Activation Code",
+                    systemImage: "iphone.gen3.badge.plus"
+                )
+            }
             Button("Suspend Access") {
                 updateMember(.suspend)
             }
@@ -796,6 +804,18 @@ private struct EmployeeCompanyAccessView: View {
                     displayName: employee.displayName,
                     role: approvedInvitationRole,
                     employeeID: employee.id
+                )
+            } catch {
+                showError(error)
+            }
+        }
+    }
+
+    private func createDeviceInvitation(for member: PFSSTenantMember) {
+        Task {
+            do {
+                invitation = try await manager.createDeviceInvitation(
+                    for: member
                 )
             } catch {
                 showError(error)

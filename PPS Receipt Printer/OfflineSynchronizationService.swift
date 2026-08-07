@@ -164,6 +164,22 @@ final class OfflineSynchronizationService: ObservableObject {
         now: Date
     ) async -> Bool {
         var operation = candidate
+        if operation.type == .recordMutation,
+           let entityID = operation.entityID,
+           let predecessor = queue.orderedOperations.last(where: {
+               $0.sequenceNumber < operation.sequenceNumber &&
+               $0.type == .recordMutation &&
+               $0.entityType == operation.entityType &&
+               $0.entityID == entityID &&
+               $0.status == .synchronized &&
+               $0.metadata["remoteRevision"] != nil
+           }),
+           let remoteRevision = predecessor.metadata["remoteRevision"] {
+            // Multiple local saves can be queued before the first reaches the
+            // server. Preserve their causal order by building each later save
+            // on the revision returned for the preceding save.
+            operation.baseRevision = remoteRevision
+        }
         let attemptNumber = operation.attemptCount + 1
         operation.status = .synchronizing
         operation.firstAttemptAt = operation.firstAttemptAt ?? now

@@ -599,11 +599,13 @@ private func searchableLeadText(_ lead: Lead) -> String {
         lead.leadNumber,
         lead.businessName,
         lead.contactName,
+        lead.location ?? "",
         lead.phone,
         lead.email,
         lead.status.rawValue,
         lead.serviceRequested.rawValue,
-        lead.otherService
+        lead.otherService,
+        lead.notes ?? ""
     ].joined(separator: " ")
 }
 

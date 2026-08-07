@@ -31,6 +31,54 @@ final class OfflineSynchronizationServiceTests: XCTestCase {
         XCTAssertEqual(service.state, .idle)
     }
 
+    func testLaterMutationUsesRevisionReturnedForSameRecord() async throws {
+        let queue = makeQueue()
+        let entityID = UUID()
+        let first = try queue.enqueue(PendingOfflineOperation(
+            type: .recordMutation,
+            entityType: .catalog,
+            entityID: entityID,
+            actionName: "upsertRecord",
+            payload: OfflineOperationPayload(
+                contentType: "test",
+                body: Data("first".utf8)
+            ),
+            baseRevision: "original-revision"
+        ))
+        let second = try queue.enqueue(PendingOfflineOperation(
+            type: .recordMutation,
+            entityType: .catalog,
+            entityID: entityID,
+            actionName: "upsertRecord",
+            payload: OfflineOperationPayload(
+                contentType: "test",
+                body: Data("second".utf8)
+            ),
+            baseRevision: "original-revision"
+        ))
+        let adapter = TestSynchronizationAdapter(results: [
+            .synchronized(remoteRevision: "revision-after-first"),
+            .synchronized(remoteRevision: "revision-after-second")
+        ])
+        let service = OfflineSynchronizationService(
+            queue: queue,
+            connectivity: TestConnectivityMonitor(status: .online),
+            adapter: adapter
+        )
+
+        await service.processPendingOperations()
+
+        XCTAssertEqual(adapter.receivedOperations.map(\.id), [first.id, second.id])
+        XCTAssertEqual(
+            adapter.receivedOperations.map(\.baseRevision),
+            ["original-revision", "revision-after-first"]
+        )
+        XCTAssertEqual(
+            queue.operation(id: second.id)?.metadata["remoteRevision"],
+            "revision-after-second"
+        )
+    }
+
     func testOfflineProcessorLeavesPendingWorkUntouched() async throws {
         let queue = makeQueue()
         let operation = try queue.enqueue(makeOperation(action: "startWork"))
@@ -199,7 +247,8 @@ private final class TestConnectivityMonitor: OfflineConnectivityMonitoring {
 
 @MainActor
 private final class TestSynchronizationAdapter: OfflineSynchronizationAdapter {
-    private(set) var receivedIDs: [UUID] = []
+    private(set) var receivedOperations: [PendingOfflineOperation] = []
+    var receivedIDs: [UUID] { receivedOperations.map(\.id) }
     private var results: [OfflineSynchronizationAdapterResult]
 
     init(results: [OfflineSynchronizationAdapterResult] = []) {
@@ -209,7 +258,7 @@ private final class TestSynchronizationAdapter: OfflineSynchronizationAdapter {
     func synchronize(
         operation: PendingOfflineOperation
     ) async -> OfflineSynchronizationAdapterResult {
-        receivedIDs.append(operation.id)
+        receivedOperations.append(operation)
         if results.isEmpty {
             return .synchronized(remoteRevision: nil)
         }
