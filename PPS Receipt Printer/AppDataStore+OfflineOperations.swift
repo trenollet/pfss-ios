@@ -412,6 +412,12 @@ extension AppDataStore {
                 assignments.append(assignment)
             }
             try? assignmentStore.replaceAll(with: assignments)
+        case .recurringWork:
+            Self.upsertRemote(
+                decodeRemote(RecurringWorkTemplate.self, mutation),
+                in: &recurringWorkTemplates
+            )
+            materializeRecurringWorkHorizon()
         case .payment, .route, .custom:
             break
         }

@@ -36,6 +36,10 @@ struct LeadNewView: View {
                     TextField("Business Name", text: $businessName).focused($isInputFocused)
                     TextField("Contact Name", text: $contactName).focused($isInputFocused)
                     TextField("Location", text: $location).focused($isInputFocused)
+                    MapAssistedAddressButton(
+                        address: $location,
+                        label: "Select Location on Map"
+                    )
                     TextField("Phone", text: $phone).keyboardType(.phonePad).focused($isInputFocused)
                     TextField("Email", text: $email)
                         .keyboardType(.emailAddress)
@@ -44,11 +48,16 @@ struct LeadNewView: View {
                 }
 
                 Section("Sales Info") {
-                    Picker("Assigned Salesperson", selection: $assignedSalesperson) {
-                        Text("Unassigned").tag("")
-                        ForEach(salesEmployees) { employee in
-                            Text(employee.displayName).tag(employee.displayName)
+                    HStack {
+                        Text("Assigned Salesperson")
+                        Spacer()
+                        Picker("Assigned Salesperson", selection: $assignedSalesperson) {
+                            Text("Unassigned").tag("")
+                            ForEach(salesEmployees) { employee in
+                                Text(employee.displayName).tag(employee.displayName)
+                            }
                         }
+                        .labelsHidden()
                     }
                     Picker("Status", selection: $status) {
                         ForEach(LeadStatus.allCases) { Text($0.rawValue).tag($0) }
@@ -57,8 +66,13 @@ struct LeadNewView: View {
                     Picker("Lead Source", selection: $leadSource) {
                         ForEach(LeadSource.allCases) { Text($0.rawValue).tag($0) }
                     }
-                    Picker("Service Requested", selection: $serviceRequested) {
-                        ForEach(ServiceType.allCases) { Text($0.rawValue).tag($0) }
+                    HStack {
+                        Text("Service Requested")
+                        Spacer()
+                        Picker("Service Requested", selection: $serviceRequested) {
+                            ForEach(ServiceType.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                        .labelsHidden()
                     }
                     if serviceRequested == .other {
                         TextField("Other Service", text: $otherService).focused($isInputFocused)
@@ -78,18 +92,11 @@ struct LeadNewView: View {
             .navigationTitle("New Lead")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                    isInputFocused = false
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { saveLead() }.disabled(!hasName)
-                }
-                if isInputFocused {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            isInputFocused = false
-                        } label: {
-                            Image(systemName: "keyboard.chevron.compact.down")
-                        }
-                        .accessibilityLabel("Dismiss Keyboard")
-                    }
                 }
             }
         }

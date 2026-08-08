@@ -204,22 +204,15 @@ struct EstimateNewView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
+                EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                    isInputFocused = false
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         isInputFocused = false
                         addEstimate()
                     }
                     .disabled(!hasValidEstimateRecipient || lineItems.isEmpty)
-                }
-                if isInputFocused {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            isInputFocused = false
-                        } label: {
-                            Image(systemName: "keyboard.chevron.compact.down")
-                        }
-                        .accessibilityLabel("Dismiss Keyboard")
-                    }
                 }
             }
             .sheet(item: $activeSheet) { sheet in

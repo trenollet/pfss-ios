@@ -14,8 +14,14 @@ struct SalesDashboardView: View {
         NavigationStack {
             ScrollView {
                 CustomizableTileGrid(
-                    storageKey: "pfss.tile-layout.sales.v1",
-                    defaultTileIDs: ["leads", "estimates"]
+                    storageKey: "pfss.tile-layout.sales.v2",
+                    defaultTileIDs: [
+                        "leads",
+                        "customers",
+                        "estimates",
+                        "pricing-calculator",
+                        "calendar"
+                    ]
                 ) { tileID in
                     switch tileID {
                     case "leads":
@@ -38,6 +44,36 @@ struct SalesDashboardView: View {
                     ) {
                         EstimatesView()
                     }
+                    case "customers":
+                        hubTile(
+                        title: "Customers",
+                        value: "\(store.activeCustomers.count)",
+                        icon: "person.2.fill",
+                        subtitle: "Customers and sites",
+                        color: .blue
+                        ) {
+                            CustomersView()
+                        }
+                    case "pricing-calculator":
+                        hubTile(
+                            title: "Price Calc",
+                            value: "",
+                            icon: "plus.forwardslash.minus",
+                            subtitle: "Routine service pricing",
+                            color: .teal
+                        ) {
+                            FieldPricingCalculatorView()
+                        }
+                    case "calendar":
+                        hubTile(
+                            title: "Calendar",
+                            value: "",
+                            icon: "calendar",
+                            subtitle: "Scheduled follow-ups",
+                            color: .blue
+                        ) {
+                            SalesFollowUpCalendarView()
+                        }
                     default:
                         EmptyView()
                     }

@@ -197,6 +197,39 @@ final class PFSSCloudflareBetaServiceTests: XCTestCase {
         XCTAssertNil(removedStore.authenticatedCloudEmployee)
     }
 
+    func testOwnerIdentityFallsBackToUniqueVerifiedEmployeeEmail() {
+        let employee = EmployeeRecord(
+            firstName: "Timothy",
+            lastName: "Renollet",
+            email: "tim@example.com",
+            roles: [.owner, .technician]
+        )
+        let store = AppDataStore(persistenceEnabled: false)
+        store.addEmployee(employee)
+
+        store.updateCloudIdentity(
+            role: .owner,
+            employeeID: nil,
+            displayName: "Timothy Renollet",
+            email: " TIM@EXAMPLE.COM "
+        )
+
+        XCTAssertEqual(store.authenticatedCloudEmployee?.id, employee.id)
+        XCTAssertTrue(store.updateAuthenticatedJobTimerReminderPreferences(
+            JobTimerReminderPreferences(
+                arrivalToSetupMinutes: 3,
+                setupToWorkMinutes: 10
+            )
+        ))
+        XCTAssertEqual(
+            store.authenticatedCloudEmployee?.jobTimerReminderPreferences,
+            JobTimerReminderPreferences(
+                arrivalToSetupMinutes: 3,
+                setupToWorkMinutes: 10
+            )
+        )
+    }
+
     func testMemberDeviceAndInvitationContractsDecode() throws {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -399,6 +432,76 @@ final class PFSSCloudflareBetaServiceTests: XCTestCase {
         XCTAssertEqual(
             existingTarget.businessProfile.businessName,
             "Existing Company"
+        )
+    }
+
+    func testSynchronizationStateKeysAreScopedToTheEnrolledDevice() {
+        XCTAssertEqual(
+            PFSSCloudSynchronizationStateKeys.cursor(deviceID: " Device-A "),
+            "PFSSCloudSynchronizationCursor.device-a"
+        )
+        XCTAssertEqual(
+            PFSSCloudSynchronizationStateKeys.bootstrap(deviceID: "Device-B"),
+            "PFSSCloudSynchronizationBootstrap.device-b"
+        )
+        XCTAssertNotEqual(
+            PFSSCloudSynchronizationStateKeys.cursor(deviceID: "Device-A"),
+            PFSSCloudSynchronizationStateKeys.cursor(deviceID: "Device-B")
+        )
+    }
+
+    func testSynchronizationStateMigratesLegacyCursorOnce() {
+        let defaults = isolatedDefaults()
+        defaults.set(41, forKey: "PFSSCloudSynchronizationCursor")
+
+        PFSSCloudSynchronizationStateKeys.migrateLegacyCursorIfNeeded(
+            deviceID: "Device-A",
+            defaults: defaults
+        )
+
+        XCTAssertEqual(
+            defaults.integer(
+                forKey: PFSSCloudSynchronizationStateKeys.cursor(
+                    deviceID: "Device-A"
+                )
+            ),
+            41
+        )
+        XCTAssertNil(defaults.object(forKey: "PFSSCloudSynchronizationCursor"))
+    }
+
+    func testSynchronizationStateIsClearedForFreshEnrollment() {
+        let defaults = isolatedDefaults()
+        defaults.set(7, forKey: "PFSSCloudSynchronizationCursor")
+        defaults.set(
+            11,
+            forKey: PFSSCloudSynchronizationStateKeys.cursor(
+                deviceID: "Device-A"
+            )
+        )
+        defaults.set(
+            true,
+            forKey: PFSSCloudSynchronizationStateKeys.bootstrap(
+                deviceID: "Device-A"
+            )
+        )
+
+        PFSSCloudSynchronizationStateKeys.clearAll(defaults: defaults)
+
+        XCTAssertNil(defaults.object(forKey: "PFSSCloudSynchronizationCursor"))
+        XCTAssertNil(
+            defaults.object(
+                forKey: PFSSCloudSynchronizationStateKeys.cursor(
+                    deviceID: "Device-A"
+                )
+            )
+        )
+        XCTAssertNil(
+            defaults.object(
+                forKey: PFSSCloudSynchronizationStateKeys.bootstrap(
+                    deviceID: "Device-A"
+                )
+            )
         )
     }
 

@@ -58,6 +58,7 @@ struct DispatchQueueCard: View {
 
     @State private var selectedTechnicianID: UUID?
     @State private var overrideReason = ""
+    @FocusState private var isReasonFocused: Bool
 
     init(
         item: DispatchQueueItem,
@@ -100,6 +101,11 @@ struct DispatchQueueCard: View {
         }
         .onChange(of: selectedTechnicianID) {
             overrideReason = ""
+        }
+        .toolbar {
+            EditorKeyboardDismissAction(isVisible: isReasonFocused) {
+                isReasonFocused = false
+            }
         }
     }
 
@@ -289,6 +295,7 @@ struct DispatchQueueCard: View {
                         )
                         .textFieldStyle(.roundedBorder)
                         .lineLimit(2...4)
+                        .focused($isReasonFocused)
                     }
 
                     DisclosureGroup("Full score breakdown") {

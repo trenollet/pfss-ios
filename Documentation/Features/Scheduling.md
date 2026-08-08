@@ -1,15 +1,15 @@
 # PFSS Scheduling
 
-- Status: Proposed for Brick 11
+- Status: Implemented foundation; expanding in Phase 18
 - Owner: PFSS Project
 - Applies To: v0.9.8+
-- Last Updated: 2026-07-18
+- Last Updated: 2026-08-07
 
 ## Purpose
 
 Scheduling turns jobs, employee availability, estimated duration, and operational constraints into a clear, editable field-service plan.
 
-## Brick 11 Goal
+## Scheduling Foundation Goal
 
 Establish a reusable Scheduling Engine and a dependable scheduling workflow without attempting full dispatch automation, recurring-work generation, or route optimization in the first brick.
 
@@ -37,7 +37,7 @@ Establish a reusable Scheduling Engine and a dependable scheduling workflow with
 - Daily workload and remaining capacity
 - Candidate time slots for a selected job and technician set
 
-## Required Brick 11 Capabilities
+## Foundation Capabilities
 
 ### Schedule Validation
 
@@ -75,14 +75,15 @@ Users remain in control. Brick 11 may recommend openings but must not silently m
 - The engine uses durable identifiers rather than employee display names.
 - Date calculations must use Calendar APIs and explicit time-zone assumptions rather than fixed-second arithmetic for day boundaries.
 
-## Out of Scope for Brick 11
+## Outside the Foundation
 
 - Automatic route optimization
 - Weather-driven bulk rescheduling
-- Recurring schedule templates and occurrence generation
+- Recurring schedule templates and occurrence generation, now approved as
+  Phase 18 Recurring Work
 - Travel-time prediction
 - Automatic technician selection
-- Cloud multi-user conflict resolution
+- Cloud multi-user conflict resolution, delivered in Phases 16 and 17
 - Payroll and advanced labor-time reporting
 
 ## Acceptance Criteria
@@ -102,3 +103,5 @@ Users remain in control. Brick 11 may recommend openings but must not silently m
 - `../Standards/ProjectConstitution.md`
 - `../Product/Roadmap.md`
 - `../Product/ParkingLot.md`
+- `OperationsCalendar.md`
+- `RecurringWork.md`

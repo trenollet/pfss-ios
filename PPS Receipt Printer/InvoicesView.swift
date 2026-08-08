@@ -58,6 +58,7 @@ struct InvoiceRecordsListView: View {
     let statuses: Set<InvoiceStatus>?
     let bucket: InvoiceRecordBucket?
     let title: String
+    let customerNumber: String?
     @State private var showArchived = false
     @State private var searchText: String
     @State private var showingFilters = false
@@ -69,12 +70,17 @@ struct InvoiceRecordsListView: View {
         statuses: Set<InvoiceStatus>? = nil,
         bucket: InvoiceRecordBucket? = nil,
         title: String = "All Invoices",
-        initialSearchText: String = ""
+        initialSearchText: String = "",
+        customerNumber: String? = nil
     ) {
         self.statuses = statuses
         self.bucket = bucket
         self.title = title
+        self.customerNumber = customerNumber
         _searchText = State(initialValue: initialSearchText)
+        _sortOrder = State(
+            initialValue: customerNumber == nil ? .dateDescending : .dateAscending
+        )
     }
 
     private var filteredInvoices: [InvoiceRecord] {
@@ -90,13 +96,16 @@ struct InvoiceRecordsListView: View {
             source = lifecycleSource
         }
 
+        let customerScoped = customerNumber.map { number in
+            source.filter { $0.customerNumber == number }
+        } ?? source
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let matchingInvoices: [InvoiceRecord]
 
         if query.isEmpty {
-            matchingInvoices = source
+            matchingInvoices = customerScoped
         } else {
-            matchingInvoices = source.filter { invoice in
+            matchingInvoices = customerScoped.filter { invoice in
                 invoice.invoiceNumber.localizedCaseInsensitiveContains(query)
                     || invoice.customerNumber.localizedCaseInsensitiveContains(query)
                     || customerDisplayName(for: invoice.customerNumber)
@@ -244,7 +253,7 @@ struct InvoiceRecordsListView: View {
                         Button("Reset") {
                             selectedStatus = nil
                             dateFilter = .all
-                            sortOrder = .dateDescending
+                            sortOrder = defaultSortOrder
                         }
                     }
                     ToolbarItem(placement: .confirmationAction) {
@@ -256,7 +265,11 @@ struct InvoiceRecordsListView: View {
     }
 
     private var hasActiveFilters: Bool {
-        selectedStatus != nil || dateFilter != .all || sortOrder != .dateDescending
+        selectedStatus != nil || dateFilter != .all || sortOrder != defaultSortOrder
+    }
+
+    private var defaultSortOrder: RecordListSortOrder {
+        customerNumber == nil ? .dateDescending : .dateAscending
     }
 
     private func customerDisplayName(

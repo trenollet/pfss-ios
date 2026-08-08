@@ -10,7 +10,7 @@ struct EstimateRecordsListView: View {
     @State private var showingFilters = false
     @State private var selectedStatus: EstimateRecordStatus?
     @State private var dateFilter: RecordDateFilter = .all
-    @State private var sortOrder: RecordListSortOrder = .dateDescending
+    @State private var sortOrder: RecordListSortOrder = .dateAscending
 
     init(
         statuses: Set<EstimateRecordStatus>? = nil,
@@ -135,7 +135,7 @@ struct EstimateRecordsListView: View {
                         Button("Reset") {
                             selectedStatus = nil
                             dateFilter = .all
-                            sortOrder = .dateDescending
+                            sortOrder = .dateAscending
                         }
                     }
                     ToolbarItem(placement: .confirmationAction) {
@@ -152,7 +152,7 @@ struct EstimateRecordsListView: View {
     }
 
     private var hasActiveFilters: Bool {
-        selectedStatus != nil || dateFilter != .all || sortOrder != .dateDescending
+        selectedStatus != nil || dateFilter != .all || sortOrder != .dateAscending
     }
 
     private func customerDisplayName(for customerNumber: String) -> String {

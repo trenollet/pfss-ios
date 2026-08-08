@@ -8,7 +8,13 @@
 import Foundation
 
 enum PresentationDebug {
-    static var isEnabled = true
+    #if DEBUG
+    static var isEnabled = UserDefaults.standard.bool(
+        forKey: "PFSSPresentationDebugEnabled"
+    )
+    #else
+    static let isEnabled = false
+    #endif
 
     static func log(
         _ event: String,

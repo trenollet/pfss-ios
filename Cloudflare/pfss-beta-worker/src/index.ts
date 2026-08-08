@@ -4022,6 +4022,76 @@ function employeeRolesFromOperation(
   }
 }
 
+type CatalogRecordPayload = {
+  id?: string;
+  itemName?: string;
+  itemDescription?: string;
+  defaultQuantity?: number;
+  defaultPrice?: number;
+  estimatedMinutesPerUnit?: number;
+  itemType?: string;
+  taxTreatment?: string;
+  usageCount?: number;
+  lastUsedDate?: string | null;
+  lifecycleStatus?: string;
+};
+
+function catalogRecordFromOperation(
+  operation: Record<string, unknown>,
+): CatalogRecordPayload | null {
+  try {
+    const payload = operation.payload as { body?: string } | undefined;
+    const mutation = JSON.parse(atob(payload?.body ?? "")) as {
+      recordData?: string;
+    };
+    return JSON.parse(atob(mutation.recordData ?? "")) as CatalogRecordPayload;
+  } catch {
+    return null;
+  }
+}
+
+function isAuthorizedCatalogUsageUpdate(
+  submittedOperation: Record<string, unknown>,
+  acceptedOperation: Record<string, unknown>,
+  entityID: string,
+): boolean {
+  const submitted = catalogRecordFromOperation(submittedOperation);
+  const accepted = catalogRecordFromOperation(acceptedOperation);
+  if (!submitted || !accepted) return false;
+
+  const submittedID = (submitted.id ?? "").toLowerCase();
+  const acceptedID = (accepted.id ?? "").toLowerCase();
+  const businessFieldsMatch =
+    submittedID === entityID && acceptedID === entityID &&
+    submitted.itemName === accepted.itemName &&
+    submitted.itemDescription === accepted.itemDescription &&
+    submitted.defaultQuantity === accepted.defaultQuantity &&
+    submitted.defaultPrice === accepted.defaultPrice &&
+    submitted.estimatedMinutesPerUnit === accepted.estimatedMinutesPerUnit &&
+    submitted.itemType === accepted.itemType &&
+    submitted.taxTreatment === accepted.taxTreatment &&
+    submitted.lifecycleStatus === accepted.lifecycleStatus;
+  if (!businessFieldsMatch) return false;
+
+  const submittedUsage = submitted.usageCount ?? 0;
+  const acceptedUsage = accepted.usageCount ?? 0;
+  if (submittedUsage < acceptedUsage) return false;
+
+  const submittedLastUsed = submitted.lastUsedDate == null
+    ? null
+    : Date.parse(submitted.lastUsedDate);
+  const acceptedLastUsed = accepted.lastUsedDate == null
+    ? null
+    : Date.parse(accepted.lastUsedDate);
+  if (submittedLastUsed === null || Number.isNaN(submittedLastUsed)) return false;
+  if (
+    acceptedLastUsed !== null && !Number.isNaN(acceptedLastUsed) &&
+    submittedLastUsed < acceptedLastUsed
+  ) return false;
+
+  return submittedUsage > acceptedUsage || submittedLastUsed !== acceptedLastUsed;
+}
+
 function employeeSearchContactFromOperation(
   operation: Record<string, unknown>,
 ): {
@@ -4386,17 +4456,34 @@ async function acceptOperation(
   if (isRecordMutation) {
     const allowed = new Set([
       "customer", "site", "lead", "estimate", "job", "assignment",
-      "invoice", "employee", "catalog",
+      "invoice", "employee", "catalog", "recurringWork",
     ]);
     if (!allowed.has(entityType) || !entityID) {
       return json({ error: "invalid_record_mutation" }, 400);
     }
     if (
       identity.role === "member" &&
-      (entityType === "catalog" ||
+      (entityType === "recurringWork" ||
         (entityType === "employee" && entityID !== identity.employeeID?.toLowerCase()))
     ) {
       return json({ error: "forbidden" }, 403);
+    }
+    if (identity.role === "member" && entityType === "catalog") {
+      const acceptedRecord = await env.DB.prepare(
+        `SELECT operation_json AS operationJSON
+           FROM synchronized_records
+          WHERE tenant_id = ?1 AND entity_type = 'catalog' AND entity_id = ?2`,
+      ).bind(identity.tenantID, entityID).first<{ operationJSON: string }>();
+      if (
+        !acceptedRecord ||
+        !isAuthorizedCatalogUsageUpdate(
+          operation,
+          JSON.parse(acceptedRecord.operationJSON),
+          entityID,
+        )
+      ) {
+        return json({ error: "catalog_change_requires_manager" }, 403);
+      }
     }
     if (identity.role === "member" && entityType === "employee") {
       const acceptedRecord = await env.DB.prepare(

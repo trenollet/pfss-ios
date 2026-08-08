@@ -171,30 +171,25 @@ struct EstimateDetailView: View {
                         store.archiveEstimate(estimate)
                         dismiss()
                     } label: {
-                        Label("Archive Estimate", systemImage: "archivebox.fill")
+                        CenteredArchiveActionLabel(title: "Archive Estimate")
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(.red)
                 }
             }
         }
         .navigationTitle("Edit Estimate")
         .toolbar {
+            EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                isInputFocused = false
+            }
+
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
                     saveEstimate()
                 }
             }
 
-            if isInputFocused {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        isInputFocused = false
-                    } label: {
-                        Image(systemName: "keyboard.chevron.compact.down")
-                    }
-                    .accessibilityLabel("Dismiss Keyboard")
-                }
-            }
         }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {

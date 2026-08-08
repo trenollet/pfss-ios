@@ -1,6 +1,6 @@
 # PFSS WorkOS Staging Setup
 
-- Status: Required before live Phase 17 identity testing
+- Status: Active staging runbook; Phase 17 implemented
 - Owner: PFSS Project
 - Last Updated: 2026-07-31
 

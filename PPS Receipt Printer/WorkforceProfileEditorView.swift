@@ -684,6 +684,10 @@ private struct WorkforceSkillEditorView: View {
                     Button("Cancel") { dismiss() }
                 }
 
+                EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                    isInputFocused = false
+                }
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         skill.name = skill.name.trimmingCharacters(
@@ -706,16 +710,6 @@ private struct WorkforceSkillEditorView: View {
                     )
                 }
 
-                if isInputFocused {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            isInputFocused = false
-                        } label: {
-                            Image(systemName: "keyboard.chevron.compact.down")
-                        }
-                        .accessibilityLabel("Dismiss Keyboard")
-                    }
-                }
             }
         }
     }
@@ -818,6 +812,10 @@ private struct WorkforceCertificationEditorView: View {
                     Button("Cancel") { dismiss() }
                 }
 
+                EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                    isInputFocused = false
+                }
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         certification.name = certification.name
@@ -844,16 +842,6 @@ private struct WorkforceCertificationEditorView: View {
                     )
                 }
 
-                if isInputFocused {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            isInputFocused = false
-                        } label: {
-                            Image(systemName: "keyboard.chevron.compact.down")
-                        }
-                        .accessibilityLabel("Dismiss Keyboard")
-                    }
-                }
             }
         }
     }
@@ -919,6 +907,10 @@ private struct WorkforceResourceEditorView: View {
                     Button("Cancel") { dismiss() }
                 }
 
+                EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                    isInputFocused = false
+                }
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         resource.name = resource.name.trimmingCharacters(
@@ -942,16 +934,6 @@ private struct WorkforceResourceEditorView: View {
                     )
                 }
 
-                if isInputFocused {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            isInputFocused = false
-                        } label: {
-                            Image(systemName: "keyboard.chevron.compact.down")
-                        }
-                        .accessibilityLabel("Dismiss Keyboard")
-                    }
-                }
             }
         }
     }
@@ -1006,6 +988,10 @@ private struct WorkforceAvailabilityEditorView: View {
                     Button("Cancel") { dismiss() }
                 }
 
+                EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                    isInputFocused = false
+                }
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         exception.reason = exception.reason
@@ -1016,16 +1002,6 @@ private struct WorkforceAvailabilityEditorView: View {
                     .disabled(exception.endDate <= exception.startDate)
                 }
 
-                if isInputFocused {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            isInputFocused = false
-                        } label: {
-                            Image(systemName: "keyboard.chevron.compact.down")
-                        }
-                        .accessibilityLabel("Dismiss Keyboard")
-                    }
-                }
             }
         }
     }

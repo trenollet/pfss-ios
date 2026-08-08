@@ -15,6 +15,10 @@ struct PPS_Receipt_PrinterApp: App {
     private var applicationDelegate
     @StateObject private var printer = BluetoothPrinter()
 
+    init() {
+        SelectAllTextEntryStandard.install()
+    }
+
     var body: some Scene {
         WindowGroup {
             PFSSAppSessionHost()
@@ -149,21 +153,32 @@ private struct PFSSFirstRunView: View {
                 }
 
                 Section("Choose How to Begin") {
+#if DEBUG
+                    NavigationLink {
+                        PFSSOwnerRegistrationStartView()
+                    } label: {
+                        Label(
+                            "Create New Company",
+                            systemImage: "building.2.fill"
+                        )
+                    }
+#endif
+
+                    NavigationLink {
+                        PFSSCompanyActivationView()
+                    } label: {
+                        Label(
+                            "Activate Employee Device",
+                            systemImage: "person.badge.key.fill"
+                        )
+                    }
+
                     NavigationLink {
                         PFSSExistingOwnerSignInView()
                     } label: {
                         Label(
                             "Sign In as Existing Owner",
                             systemImage: "person.crop.circle.badge.checkmark"
-                        )
-                    }
-
-                    NavigationLink {
-                        PFSSOwnerRecoveryView()
-                    } label: {
-                        Label(
-                            "Use Owner Recovery Code",
-                            systemImage: "key.viewfinder"
                         )
                     }
 
@@ -177,24 +192,13 @@ private struct PFSSFirstRunView: View {
                     }
 
                     NavigationLink {
-                        PFSSCompanyActivationView()
+                        PFSSOwnerRecoveryView()
                     } label: {
                         Label(
-                            "Activate Employee Device",
-                            systemImage: "person.badge.key.fill"
+                            "Use Owner Recovery Code",
+                            systemImage: "key.viewfinder"
                         )
                     }
-
-#if DEBUG
-                    NavigationLink {
-                        PFSSOwnerRegistrationStartView()
-                    } label: {
-                        Label(
-                            "Create New Company",
-                            systemImage: "building.2.fill"
-                        )
-                    }
-#endif
                 }
 
                 Section {

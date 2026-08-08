@@ -3,7 +3,7 @@
 - Status: Active
 - Owner: PFSS Project
 - Applies To: v0.9+
-- Last Updated: 2026-08-06
+- Last Updated: 2026-08-08
 
 ## Current Foundation
 
@@ -23,9 +23,9 @@ Delivered:
 
 ## Brick 10 — Editing and UI Consistency
 
-**Status:** Planned / Deferred
+**Status:** Active — Phase 18 Step 2
 
-This brick remains approved but is not the active implementation focus.
+This work is incorporated into the Phase 18 UI and technical cleanup step.
 
 Goals:
 
@@ -40,11 +40,12 @@ Goals:
 References:
 
 - `../Standards/UIStandards.md`
-- `../Decisions/ADR-003-Editing-Experience.md` when adopted
+- A dedicated editing-experience ADR if Phase 18 introduces a new architectural
+  decision beyond the existing UI standard
 
 ## Brick 11 — Scheduling Engine
 
-**Status:** Active
+**Status:** Foundation Completed — expanding in Phase 18
 
 Goal:
 
@@ -61,14 +62,17 @@ Deliverables:
 - Unit tests for time boundaries, overlap, capacity, and candidate generation
 - Integration with existing job, employee, and schedule data
 
-Out of scope for the first Scheduling Engine brick:
+Phase 18 consumers of the completed foundation:
+
+- Role-aware 1, 3, and 5-day Operations calendar
+- Recurring Work occurrence validation and conflict reporting
+
+Still deferred:
 
 - Automatic dispatch
 - Route optimization
-- Recurring occurrence generation
 - Weather-driven bulk rescheduling
 - Travel-time prediction
-- Cloud synchronization conflicts
 
 References:
 
@@ -78,7 +82,7 @@ References:
 
 ## Persona Engine
 
-**Status:** Planned
+**Status:** Foundation Completed — role-aware presentation continues
 
 Goals:
 
@@ -87,7 +91,13 @@ Goals:
 - Persona-specific dashboards and action emphasis
 - Shared business data beneath adaptive presentation
 
+Phase 16 established server-approved roles, device-linked employees, and
+role-aware destinations. Phase 18 extends those boundaries into Operations and
+the multi-day calendar without allowing role or employee impersonation.
+
 ## Product Readiness
+
+**Status:** Active — Phase 18 Steps 1 and 2
 
 Goals:
 
@@ -96,7 +106,7 @@ Goals:
 - Isolate and fix invalid-frame warnings
 - Strengthen saved-record detail presentation
 - Formalize release notes and milestone checkpoints
-- Continue scheduling, dispatch, recurring-work, and route workflows
+- Continue scheduling, calendar, dispatch, and Recurring Work workflows
 
 ## Production Account Platform
 
@@ -105,52 +115,22 @@ Goals:
 PFSS Cloud production onboarding and support must replace beta enrollment with
 a durable identity, tenant-provisioning, and recovery system.
 
-### First-Run Company Registration
+### Delivered Account Capabilities
 
-- Extend the existing unauthenticated `Device Activation` screen into the
-  shared account entry point. It must clearly offer both `Activate Employee
-  Device` for an invitation code and `Create New Company` for a first Owner.
-  Do not ship a nonfunctional signup placeholder before registration is ready.
-- Present a guided first-run choice to create a company or sign in to an
-  existing company.
-- Verify the initial Owner's email and establish password and/or passkey
-  authentication with multi-factor recovery methods.
-- Collect the minimum company profile, legal consent, time zone, plan, and
-  billing information required for service activation.
-- Atomically create the authentication subject, tenant, Owner membership,
-  subscription allocation, first device session, and immutable audit event.
-- Provision the tenant's PFSS Cloud database/storage boundary without exposing
-  infrastructure addresses or tenant identifiers to the client.
-- Seed an initial recoverable company snapshot and verify synchronization before
-  declaring setup complete.
-- Roll back incomplete registration so PFSS never leaves an ownerless tenant,
-  orphaned subscription, or partially provisioned database.
-
-### Durable Sign-In and Owner Recovery
-
-- Treat Keychain credentials as revocable per-device sessions, never as the
-  Owner's only durable identity.
-- Support new-device sign-in using verified username/email plus password or
-  passkey, followed by MFA where required.
-- Issue a new device credential only after authentication and register it in the
-  tenant's device inventory.
-- Restore a replacement device from the current PFSS Cloud snapshot and resume
-  queued synchronization safely.
-- Provide verified account recovery and single-use recovery codes without using
-  employee invitation codes as permanent credentials.
-- Support more than one Owner so one lost device or inaccessible account cannot
-  permanently lock a company out.
-- Allow an authenticated Owner to revoke a lost device, triggering mandatory
-  company-data removal if that device contacts PFSS again.
+- Verified first-Owner company registration and atomic tenant provisioning
+- Existing-Owner sign-in, logout, replacement devices, and cloud restoration
+- Employee invitation activation and device-linked employee identity
+- Multiple Owners, recovery codes, lost-device revocation, and final-Owner safety
+- Server-owned plans, limits, lifecycle enforcement, and audit history
+- Offline-first tenant synchronization and centralized conflict resolution
 
 ### Developer Support and Database Operations Console
 
-**Status:** Active foundation — private PFSS Operations iPhone/iPad app and
-isolated read-only server control plane implemented in Phase 17 Step 8b.
+**Status:** Foundation Completed — Phase 17 Step 8b
 
-- Build a separate developer-only operations tool for customer support,
-  provisioning diagnostics, migration status, backup verification, tenant
-  health, and disaster recovery.
+- Maintain the separate developer-only Operations tool for customer support,
+  provisioning diagnostics, migration status, tenant health, and safe account
+  administration.
 - Require phishing-resistant MFA, least-privilege roles, short-lived access,
   approved devices, and just-in-time elevation for support operators.
 - Do not create a universal customer password, permanent tenant credential, or
@@ -168,36 +148,6 @@ isolated read-only server control plane implemented in Phase 17 Step 8b.
   quarantine, and integrity-check workflows with confirmation and rollback.
 - Test the console and production provisioning process in a non-production
   environment before granting access to live customer tenants.
-
-### Job-Scoped Technician Location Sharing
-
-- Treat location as short-lived operational evidence, not continuous employee
-  surveillance or a permanent part of the employee record.
-- Report a device location only while the linked employee has an active
-  assignment in an approved workflow state, initially Traveling, On Site,
-  Setup, Working, or Pack Up.
-- Stop reporting automatically when work is paused or completed, the employee
-  is off duty, the assignment is cancelled, access is revoked, or the app no
-  longer has the required location authorization.
-- Clearly disclose when job-scoped location sharing is active and explain its
-  business purpose during permission onboarding.
-- Send the tenant, employee, device, assignment, coordinates, accuracy,
-  timestamp, and workflow state through a dedicated PFSS Cloud location
-  channel rather than the durable business-record change feed.
-- Show Managers and Owners only the latest authorized observation needed for
-  dispatch and Live Map decisions, with visible Live, Stale, Not Reporting,
-  and Permission Denied states; never fabricate a missing location.
-- Use configurable freshness and retention limits so precise coordinates expire
-  quickly after their operational purpose has ended.
-- Allow location evidence to support review of a requested time correction,
-  while never changing time records automatically or treating GPS alone as
-  proof of work performed.
-- Preserve the original time entry, proposed correction, reviewer, reason, and
-  decision in the audit trail; record only the minimum location evidence needed
-  to explain that decision.
-- Add explicit role authorization, tenant isolation, rate limits, battery-aware
-  update intervals, offline behavior, consent withdrawal, and revoked-device
-  tests before production use.
 
 ### Beta-to-Production Cloud Infrastructure
 
@@ -234,13 +184,22 @@ Phase 17 implementation and acceptance are closed in
 registration boundary is defined in
 `../Architecture/ProductionAccountPlatform.md`.
 
-## Phase 18 — Product Expansion
+## Phase 18 — Operational Expansion and Field Productivity
 
-**Status:** Planning
+**Status:** Completed
 
-Phase 18 will expand PFSS with a product-owner-approved set of new features.
-Its scope will be planned after Phase 17 closeout instead of automatically
-promoting every parking-lot idea into active work.
+Committed scope:
+
+- Roadmap and architecture cleanup
+- Navigation, design, editing, saving, diagnostics, and Operations landing-page
+  consistency
+- Field Pricing Calculator for approved Weekly, Bi-Weekly, and Monthly routine
+  service percentages
+- GPS and map-assisted Lead, Customer, and Site address entry
+- Role-aware 1, 3, and 5-day calendar for Managers, Salespeople, and Technicians
+- Recurring Work templates and idempotent occurrence generation
+- Full automated regression, signed iPhone/iPad acceptance, documentation, and
+  GitHub closeout
 
 Planning and acceptance are tracked in
 `../Phase Development/Phase_18_Project_Workbook.md`.
@@ -259,9 +218,9 @@ release candidate is frozen.
 Planning and acceptance are tracked in
 `../Phase Development/Phase_19_Project_Workbook.md`.
 
-## Final Pre-Launch UI Consistency Pass
+## Phase 18 Navigation and UI Consistency
 
-**Status:** Required before v1.0 production release; deferred from Phase 16
+**Status:** Active — Phase 18 Step 2
 
 - Replace the adaptive system `TabView` presentation with a PFSS-owned primary
   navigation bar that remains at the bottom on both iPhone and iPad.
@@ -270,8 +229,11 @@ Planning and acceptance are tracked in
   behavior, and deep-navigation behavior.
 - Verify the unified navigation in portrait and landscape, light and dark
   appearance, larger Dynamic Type sizes, and supported iPhone and iPad layouts.
-- Complete this as part of the final UI improvements and enhancements pass
-  before PFSS goes live, not as an expansion of Phase 16.
+- Complete this as part of Phase 18 before PFSS goes live.
+- Standardize Leads, Estimates, and Jobs on **Date — Earliest First** as their
+  default list ordering.
+- Add Customer-detail shortcuts for filtered Jobs and Invoices histories, also
+  defaulted to **Date — Earliest First**.
 
 ## v1.0 — First Production Release
 
@@ -293,22 +255,15 @@ Required capabilities:
 
 - Advanced technician time tracking, including pause, travel time, labor time, per-worker time, and correction workflows
 - Tax Engine and tax-rate provider abstraction
-- Scheduling and dispatch expansion
-- Recurring work templates and occurrences
 - Route optimization and bulk rescheduling
-- Multi-user roles and permissions
-- Cloud and offline synchronization
 - Web application
 - Customer portal
 - Photos, attachments, and signatures
-- GPS and map-assisted address capture for new Leads and Customers
 - Reporting and dashboards
 - Industry packs and configurable workflows
 - AI-assisted recommendations
 - Mileage tracking and reporting for techs
 - New My Day screen for both Sales and Tech.  - Shows # of sales follow up and / or services and click the card shows the activity (sales or service) list for the day.
-- Create a calendar style view for the week, similar to jobber
 - iPhone Widget for My Day
-- Window Pricing Calc tool - could be for anything really - just want a tool that i can enter a base price and have it automatically calc weekly, bi-weekly, monthly, quarterly, or annual service prices and make those multipliers configurable.
 
 Detailed deferred items belong in `ParkingLot.md`; completed release details belong in release notes and release history.

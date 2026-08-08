@@ -102,6 +102,10 @@ struct ServiceCatalogNewItemView: View {
                     }
                 }
 
+                EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                    isInputFocused = false
+                }
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         saveCatalogItem()
@@ -109,16 +113,6 @@ struct ServiceCatalogNewItemView: View {
                     .disabled(itemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
 
-                if isInputFocused {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            isInputFocused = false
-                        } label: {
-                            Image(systemName: "keyboard.chevron.compact.down")
-                        }
-                        .accessibilityLabel("Dismiss Keyboard")
-                    }
-                }
             }
         }
     }

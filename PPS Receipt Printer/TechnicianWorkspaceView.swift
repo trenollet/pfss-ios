@@ -116,6 +116,18 @@ struct TechnicianWorkspaceView: View {
                                 for: employee
                             )
                         }
+
+                        NavigationLink {
+                            TechnicianCalendarView(
+                                initialEmployeeID: employee.id
+                            )
+                            .environmentObject(store)
+                        } label: {
+                            Label(
+                                "Calendar View",
+                                systemImage: "calendar"
+                            )
+                        }
                     }
                 } else {
                     Section {

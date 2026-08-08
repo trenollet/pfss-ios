@@ -3,7 +3,7 @@
 - Status: Active
 - Owner: PFSS Project
 - Applies To: v0.9+
-- Last Updated: 2026-08-06
+- Last Updated: 2026-08-08
 
 ## Purpose
 
@@ -16,14 +16,19 @@ This folder is the permanent system of record for PFSS product direction, archit
   Phase 17 identity staging is specified in `Architecture/WorkOSStagingSetup.md`.
   The private platform-management boundary is specified in
   `Architecture/PFSSOperationsControlPlane.md`.
+  Phase 18 operational boundaries are specified in
+  `Architecture/FieldPricingEngine.md`,
+  `Architecture/AddressSelectionService.md`,
+  `Architecture/OperationsCalendar.md`, and
+  `Architecture/RecurringWorkEngine.md`.
 - `Standards/` — rules for implementation, user experience, naming, and Git workflow.
 - `Features/` — detailed subsystem and workflow specifications.
 - `Decisions/` — Architecture Decision Records (ADRs) explaining why significant choices were made.
   Phase 17 provider decisions are recorded in ADR-003 and ADR-004.
 - `Phase Development/` — active and completed phase workbooks, acceptance
   criteria, and verification records.
-  Phase 17 is closed, Phase 18 holds the upcoming product-expansion plan, and
-  Phase 19 owns App Store deployment and the production release.
+  Phases 17 and 18 are closed, and Phase 19 owns App Store deployment and the
+  production release.
 - `ReleaseNotes/` — release-by-release user and developer notes.
 - `ReleaseHistory/` — durable milestone snapshots and historical release records.
 

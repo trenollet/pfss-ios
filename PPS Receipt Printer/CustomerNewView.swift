@@ -64,12 +64,17 @@ struct CustomerNewView: View {
                                     Text($0.rawValue).tag($0)
                                 }
                             }
-                            Picker("Assigned Employee", selection: $assignedEmployee) {
-                                Text("Unassigned").tag("")
-                                ForEach(assignableEmployees) { employee in
-                                    Text(employee.displayName)
-                                        .tag(employee.displayName)
+                            HStack {
+                                Text("Assigned Employee")
+                                Spacer()
+                                Picker("Assigned Employee", selection: $assignedEmployee) {
+                                    Text("Unassigned").tag("")
+                                    ForEach(assignableEmployees) { employee in
+                                        Text(employee.displayName)
+                                            .tag(employee.displayName)
+                                    }
                                 }
+                                .labelsHidden()
                             }
                             DatePicker(
                                 "Follow-Up Date",
@@ -84,15 +89,12 @@ struct CustomerNewView: View {
                         ToolbarItem(placement: .cancellationAction) {
                             Button("Cancel") { requestDismissal() }
                         }
+                        EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                            isInputFocused = false
+                        }
                         ToolbarItem(placement: .confirmationAction) {
                             Button("Save") { saveCustomer() }
                                 .disabled(!hasName)
-                        }
-                        ToolbarItemGroup(placement: .keyboard) {
-                            Spacer()
-                            Button("Done") {
-                                isInputFocused = false
-                            }
                         }
                     }
                 }
