@@ -3,31 +3,28 @@
 - Status: Active
 - Owner: PFSS Project
 - Applies To: Future Work
-- Last Updated: 2026-08-06
+- Last Updated: 2026-08-08
 
 This document holds approved ideas and important work that are intentionally deferred. Scheduled work belongs in `Roadmap.md`; completed work belongs in release documentation.
 
 ## Priority Before v1.0
 
-### UI-001: Persistent Save Actions
+### OPS-005: Technician Job Decline and Management Review
 
-Every editable screen should expose a consistent Save action in the top-right navigation toolbar. Save should remain visible while forms scroll, be disabled when invalid or unchanged where practical, and participate in consistent unsaved-change handling. Destructive actions must remain visually separate.
+Technicians may not assign or reassign a Job. Allow the assigned technician to
+decline work only after entering a reason. Store the request in PFSS Cloud as a
+tenant-scoped, audited review item and notify every active Manager and Owner
+device. Show a prominent `Job Review Required` banner on authorized dashboards;
+selecting it opens the affected Job and its decline reason. A Manager or Owner
+must resolve the request by reassigning, rescheduling, returning, or cancelling
+the work. Resolution must clear the shared alert on every device and remain in
+Job history. This is the first deliverable of the larger post-v1 workforce and
+sales management initiative, but its permission boundary and review workflow
+are required before App Store release.
 
 ### TAX-001: Catalog Tax Classification UI
 
 Add catalog editor controls for item type and tax treatment. The model foundation exists; this task should not introduce tax calculation.
-
-### BUG-005: Invalid Frame Dimension Warning
-
-Identify the exact view and calculation causing `Invalid frame dimension (negative or non-finite)` before changing layout code.
-
-### INFRA-002: Debug-Only Presentation Logging
-
-Limit `PresentationDebug` to Debug builds or an explicit diagnostics setting.
-
-### ARCH-002: Root Environment Injection Cleanup
-
-Verify `AppDataStore` and `BluetoothPrinter` are created once at the application root and remove redundant descendant injections.
 
 ## Financial and Document Engines
 
@@ -44,10 +41,6 @@ Create invoices from estimates and jobs while preserving line items, discounts, 
 Create durable receipts from completed payments and preserve the exact pricing and tax snapshot used at payment time.
 
 ## UI and Usability
-
-### UI-002: Design System
-
-Standardize typography, button roles, form spacing, section headers, cards, icons, corner radius, shadows, status indicators, and accessible color usage.
 
 ### UI-003: Closed Job Visual Status
 
@@ -77,14 +70,6 @@ Expose why an item was recommended and which rule or score contributed.
 
 ## Operations
 
-### OPS-001: Scheduling and Dispatch
-
-Expand technician assignment, status transitions, calendar presentation, and dispatch workflows.
-
-### OPS-002: Recurring Work
-
-Model recurrence as templates or schedules that generate individual job occurrences.
-
 ### OPS-003: Route Optimization
 
 Use job-site location and technician assignment to organize field routes.
@@ -95,8 +80,6 @@ Support single-job and selected-day rescheduling without displacing unaffected w
 
 ## Platform Expansion
 
-- Multi-user authentication, roles, permissions, and business isolation
-- Cloud persistence with offline-first synchronization and conflict handling
 - Web application
 - Customer portal
 - Photos, documents, attachments, and signatures
@@ -116,6 +99,18 @@ Support pause/resume, travel time separate from job labor, per-technician timers
 
 ## Post v1.0
 
+### Job-Scoped Technician Location Sharing
+
+Treat location as short-lived operational evidence, not continuous employee
+surveillance. Report only while the linked employee has an active assignment in
+an approved Traveling, On Site, Setup, Working, or Pack Up state, and stop when
+work pauses or completes, access is revoked, permission is withdrawn, or the
+assignment no longer qualifies. Use a dedicated short-retention PFSS Cloud
+location channel with explicit role authorization, tenant isolation, rate
+limits, battery-aware updates, offline behavior, and visible Live, Stale, Not
+Reporting, and Permission Denied states. This is separate from Phase 18's
+foreground map-assisted address selection.
+
 ### PFSS for Mac via Mac Catalyst
 
 Create a standalone Mac Catalyst edition of PFSS from the shared iPhone/iPad
@@ -128,15 +123,6 @@ before treating the Catalyst build as supported. This replaces reliance on the
 temporary `My Mac (Designed for iPad)` development runtime; it does not create a
 separate product fork or independent data model.
 
-### GPS and Map-Assisted Address Capture
-
-When creating a Lead or Customer, provide a map button beside the address
-entry. A field user standing at the property can open the map, verify their
-current GPS location, select the correct building or map point, and have PFSS
-reverse-geocode that selection into the address fields automatically. Retain
-manual address entry and allow the user to review or correct the resulting
-address before saving.
-
 ### Track mileage
 
 track technician mileage in the app for job assignments
@@ -144,11 +130,6 @@ track adhoc mileage input
 downloadable montlhy reimbursment report
 IRS mileage in admin settings
 allowed to claim option in admin for employees
-
-### Operations Page UI clean up
-
-use tiles to work into each section
-no more long lists
 
 ### REvamp the Dashboard
 Use tiles to navigate Operations, Tech My Day, Leads, Customers, Estimates, and Invoices

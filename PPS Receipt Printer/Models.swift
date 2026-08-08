@@ -811,8 +811,15 @@ struct JobRecord: Identifiable, Codable, WorkOrder {
 
     var isRecurring: Bool
     var recurrenceFrequency: JobRecurrenceFrequency? = nil
+    var recurrenceEndMode: JobRecurrenceEndMode = .noEnd
+    var recurrenceEndDate: Date? = nil
+    var recurrenceOccurrenceCount: Int? = nil
     var recurrenceSeriesID: UUID? = nil
     var recurrenceSequence: Int = 0
+    /// Stable Phase 18 template/occurrence identity. Optional so existing
+    /// Phase 14 recurring jobs migrate without data loss.
+    var recurringWorkTemplateID: UUID? = nil
+    var recurringWorkOccurrenceKey: String? = nil
     var createdDate: Date
 
     var lifecycleStatus: RecordLifecycleStatus = .active
@@ -847,8 +854,13 @@ extension JobRecord {
         case workNotes
         case isRecurring
         case recurrenceFrequency
+        case recurrenceEndMode
+        case recurrenceEndDate
+        case recurrenceOccurrenceCount
         case recurrenceSeriesID
         case recurrenceSequence
+        case recurringWorkTemplateID
+        case recurringWorkOccurrenceKey
         case createdDate
         case lifecycleStatus
     }
@@ -994,6 +1006,21 @@ extension JobRecord {
             forKey: .recurrenceFrequency
         )
 
+        recurrenceEndMode = try container.decodeIfPresent(
+            JobRecurrenceEndMode.self,
+            forKey: .recurrenceEndMode
+        ) ?? .noEnd
+
+        recurrenceEndDate = try container.decodeIfPresent(
+            Date.self,
+            forKey: .recurrenceEndDate
+        )
+
+        recurrenceOccurrenceCount = try container.decodeIfPresent(
+            Int.self,
+            forKey: .recurrenceOccurrenceCount
+        )
+
         recurrenceSeriesID = try container.decodeIfPresent(
             UUID.self,
             forKey: .recurrenceSeriesID
@@ -1003,6 +1030,16 @@ extension JobRecord {
             Int.self,
             forKey: .recurrenceSequence
         ) ?? 0
+
+        recurringWorkTemplateID = try container.decodeIfPresent(
+            UUID.self,
+            forKey: .recurringWorkTemplateID
+        )
+
+        recurringWorkOccurrenceKey = try container.decodeIfPresent(
+            String.self,
+            forKey: .recurringWorkOccurrenceKey
+        )
 
         createdDate = try container.decodeIfPresent(
             Date.self,

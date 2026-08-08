@@ -34,6 +34,9 @@ struct JobNewView: View {
     @State private var workNotes = ""
     @State private var isRecurring = false
     @State private var recurrenceFrequency: JobRecurrenceFrequency?
+    @State private var recurrenceEndMode: JobRecurrenceEndMode = .noEnd
+    @State private var recurrenceEndDate: Date?
+    @State private var recurrenceOccurrenceCount: Int?
     @State private var showingRecurrencePicker = false
     @State private var itemDescription = ""
     @State private var itemQuantity = "1"
@@ -43,6 +46,18 @@ struct JobNewView: View {
 
     @FocusState private var isInputFocused: Bool
     @State private var activeSheet: ActiveSheet?
+
+    init(
+        preselectedCustomerNumber: String = "",
+        preselectedSiteID: UUID? = nil,
+        prefilledWorkNotes: String = ""
+    ) {
+        _selectedCustomerNumber = State(
+            initialValue: preselectedCustomerNumber
+        )
+        _selectedSiteID = State(initialValue: preselectedSiteID)
+        _workNotes = State(initialValue: prefilledWorkNotes)
+    }
 
     private enum ActiveSheet: Identifiable {
         case catalogPicker
@@ -384,11 +399,19 @@ struct JobNewView: View {
                 ) ?? newDate
             }
             .sheet(isPresented: $showingRecurrencePicker) {
-                JobRecurrencePickerView(selection: $recurrenceFrequency)
+                JobRecurrencePickerView(
+                    selection: $recurrenceFrequency,
+                    endMode: $recurrenceEndMode,
+                    endDate: $recurrenceEndDate,
+                    occurrenceCount: $recurrenceOccurrenceCount
+                )
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                }
+                EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                    isInputFocused = false
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
@@ -400,16 +423,6 @@ struct JobNewView: View {
                         !hasValidScheduling ||
                         (isRecurring && recurrenceFrequency == nil)
                     )
-                }
-                if isInputFocused {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            isInputFocused = false
-                        } label: {
-                            Image(systemName: "keyboard.chevron.compact.down")
-                        }
-                        .accessibilityLabel("Dismiss Keyboard")
-                    }
                 }
             }
             .sheet(item: $activeSheet) { sheet in
@@ -463,6 +476,9 @@ struct JobNewView: View {
             workNotes: workNotes,
             isRecurring: isRecurring,
             recurrenceFrequency: recurrenceFrequency,
+            recurrenceEndMode: recurrenceEndMode,
+            recurrenceEndDate: recurrenceEndDate,
+            recurrenceOccurrenceCount: recurrenceOccurrenceCount,
             createdDate: Date()
             
         )
@@ -480,6 +496,9 @@ struct JobNewView: View {
         itemUnitPrice = ""
         lineItems = []
         discount = ""
+        recurrenceEndMode = .noEnd
+        recurrenceEndDate = nil
+        recurrenceOccurrenceCount = nil
         primaryTechnicianID = nil
         secondaryTechnicianID = nil
         scheduledDate = Date()

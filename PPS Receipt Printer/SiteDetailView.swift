@@ -14,7 +14,7 @@ struct SiteDetailView: View {
 
     @State var site: CustomerSite
     private let originalSite: CustomerSite
-    @State private var createdJob: JobRecord?
+    @State private var isShowingNewJob = false
     @State private var isShowingNewEstimate = false
     @State private var isClosing = false
     @State private var showingUnsavedChangesAlert = false
@@ -54,6 +54,11 @@ struct SiteDetailView: View {
                 TextField("Service Address", text: $site.serviceAddress)
                     .focused($isInputFocused)
 
+                MapAssistedAddressButton(
+                    address: $site.serviceAddress,
+                    label: "Select Service Address on Map"
+                )
+
                 TextField("Property Type", text: $site.propertyType)
                     .focused($isInputFocused)
             }
@@ -70,28 +75,8 @@ struct SiteDetailView: View {
 
             Section {
                 Button {
-                    let job = JobRecord(
-                        jobNumber: store.generateJobNumber(),
-                        customerNumber: site.customerNumber,
-                        siteID: site.id,
-                        estimateNumber: "",
-                        serviceType: .other,
-                        otherService: "",
-                        subtotal: 0,
-                        discount: 0,
-                        total: 0,
-                        primaryTechnicianID: nil,
-                        secondaryTechnicianID: nil,
-                        scheduledDate: Date(),
-                        completedDate: nil,
-                        status: .toBeScheduled,
-                        workNotes: site.workNotes,
-                        isRecurring: false,
-                        createdDate: Date()
-                    )
-
-                    store.addJob(job)
-                    createdJob = job
+                    resignInputFocus()
+                    isShowingNewJob = true
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: "wrench.and.screwdriver.fill")
@@ -127,19 +112,22 @@ struct SiteDetailView: View {
                         store.archiveSite(site)
                         closeSiteDetail()
                     } label: {
-                        Label("Archive Site", systemImage: "archivebox.fill")
+                        CenteredArchiveActionLabel(title: "Archive Site")
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(.red)
                 }
             }
         }
         .navigationTitle("Edit Site")
         .navigationBarBackButtonHidden(true)
         .scrollDismissesKeyboard(.interactively)
-        .sheet(item: $createdJob) { job in
+        .sheet(isPresented: $isShowingNewJob) {
             NavigationStack {
-                JobDetailView(
-                    job: store.jobs.first(where: { $0.id == job.id }) ?? job
+                JobNewView(
+                    preselectedCustomerNumber: site.customerNumber,
+                    preselectedSiteID: site.id,
+                    prefilledWorkNotes: site.workNotes
                 )
             }
             .environmentObject(store)
@@ -167,7 +155,7 @@ struct SiteDetailView: View {
                 Button("Save") {
                     closeSiteDetail(savingChanges: true)
                 }
-                .disabled(isClosing)
+                .disabled(isClosing || !hasUnsavedChanges)
             }
 
         }

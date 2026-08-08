@@ -60,6 +60,9 @@ final class AppDataStore: ObservableObject {
     @Published var jobs: [JobRecord] = [] {
         didSet { saveData() }
     }
+    @Published var recurringWorkTemplates: [RecurringWorkTemplate] = [] {
+        didSet { saveData() }
+    }
     @Published var invoices: [InvoiceRecord] = [] {
         didSet { saveData() }
     }
@@ -129,6 +132,9 @@ final class AppDataStore: ObservableObject {
 
     var archivedJobs: [JobRecord] {
         jobs.filter { $0.lifecycleStatus == .archived }
+    }
+    var activeRecurringWorkTemplates: [RecurringWorkTemplate] {
+        recurringWorkTemplates.filter { $0.status == .active }
     }
     var activeInvoices: [InvoiceRecord] {
         invoices.filter { $0.lifecycleStatus == .active }
@@ -227,7 +233,8 @@ final class AppDataStore: ObservableObject {
 
         loadData()
         removeLeakedOfflineTestFixturesIfNeeded()
-        materializePendingRecurringJobs()
+        migrateLegacyRecurringWorkIfNeeded()
+        materializeRecurringWorkHorizon()
         synchronizeAssignmentsFromJobs()
 
         assignmentStore.onAssignmentsChanged = { [weak self] assignments in
@@ -304,9 +311,15 @@ final class AppDataStore: ObservableObject {
         removeOwnerRecoveryAccessIfNeeded(for: role)
     }
 
-    func updateCloudIdentity(role: PFSSTenantRole, employeeID: String?) {
+    func updateCloudIdentity(
+        role: PFSSTenantRole,
+        employeeID: String?,
+        displayName: String? = nil,
+        email: String? = nil
+    ) {
         cloudRole = role
         cloudEmployeeID = employeeID.flatMap(UUID.init(uuidString:))
+            ?? matchingEmployeeID(displayName: displayName, email: email)
         if persistsCloudIdentity {
             cloudIdentityDefaults.set(role.rawValue, forKey: Self.cloudRoleCacheKey)
             if let cloudEmployeeID {
@@ -322,6 +335,33 @@ final class AppDataStore: ObservableObject {
         }
         removeOwnerRecoveryAccessIfNeeded(for: role)
         relinkActiveOperationsToAuthenticatedEmployeeIfNeeded()
+    }
+
+    private func matchingEmployeeID(
+        displayName: String?,
+        email: String?
+    ) -> UUID? {
+        let normalizedEmail = email?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if let normalizedEmail, !normalizedEmail.isEmpty,
+           let employee = employees.first(where: {
+               $0.email.trimmingCharacters(in: .whitespacesAndNewlines)
+                   .lowercased() == normalizedEmail
+           }) {
+            return employee.id
+        }
+
+        let normalizedName = displayName?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let normalizedName, !normalizedName.isEmpty else { return nil }
+        let matches = employees.filter {
+            $0.displayName.compare(
+                normalizedName,
+                options: [.caseInsensitive, .diacriticInsensitive]
+            ) == .orderedSame
+        }
+        return matches.count == 1 ? matches[0].id : nil
     }
 
     func clearCachedCloudIdentity() {
@@ -364,9 +404,22 @@ final class AppDataStore: ObservableObject {
     }
 
     func generateCustomerNumber() -> String {
-        let number = String(format: "PPS-%06d", nextCustomerNumber)
-        nextCustomerNumber += 1
-        return number
+        while true {
+            let number: String
+            if let deviceScope = offlineRecordNumberDeviceScope {
+                number = String(
+                    format: "PPS-%@-%06d",
+                    deviceScope,
+                    nextCustomerNumber
+                )
+            } else {
+                number = String(format: "PPS-%06d", nextCustomerNumber)
+            }
+            nextCustomerNumber += 1
+            if !customers.contains(where: { $0.customerNumber == number }) {
+                return number
+            }
+        }
     }
 
     func updateCustomer(_ customer: Customer) {
@@ -541,7 +594,8 @@ final class AppDataStore: ObservableObject {
         var storedJob = job
         prepareRecurrenceIdentity(for: &storedJob)
         jobs.append(storedJob)
-        ensureNextOccurrence(after: storedJob, includeInitialOccurrence: true)
+        upsertRecurringWorkTemplate(from: storedJob)
+        materializeRecurringWorkHorizon()
         synchronizeAssignmentsFromJobs()
     }
 
@@ -563,12 +617,50 @@ final class AppDataStore: ObservableObject {
             }
 
             jobs[currentIndex] = storedJob
-            ensureNextOccurrence(
-                after: storedJob,
-                includeInitialOccurrence: storedJob.recurrenceSequence == 0
-            )
+            if storedJob.recurrenceSequence == 0 {
+                upsertRecurringWorkTemplate(from: storedJob)
+            }
+
+            if recurringSeriesSettingsChanged(
+                from: previousJob,
+                to: storedJob
+            ),
+               let templateID = storedJob.recurringWorkTemplateID,
+               let frequency = storedJob.recurrenceFrequency,
+               let template = recurringWorkTemplates.first(where: {
+                   $0.id == templateID
+               }) {
+                updateRecurringWorkSeries(
+                    templateID: templateID,
+                    frequency: frequency,
+                    endMode: storedJob.recurrenceEndMode,
+                    endDate: storedJob.recurrenceEndDate,
+                    occurrenceCount: storedJob.recurrenceOccurrenceCount,
+                    siteID: template.prototype.siteID
+                )
+                return
+            }
+
+            materializeRecurringWorkHorizon()
             synchronizeAssignmentsFromJobs()
         }
+    }
+
+    private func recurringSeriesSettingsChanged(
+        from previousJob: JobRecord,
+        to updatedJob: JobRecord
+    ) -> Bool {
+        guard previousJob.isRecurring,
+              updatedJob.isRecurring,
+              previousJob.recurringWorkTemplateID != nil,
+              updatedJob.recurringWorkTemplateID != nil else {
+            return false
+        }
+
+        return previousJob.recurrenceFrequency != updatedJob.recurrenceFrequency ||
+            previousJob.recurrenceEndMode != updatedJob.recurrenceEndMode ||
+            previousJob.recurrenceEndDate != updatedJob.recurrenceEndDate ||
+            previousJob.recurrenceOccurrenceCount != updatedJob.recurrenceOccurrenceCount
     }
 
     // MARK: - Assignment Integration
@@ -999,13 +1091,28 @@ final class AppDataStore: ObservableObject {
     private func prepareRecurrenceIdentity(for job: inout JobRecord) {
         guard job.isRecurring, job.recurrenceFrequency != nil else {
             job.recurrenceFrequency = nil
+            job.recurrenceEndMode = .noEnd
+            job.recurrenceEndDate = nil
+            job.recurrenceOccurrenceCount = nil
             job.recurrenceSeriesID = nil
             job.recurrenceSequence = 0
+            job.recurringWorkTemplateID = nil
+            job.recurringWorkOccurrenceKey = nil
             return
         }
 
         if job.recurrenceSeriesID == nil {
             job.recurrenceSeriesID = job.id
+        }
+        if job.recurringWorkTemplateID == nil {
+            job.recurringWorkTemplateID = job.recurrenceSeriesID
+        }
+        if let templateID = job.recurringWorkTemplateID,
+           job.recurringWorkOccurrenceKey == nil {
+            job.recurringWorkOccurrenceKey = RecurringWorkEngine().occurrenceKey(
+                templateID: templateID,
+                occurrenceIndex: job.recurrenceSequence
+            )
         }
     }
 
@@ -1579,11 +1686,8 @@ final class AppDataStore: ObservableObject {
         updated.lifecycleStatus = .active
         updateInvoice(updated)
     }
-    func convertLeadToCustomer(_ lead: Lead) {
-        guard !customers.contains(where: { $0.phone == lead.phone && !$0.phone.isEmpty }) else {
-            return
-        }
-
+    @discardableResult
+    func convertLeadToCustomer(_ lead: Lead) -> Customer? {
         let customer = Customer(
             customerNumber: generateCustomerNumber(),
             businessName: lead.businessName,
@@ -1598,9 +1702,11 @@ final class AppDataStore: ObservableObject {
 
         customers.append(customer)
 
-        if let index = leads.firstIndex(where: { $0.id == lead.id }) {
-            leads[index].status = .converted
-        }
+        var convertedLead = lead
+        convertedLead.status = .converted
+        updateLead(convertedLead)
+
+        return customer
     }
 
     func createJobFromEstimate(_ estimate: EstimateRecord) {
@@ -1767,11 +1873,73 @@ final class AppDataStore: ObservableObject {
         formatter.dateFormat = "yyMM"
         let monthPrefix = formatter.string(from: date)
 
-        let sequenceKey = "\(prefix)-\(monthPrefix)"
-        let nextSequence = (recordSequencesByMonth[sequenceKey] ?? 0) + 1
-        recordSequencesByMonth[sequenceKey] = nextSequence
+        let deviceScope = offlineRecordNumberDeviceScope
+        let sequenceKey = [prefix, monthPrefix, deviceScope]
+            .compactMap { $0 }
+            .joined(separator: "-")
 
-        return "\(prefix)-\(monthPrefix)-\(String(format: "%05d", nextSequence))"
+        while true {
+            let nextSequence = (recordSequencesByMonth[sequenceKey] ?? 0) + 1
+            recordSequencesByMonth[sequenceKey] = nextSequence
+            let components = [
+                prefix,
+                monthPrefix,
+                deviceScope,
+                String(format: "%05d", nextSequence)
+            ].compactMap { $0 }
+            let number = components.joined(separator: "-")
+            guard !recordNumberAlreadyExists(number, prefix: prefix) else {
+                continue
+            }
+            return number
+        }
+    }
+
+    /// Disconnected devices cannot safely share a tenant-wide sequential
+    /// counter. A stable device scope preserves readable record numbers while
+    /// making locally created identities collision-resistant until sync.
+    private var offlineRecordNumberDeviceScope: String? {
+        guard offlineSynchronizationMode.requiresRemoteQueue,
+              offlineConnectivityMonitor.status != .online else {
+            return nil
+        }
+        let key = "PFSSCloudflareBetaDeviceID"
+        let deviceID: UUID
+        if let saved = cloudIdentityDefaults.string(forKey: key),
+           let existing = UUID(uuidString: saved) {
+            deviceID = existing
+        } else {
+            deviceID = UUID()
+            cloudIdentityDefaults.set(
+                deviceID.uuidString.lowercased(),
+                forKey: key
+            )
+        }
+        return String(
+            deviceID.uuidString
+                .replacingOccurrences(of: "-", with: "")
+                .prefix(6)
+        ).uppercased()
+    }
+
+    private func recordNumberAlreadyExists(
+        _ number: String,
+        prefix: String
+    ) -> Bool {
+        switch prefix {
+        case "LD":
+            return leads.contains { $0.leadNumber == number }
+        case "EST":
+            return estimates.contains { $0.estimateNumber == number }
+        case "JOB":
+            return jobs.contains { $0.jobNumber == number }
+        case "INV":
+            return invoices.contains { $0.invoiceNumber == number }
+        case "RCT":
+            return false
+        default:
+            return false
+        }
     }
 
     private func saveData() {
@@ -1792,7 +1960,8 @@ final class AppDataStore: ObservableObject {
             recordSequencesByMonth: recordSequencesByMonth,
             recommendationRules: recommendationRules,
             employees: employees,
-            assignments: assignmentStore.assignments
+            assignments: assignmentStore.assignments,
+            recurringWorkTemplates: recurringWorkTemplates
         )
 
         do {
@@ -1817,6 +1986,13 @@ final class AppDataStore: ObservableObject {
         enqueueChangedRecords(leads, type: .lead, current: current)
         enqueueChangedRecords(estimates, type: .estimate, current: current)
         enqueueChangedRecords(jobs, type: .job, current: current)
+        if canManageCompany {
+            enqueueChangedRecords(
+                recurringWorkTemplates,
+                type: .recurringWork,
+                current: current
+            )
+        }
         enqueueChangedRecords(invoices, type: .invoice, current: current)
         enqueueChangedRecords(employees, type: .employee, current: current)
         enqueueChangedRecords(serviceCatalogItems, type: .catalog, current: current)
@@ -1842,6 +2018,11 @@ final class AppDataStore: ObservableObject {
         appendSynchronizedRecords(leads, type: .lead, to: &result)
         appendSynchronizedRecords(estimates, type: .estimate, to: &result)
         appendSynchronizedRecords(jobs, type: .job, to: &result)
+        appendSynchronizedRecords(
+            recurringWorkTemplates,
+            type: .recurringWork,
+            to: &result
+        )
         appendSynchronizedRecords(invoices, type: .invoice, to: &result)
         appendSynchronizedRecords(employees, type: .employee, to: &result)
         appendSynchronizedRecords(serviceCatalogItems, type: .catalog, to: &result)
@@ -1892,6 +2073,7 @@ final class AppDataStore: ObservableObject {
             leads = snapshot.leads
             estimates = snapshot.estimates
             jobs = snapshot.jobs
+            recurringWorkTemplates = snapshot.recurringWorkTemplates
             invoices = snapshot.invoices
             businessProfile = snapshot.businessProfile
             serviceCatalogItems = snapshot.serviceCatalogItems
@@ -1932,7 +2114,8 @@ final class AppDataStore: ObservableObject {
             recordSequencesByMonth: recordSequencesByMonth,
             recommendationRules: recommendationRules,
             employees: employees,
-            assignments: assignmentStore.assignments
+            assignments: assignmentStore.assignments,
+            recurringWorkTemplates: recurringWorkTemplates
         )
         return try archiveService.createArchive(
             payload: PFSSArchivePayload(
@@ -2110,7 +2293,8 @@ final class AppDataStore: ObservableObject {
                 recordSequencesByMonth: [:],
                 recommendationRules: [],
                 employees: [],
-                assignments: []
+                assignments: [],
+                recurringWorkTemplates: []
             ),
             pendingOperations: []
         )
@@ -2153,7 +2337,8 @@ final class AppDataStore: ObservableObject {
                 recordSequencesByMonth: recordSequencesByMonth,
                 recommendationRules: recommendationRules,
                 employees: employees,
-                assignments: assignmentStore.assignments
+                assignments: assignmentStore.assignments,
+                recurringWorkTemplates: recurringWorkTemplates
             ),
             pendingOperations: offlineOperationQueue.orderedOperations
         )
@@ -2266,6 +2451,7 @@ struct PFSSDataSnapshot: Codable {
     var recommendationRules: [RecommendationRule]
     var employees: [EmployeeRecord] = []
     var assignments: [Assignment] = []
+    var recurringWorkTemplates: [RecurringWorkTemplate] = []
 
     private enum CodingKeys: String, CodingKey {
         case customers
@@ -2281,6 +2467,7 @@ struct PFSSDataSnapshot: Codable {
         case recommendationRules
         case employees
         case assignments
+        case recurringWorkTemplates
     }
 
     init(
@@ -2296,7 +2483,8 @@ struct PFSSDataSnapshot: Codable {
         recordSequencesByMonth: [String: Int],
         recommendationRules: [RecommendationRule],
         employees: [EmployeeRecord] = [],
-        assignments: [Assignment] = []
+        assignments: [Assignment] = [],
+        recurringWorkTemplates: [RecurringWorkTemplate] = []
     ) {
         self.customers = customers
         self.sites = sites
@@ -2311,6 +2499,7 @@ struct PFSSDataSnapshot: Codable {
         self.recommendationRules = recommendationRules
         self.employees = employees
         self.assignments = assignments
+        self.recurringWorkTemplates = recurringWorkTemplates
     }
 
     init(from decoder: Decoder) throws {
@@ -2362,6 +2551,10 @@ struct PFSSDataSnapshot: Codable {
         assignments = try container.decodeIfPresent(
             [Assignment].self,
             forKey: .assignments
+        ) ?? []
+        recurringWorkTemplates = try container.decodeIfPresent(
+            [RecurringWorkTemplate].self,
+            forKey: .recurringWorkTemplates
         ) ?? []
         nextCustomerNumber = try container.decode(
             Int.self,

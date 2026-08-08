@@ -1,5 +1,13 @@
 import Foundation
 
+enum JobRecurrenceEndMode: String, Codable, CaseIterable, Identifiable {
+    case noEnd = "No End Date"
+    case endDate = "End On Date"
+    case occurrenceCount = "After Number of Jobs"
+
+    var id: String { rawValue }
+}
+
 enum JobRecurrenceFrequency: String, Codable, CaseIterable, Identifiable {
     case weekly = "Weekly"
     case biweekly = "Bi-Weekly"

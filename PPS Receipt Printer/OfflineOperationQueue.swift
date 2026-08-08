@@ -338,6 +338,47 @@ final class OfflineOperationQueue: ObservableObject {
         return recoveredCount
     }
 
+    /// Reopens transient terminal failures for a user-requested retry. The
+    /// existing attempts remain intact for support/audit history, while the
+    /// retry baseline starts a fresh bounded retry cycle.
+    @discardableResult
+    func requeueTransientFailures(
+        at timestamp: Date = Date()
+    ) throws -> Int {
+        let transientCategories: Set<OfflineFailureCategory> = [
+            .connectivity,
+            .timeout,
+            .authentication,
+            .authorization,
+            .server,
+            .decoding,
+            .unknown
+        ]
+        var candidate = operations
+        var requeuedCount = 0
+
+        for index in candidate.indices where candidate[index].status == .failed {
+            guard let failure = candidate[index].failure,
+                  transientCategories.contains(failure.category) else {
+                continue
+            }
+
+            requeuedCount += 1
+            candidate[index].status = .pending
+            candidate[index].updatedAt = timestamp
+            candidate[index].nextRetryAt = nil
+            candidate[index].failure = nil
+            candidate[index].metadata["retryCycleBaseline"] = String(
+                candidate[index].retryAttempts.count
+            )
+        }
+
+        if requeuedCount > 0 {
+            try commit(candidate)
+        }
+        return requeuedCount
+    }
+
     private func commit(
         _ candidate: [PendingOfflineOperation]
     ) throws {

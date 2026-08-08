@@ -208,6 +208,42 @@ final class OfflineSynchronizationServiceTests: XCTestCase {
         XCTAssertEqual(queue.operation(id: operation.id)?.attemptCount, 1)
     }
 
+    func testManualSyncRequeuesTransientTerminalFailureAndUnblocksQueue() async throws {
+        let queue = makeQueue()
+        let first = try queue.enqueue(makeOperation(action: "catalogUsage"))
+        let second = try queue.enqueue(makeOperation(action: "jobUpdate"))
+        let adapter = TestSynchronizationAdapter(results: [
+            .failed(OfflineFailureDetails(
+                category: .server,
+                code: "403",
+                message: "Operation synchronization failed (403).",
+                isRetryable: true
+            )),
+            .synchronized(remoteRevision: "catalog-revision"),
+            .synchronized(remoteRevision: "job-revision")
+        ])
+        let service = OfflineSynchronizationService(
+            queue: queue,
+            connectivity: TestConnectivityMonitor(status: .online),
+            adapter: adapter,
+            retryPolicy: OfflineRetryPolicy(delays: [], maximumAttempts: 1)
+        )
+
+        await service.processPendingOperations()
+        XCTAssertEqual(queue.operation(id: first.id)?.status, .failed)
+        XCTAssertEqual(queue.operation(id: second.id)?.status, .pending)
+
+        service.syncNow()
+        for _ in 0..<40 where queue.operation(id: second.id)?.status != .synchronized {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        XCTAssertEqual(adapter.receivedIDs, [first.id, first.id, second.id])
+        XCTAssertEqual(queue.operation(id: first.id)?.status, .synchronized)
+        XCTAssertEqual(queue.operation(id: first.id)?.retryAttempts.count, 2)
+        XCTAssertEqual(queue.operation(id: second.id)?.status, .synchronized)
+    }
+
     private func makeQueue() -> OfflineOperationQueue {
         OfflineOperationQueue(persistence: SynchronizationMemoryPersistence())
     }

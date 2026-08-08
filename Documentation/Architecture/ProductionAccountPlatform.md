@@ -1,6 +1,6 @@
 # PFSS Production Account Platform Architecture
 
-- Status: Proposed for Phase 17
+- Status: Phase 17 foundation completed
 - Owner: PFSS Project
 - Applies To: Phase 17 and production account services
 - Last Updated: 2026-07-31

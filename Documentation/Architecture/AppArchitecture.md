@@ -3,7 +3,7 @@
 - Status: Active
 - Owner: PFSS Project
 - Applies To: v0.9+
-- Last Updated: 2026-07-18
+- Last Updated: 2026-08-07
 
 ## Architectural Philosophy
 
@@ -43,6 +43,7 @@ Deterministic, testable, and explainable business logic:
 - Scheduling Engine
 - Routing Engine
 - Workflow Engine
+- Phase 18 Field Pricing, Operations Calendar, and Recurring Work engines
 - Future Tax, Invoice, Payment, and Reporting engines
 
 ### Infrastructure Layer
@@ -63,6 +64,24 @@ Shared editing and display behavior for service line items and totals. Current c
 
 `CatalogRankingEngine` tokenizes search input, supports initialisms, combines exact, prefix, contains, token, description, usage, and recency signals, and provides debug ranking output.
 
+### Scheduling Engine
+
+`SchedulingEngine` is the authoritative evaluator for assignment intervals,
+availability, overlap, capacity, and candidate openings. Phase 18 calendar and
+Recurring Work features consume its results rather than recreating scheduling
+rules in their views or generators.
+
+### Phase 18 Operational Boundaries
+
+- `FieldPricingEngine` calculates frequency-based options from tenant-approved
+  settings and returns immutable pricing results.
+- `AddressSelectionService` coordinates permission-aware map selection and
+  reverse geocoding while preserving manual address entry.
+- `OperationsCalendarComposer` produces role-filtered 1, 3, and 5-day calendar
+  sections from durable business records and Scheduling Engine results.
+- `RecurringWorkEngine` evaluates recurrence rules and produces stable,
+  idempotent occurrence plans; the server owns cross-device generation.
+
 ## Architecture Rules
 
 - Business logic lives outside SwiftUI views.
@@ -81,3 +100,7 @@ Shared editing and display behavior for service line items and totals. Current c
 - `../Standards/CodingStandards.md`
 - `../Decisions/ADR-001-Presentation-Ownership.md`
 - `ProductionAccountPlatform.md`
+- `FieldPricingEngine.md`
+- `AddressSelectionService.md`
+- `OperationsCalendar.md`
+- `RecurringWorkEngine.md`

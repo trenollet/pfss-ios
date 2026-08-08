@@ -1,6 +1,68 @@
 import SwiftUI
 import UIKit
 
+/// Installs PFSS's field-entry convention once for the entire app. Existing
+/// values are selected when a data field receives focus so typing replaces the
+/// value without requiring manual deletion. Search fields are excluded because
+/// users commonly refine an existing search instead of replacing it.
+@MainActor
+final class SelectAllTextEntryStandard {
+    private static let shared = SelectAllTextEntryStandard()
+    private var observer: NSObjectProtocol?
+
+    static func install() {
+        _ = shared
+    }
+
+    private init() {
+        observer = NotificationCenter.default.addObserver(
+            forName: UITextField.textDidBeginEditingNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            MainActor.assumeIsolated {
+                guard let field = notification.object as? UITextField,
+                      !(field is UISearchTextField),
+                      !(field.text ?? "").isEmpty else {
+                    return
+                }
+                field.selectAll(nil)
+            }
+        }
+    }
+}
+
+/// Standard keyboard action for record editors. Place this immediately before
+/// the editor's Save toolbar item so dismissal consistently appears to the
+/// left of Save and only while text entry is active.
+struct EditorKeyboardDismissAction: ToolbarContent {
+    let isVisible: Bool
+    let dismiss: () -> Void
+
+    var body: some ToolbarContent {
+        if isVisible {
+            ToolbarItem(placement: .confirmationAction) {
+                Button(action: dismiss) {
+                    Image(systemName: "keyboard.chevron.compact.down")
+                }
+                .accessibilityLabel("Dismiss Keyboard")
+            }
+        }
+    }
+}
+
+/// Shared label treatment for destructive archive actions. Giving the label
+/// the full row width keeps every archive button centered across the app.
+struct CenteredArchiveActionLabel: View {
+    let title: String
+
+    var body: some View {
+        Label(title, systemImage: "archivebox.fill")
+            .fontWeight(.semibold)
+            .frame(maxWidth: .infinity)
+    }
+}
+
 struct RecordSelectionOption: Identifiable, Hashable {
     let id: String
     let title: String

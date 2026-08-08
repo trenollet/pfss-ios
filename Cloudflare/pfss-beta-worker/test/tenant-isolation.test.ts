@@ -1197,6 +1197,109 @@ describe("tenant isolation", () => {
     expect(response.status).toBe(403);
   });
 
+  it("allows Members to record catalog usage without changing protected fields", async () => {
+    const owner = await seedIdentity("Catalog Usage Authority");
+    const member = await seedMemberInTenant(owner, "Catalog Usage Member");
+    const catalogID = crypto.randomUUID();
+    const catalogRecord = {
+      id: catalogID,
+      itemName: "Window Cleaning",
+      itemDescription: "Routine service",
+      defaultQuantity: 1,
+      defaultPrice: 100,
+      estimatedMinutesPerUnit: 60,
+      itemType: "Service",
+      taxTreatment: "Non-Taxable",
+      usageCount: 0,
+      lastUsedDate: null,
+      lifecycleStatus: "Active",
+    };
+    const operation = (
+      record: typeof catalogRecord,
+      baseRevision: string | null,
+    ) => ({
+      id: crypto.randomUUID(),
+      idempotencyKey: `catalog-usage-${crypto.randomUUID()}`,
+      type: "recordMutation",
+      entityType: "catalog",
+      entityID: catalogID,
+      actionName: "upsertRecord",
+      baseRevision,
+      payload: {
+        schemaVersion: 1,
+        contentType: "application/json",
+        body: Buffer.from(JSON.stringify({
+          recordData: Buffer.from(JSON.stringify(record)).toString("base64"),
+        })).toString("base64"),
+      },
+      createdAt: new Date().toISOString(),
+    });
+
+    const created = await worker.fetch(request(owner, "/v1/operations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(operation(catalogRecord, null)),
+    }), env);
+    expect(created.status).toBe(201);
+    const createdBody = await created.json<{ revision: string }>();
+
+    const usedAt = new Date().toISOString();
+    const usageUpdate = {
+      ...catalogRecord,
+      usageCount: 1,
+      lastUsedDate: usedAt,
+    };
+    const accepted = await worker.fetch(request(member, "/v1/operations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(operation(usageUpdate, createdBody.revision)),
+    }), env);
+    expect(accepted.status).toBe(201);
+    const acceptedBody = await accepted.json<{ revision: string }>();
+
+    const priceChange = { ...usageUpdate, defaultPrice: 1 };
+    const forbidden = await worker.fetch(request(member, "/v1/operations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(operation(priceChange, acceptedBody.revision)),
+    }), env);
+    expect(forbidden.status).toBe(403);
+  });
+
+  it("restricts recurring-work templates to Managers and Owners", async () => {
+    const owner = await seedIdentity("Recurring Work Authority");
+    const member = await seedMemberInTenant(owner, "Recurring Work Member");
+    const templateID = crypto.randomUUID();
+    const mutation = (identity: SeededIdentity) => request(
+      identity,
+      "/v1/operations",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: crypto.randomUUID(),
+          idempotencyKey: `recurring-work-${crypto.randomUUID()}`,
+          type: "recordMutation",
+          entityType: "recurringWork",
+          entityID: templateID,
+          actionName: "upsertRecord",
+          createdAt: new Date().toISOString(),
+        }),
+      },
+    );
+
+    const memberResponse = await worker.fetch(mutation(member), env);
+    expect(memberResponse.status).toBe(403);
+
+    const ownerResponse = await worker.fetch(mutation(owner), env);
+    expect(ownerResponse.status).toBe(201);
+    const stored = await env.DB.prepare(
+      `SELECT entity_id AS entityID FROM synchronized_records
+        WHERE tenant_id = ?1 AND entity_type = 'recurringWork'`,
+    ).bind(owner.tenantID).first<{ entityID: string }>();
+    expect(stored?.entityID).toBe(templateID.toLowerCase());
+  });
+
   it("prevents Members from promoting their own employee record", async () => {
     const owner = await seedIdentity("Employee Role Authority");
     const member = await seedMemberInTenant(owner, "Field Employee");

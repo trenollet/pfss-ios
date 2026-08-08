@@ -91,14 +91,19 @@ struct ServiceCatalogDetailView: View {
                         store.archiveServiceCatalogItem(item)
                         dismiss()
                     } label: {
-                        Label("Archive Catalog Item", systemImage: "archivebox.fill")
+                        CenteredArchiveActionLabel(title: "Archive Catalog Item")
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(.red)
                 }
             }
         }
         .navigationTitle("Edit Catalog Item")
         .toolbar {
+            EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                isInputFocused = false
+            }
+
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
                     isInputFocused = false
@@ -107,16 +112,6 @@ struct ServiceCatalogDetailView: View {
                 }
             }
 
-            if isInputFocused {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        isInputFocused = false
-                    } label: {
-                        Image(systemName: "keyboard.chevron.compact.down")
-                    }
-                    .accessibilityLabel("Dismiss Keyboard")
-                }
-            }
         }
     }
 }

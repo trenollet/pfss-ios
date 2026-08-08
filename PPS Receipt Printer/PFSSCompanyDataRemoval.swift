@@ -145,6 +145,7 @@ final class PFSSCompanyDataRemovalCoordinator {
         try backupService.removeAllBackups()
         PFSSOwnerRecoverySecurity.revokeLocalAccess()
         defaults.removeObject(forKey: synchronizationCursorKey)
+        PFSSCloudSynchronizationStateKeys.clearAll(defaults: defaults)
         defaults.removeObject(forKey: synchronizedRecordRevisionsKey)
         if postRemovalNotice {
             NotificationCenter.default.post(

@@ -25,6 +25,7 @@ struct JobDetailView: View {
     private var selectedTechnicianIDString = ""
     
     @State var job: JobRecord
+    @State private var originalJob: JobRecord
     @FocusState private var isInputFocused: Bool
     @State private var activeSheet: ActiveSheet?
     @State private var scheduledDurationHours = 0
@@ -33,6 +34,7 @@ struct JobDetailView: View {
     @State private var presentedInvoice: InvoiceRecord?
     @State private var showingRecurrencePicker = false
     @State private var timelineCorrectionEvent: JobTimelineEvent?
+    @State private var showingUnsavedChangesAlert = false
 
     private let scheduleSectionID = "job-schedule-section"
 
@@ -42,6 +44,7 @@ struct JobDetailView: View {
         onSave: (() -> Void)? = nil
     ) {
         _job = State(initialValue: job)
+        _originalJob = State(initialValue: job)
         self.scrollToScheduleOnAppear = scrollToScheduleOnAppear
         self.onSave = onSave
     }
@@ -232,7 +235,7 @@ struct JobDetailView: View {
                 Button {
                     addTechnicianNote()
                 } label: {
-                    Label("Add Note", systemImage: "plus.bubble.fill")
+                    Label("Save Note", systemImage: "checkmark.bubble.fill")
                 }
                 .disabled(
                     technicianNoteDraft
@@ -242,37 +245,51 @@ struct JobDetailView: View {
             }
 
             Section("Technicians") {
-                Picker(
-                    "Primary Technician",
-                    selection: $job.primaryTechnicianID
-                ) {
-                    Text("Unassigned")
-                        .tag(UUID?.none)
+                if store.canManageCompany {
+                    Picker(
+                        "Primary Technician",
+                        selection: $job.primaryTechnicianID
+                    ) {
+                        Text("Unassigned")
+                            .tag(UUID?.none)
 
-                    ForEach(assignableEmployees) { employee in
-                        Text(employee.displayName)
-                            .tag(UUID?.some(employee.id))
+                        ForEach(assignableEmployees) { employee in
+                            Text(employee.displayName)
+                                .tag(UUID?.some(employee.id))
+                        }
                     }
-                }
-                .onChange(of: job.primaryTechnicianID) { _, newPrimaryID in
-                    if job.secondaryTechnicianID == newPrimaryID {
-                        job.secondaryTechnicianID = nil
+                    .onChange(of: job.primaryTechnicianID) { _, newPrimaryID in
+                        if job.secondaryTechnicianID == newPrimaryID {
+                            job.secondaryTechnicianID = nil
+                        }
                     }
-                }
 
-                Picker(
-                    "Secondary Technician",
-                    selection: $job.secondaryTechnicianID
-                ) {
-                    Text("None")
-                        .tag(UUID?.none)
+                    Picker(
+                        "Secondary Technician",
+                        selection: $job.secondaryTechnicianID
+                    ) {
+                        Text("None")
+                            .tag(UUID?.none)
 
-                    ForEach(availableSecondaryEmployees) { employee in
-                        Text(employee.displayName)
-                            .tag(UUID?.some(employee.id))
+                        ForEach(availableSecondaryEmployees) { employee in
+                            Text(employee.displayName)
+                                .tag(UUID?.some(employee.id))
+                        }
                     }
+                    .disabled(job.primaryTechnicianID == nil)
+                } else {
+                    LabeledContent(
+                        "Primary Technician",
+                        value: primaryEmployee?.displayName ?? "Unassigned"
+                    )
+                    LabeledContent(
+                        "Secondary Technician",
+                        value: secondaryEmployee?.displayName ?? "None"
+                    )
+                    Text("Only a Manager or Owner can change job assignments.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .disabled(job.primaryTechnicianID == nil)
             }
 
             Section("Field Workflow") {
@@ -482,6 +499,28 @@ struct JobDetailView: View {
                         value: job.recurrenceFrequency?.rawValue ?? "Select"
                     )
                 }
+
+                if let templateID = job.recurringWorkTemplateID {
+                    NavigationLink {
+                        RecurringWorkManagementView(
+                            templateID: templateID,
+                            onSeriesUpdated: {
+                                refreshJobFromRecurringSeries(
+                                    templateID: templateID
+                                )
+                            }
+                        )
+                            .environmentObject(store)
+                    } label: {
+                        Label("Manage Recurring Work", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                    }
+
+                    if job.recurrenceSequence > 0 {
+                        Text("Changes on this page apply only to this occurrence. Use Manage Recurring Work to edit the complete series.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             
             if job.completedDate != nil {
@@ -510,9 +549,10 @@ struct JobDetailView: View {
                         store.archiveJob(job)
                         dismiss()
                     } label: {
-                        Label("Archive Job", systemImage: "archivebox.fill")
+                        CenteredArchiveActionLabel(title: "Archive Job")
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(.red)
                 }
             }
         }
@@ -555,7 +595,20 @@ struct JobDetailView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .navigationTitle("Edit Job")
+        .navigationBarBackButtonHidden(true)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    requestDismissal()
+                } label: {
+                    Label("Back", systemImage: "chevron.left")
+                }
+            }
+
+            EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                isInputFocused = false
+            }
+
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
                     saveJobChanges(shouldDismiss: true)
@@ -563,16 +616,13 @@ struct JobDetailView: View {
                 .disabled(job.isRecurring && job.recurrenceFrequency == nil)
             }
 
-            if isInputFocused {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        isInputFocused = false
-                    } label: {
-                        Image(systemName: "keyboard.chevron.compact.down")
-                    }
-                    .accessibilityLabel("Dismiss Keyboard")
-                }
-            }
+        }
+        .alert("Unsaved Changes", isPresented: $showingUnsavedChangesAlert) {
+            Button("Save Changes") { saveJobChanges(shouldDismiss: true) }
+            Button("Discard Changes", role: .destructive) { dismiss() }
+            Button("Continue Editing", role: .cancel) { }
+        } message: {
+            Text("This job has changes that have not been saved.")
         }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
@@ -604,7 +654,12 @@ struct JobDetailView: View {
             }
         }
         .sheet(isPresented: $showingRecurrencePicker) {
-            JobRecurrencePickerView(selection: $job.recurrenceFrequency)
+            JobRecurrencePickerView(
+                selection: $job.recurrenceFrequency,
+                endMode: $job.recurrenceEndMode,
+                endDate: $job.recurrenceEndDate,
+                occurrenceCount: $job.recurrenceOccurrenceCount
+            )
         }
         .sheet(item: $timelineCorrectionEvent) { event in
             if let actor = timelineCorrectionActor {
@@ -843,6 +898,11 @@ struct JobDetailView: View {
     private func saveJobChanges(shouldDismiss: Bool) {
         isInputFocused = false
 
+        if !store.canManageCompany {
+            job.primaryTechnicianID = storedJob.primaryTechnicianID
+            job.secondaryTechnicianID = storedJob.secondaryTechnicianID
+        }
+
         switch job.assignmentSchedulingMode {
         case .fixedTime:
             job.scheduledDate = QuarterHourDatePicker.normalized(
@@ -890,6 +950,14 @@ struct JobDetailView: View {
         job.subtotal = PricingCalculator.subtotal(for: job)
         job.total = PricingCalculator.total(for: job)
         store.updateJob(job)
+
+        let pendingNote = technicianNoteDraft
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !pendingNote.isEmpty {
+            saveTechnicianNote(pendingNote)
+        }
+
+        originalJob = job
         onSave?()
 
         if shouldDismiss {
@@ -905,6 +973,43 @@ struct JobDetailView: View {
         }
 
         job = refreshed
+        originalJob = refreshed
+    }
+
+    private func refreshJobFromRecurringSeries(templateID: UUID) {
+        if let refreshed = store.jobs.first(where: {
+            $0.recurringWorkTemplateID == templateID &&
+            $0.recurrenceSequence == job.recurrenceSequence
+        }) {
+            job = refreshed
+            originalJob = refreshed
+            return
+        }
+
+        // The edited occurrence may fall outside the rebuilt schedule. Keep
+        // the visible recurrence status aligned until the user leaves this
+        // obsolete detail screen; saving cannot restore a Job removed by the
+        // authoritative series rebuild.
+        guard let template = store.recurringWorkTemplates.first(where: {
+            $0.id == templateID
+        }) else { return }
+
+        job.recurrenceFrequency = template.rule.jobRecurrenceFrequency
+        switch template.endCondition {
+        case .noEnd:
+            job.recurrenceEndMode = .noEnd
+            job.recurrenceEndDate = nil
+            job.recurrenceOccurrenceCount = nil
+        case let .endDate(date):
+            job.recurrenceEndMode = .endDate
+            job.recurrenceEndDate = date
+            job.recurrenceOccurrenceCount = nil
+        case let .occurrenceCount(count):
+            job.recurrenceEndMode = .occurrenceCount
+            job.recurrenceEndDate = nil
+            job.recurrenceOccurrenceCount = count
+        }
+        originalJob = job
     }
 
     private func performPrimaryWorkflowAction() {
@@ -958,20 +1063,43 @@ struct JobDetailView: View {
             return
         }
 
-        let authorID = selectedTechnicianID
-            ?? job.primaryTechnicianID
+        saveTechnicianNote(trimmedNote)
+    }
 
+    private var hasUnsavedChanges: Bool {
+        encodedJob(job) != encodedJob(originalJob) ||
+        !technicianNoteDraft
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
+    }
+
+    private func requestDismissal() {
+        isInputFocused = false
+        if hasUnsavedChanges {
+            showingUnsavedChangesAlert = true
+        } else {
+            dismiss()
+        }
+    }
+
+    private func saveTechnicianNote(_ text: String) {
+        let authorID = selectedTechnicianID ?? job.primaryTechnicianID
         guard let event = store.addTechnicianNote(
             jobID: job.id,
-            text: trimmedNote,
+            text: text,
             employeeID: authorID
-        ) else {
-            return
-        }
+        ) else { return }
 
         job.timelineEvents.append(event)
+        originalJob.timelineEvents.append(event)
         technicianNoteDraft = ""
         isInputFocused = false
+    }
+
+    private func encodedJob(_ job: JobRecord) -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(job)
     }
 
     private func closestQuarterHour(

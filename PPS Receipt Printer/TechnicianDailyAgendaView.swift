@@ -149,6 +149,24 @@ struct TechnicianDailyAgendaView: View {
                 dailySummaryCard
 
                 NavigationLink {
+                    TechnicianCalendarView(
+                        initialEmployeeID: currentEmployee.id
+                    )
+                    .environmentObject(store)
+                } label: {
+                    DashboardStatCard(
+                        title: "Calendar View",
+                        value: "",
+                        icon: "calendar",
+                        subtitle: "1, 3, or 5-day job schedule",
+                        accentColor: .orange,
+                        trend: .neutral,
+                        navigationIndicator: true
+                    )
+                }
+                .buttonStyle(.plain)
+
+                NavigationLink {
                     OfflineSyncDetailsView(
                         queue: store.offlineOperationQueue,
                         connectivity: store.offlineConnectivityMonitor,
@@ -1465,7 +1483,8 @@ struct TechnicianDailyAgendaView: View {
             }
             let plan = store.dailyPlan(
                 for: currentEmployee,
-                on: selectedDate
+                on: selectedDate,
+                includingJobIDs: Set(activeJobs.map(\.id))
             )
             let routePlan = await store.routePlan(
                 from: plan,
@@ -1525,7 +1544,7 @@ struct TechnicianDailyAgendaView: View {
                     if routePlan.hasBlockingConflicts {
                         routeOptimizationErrorMessage = routePlan.conflicts
                             .filter { $0.severity == .error }
-                            .map(\.message)
+                            .map(routeConflictMessage)
                             .joined(separator: "\n")
                         showingRouteOptimizationError = true
                     }
@@ -1536,6 +1555,28 @@ struct TechnicianDailyAgendaView: View {
                 isOptimizingRoute = false
             }
         }
+    }
+
+    private func routeConflictMessage(
+        _ conflict: RoutePlanningConflict
+    ) -> String {
+        guard let assignmentID = conflict.assignmentID,
+              let assignment = store.assignmentStore.assignment(id: assignmentID),
+              let job = store.jobs.first(where: {
+                  $0.id == assignment.jobID
+              }) else {
+            return conflict.message
+        }
+
+        let customerName = customerDisplayName(for: job.customerNumber)
+        let reference = "\(customerName) (\(assignment.assignmentNumber))"
+        if conflict.message.contains(assignment.assignmentNumber) {
+            return conflict.message.replacingOccurrences(
+                of: assignment.assignmentNumber,
+                with: reference
+            )
+        }
+        return "\(customerName) (\(assignment.assignmentNumber)): \(conflict.message)"
     }
 
     private func routeStopNumber(

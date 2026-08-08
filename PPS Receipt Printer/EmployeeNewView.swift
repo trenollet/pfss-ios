@@ -249,6 +249,10 @@ struct EmployeeNewView: View {
                     }
                 }
 
+                EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                    isInputFocused = false
+                }
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         saveEmployee()
@@ -260,12 +264,6 @@ struct EmployeeNewView: View {
                     )
                 }
 
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") {
-                        isInputFocused = false
-                    }
-                }
             }
             .alert(
                 "Unsaved Employee",

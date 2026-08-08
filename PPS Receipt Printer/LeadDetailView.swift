@@ -12,7 +12,33 @@ struct LeadDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State var lead: Lead
+    @State private var originalLead: Lead
+    @State private var convertedCustomer: Customer?
+    @State private var showingUnsavedChangesAlert = false
     @FocusState private var isInputFocused: Bool
+
+    init(lead: Lead) {
+        var normalizedLead = lead
+        if normalizedLead.quoteOptions?.isEmpty != false {
+            normalizedLead.quoteOptions = [
+                LeadQuoteOption(
+                    quotedPrice: normalizedLead.estimatedValue,
+                    frequency: .oneTime
+                )
+            ]
+        }
+        _lead = State(initialValue: normalizedLead)
+        _originalLead = State(initialValue: normalizedLead)
+    }
+
+    private var salesEmployees: [EmployeeRecord] {
+        store.activeEmployees
+            .filter { $0.hasRole(.salesperson) }
+            .sorted {
+                $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
+                    == .orderedAscending
+            }
+    }
 
     private var notesBinding: Binding<String> {
         Binding(
@@ -39,6 +65,14 @@ struct LeadDetailView: View {
                 ))
                 .focused($isInputFocused)
 
+                MapAssistedAddressButton(
+                    address: Binding(
+                        get: { lead.location ?? "" },
+                        set: { lead.location = $0 }
+                    ),
+                    label: "Select Location on Map"
+                )
+
                 TextField("Phone", text: $lead.phone)
                     .keyboardType(.phonePad)
                     .focused($isInputFocused)
@@ -50,8 +84,17 @@ struct LeadDetailView: View {
             }
 
             Section("Sales Info") {
-                TextField("Assigned Salesperson", text: $lead.assignedSalesperson)
-                    .focused($isInputFocused)
+                HStack {
+                    Text("Assigned Salesperson")
+                    Spacer()
+                    Picker("Assigned Salesperson", selection: $lead.assignedSalesperson) {
+                        Text("Unassigned").tag("")
+                        ForEach(salesEmployees) { employee in
+                            Text(employee.displayName).tag(employee.displayName)
+                        }
+                    }
+                    .labelsHidden()
+                }
 
                 Picker("Status", selection: $lead.status) {
                     ForEach(LeadStatus.allCases) { status in
@@ -67,10 +110,15 @@ struct LeadDetailView: View {
                     }
                 }
 
-                Picker("Service Requested", selection: $lead.serviceRequested) {
-                    ForEach(ServiceType.allCases) { service in
-                        Text(service.rawValue).tag(service)
+                HStack {
+                    Text("Service Requested")
+                    Spacer()
+                    Picker("Service Requested", selection: $lead.serviceRequested) {
+                        ForEach(ServiceType.allCases) { service in
+                            Text(service.rawValue).tag(service)
+                        }
                     }
+                    .labelsHidden()
                 }
 
                 if lead.serviceRequested == .other {
@@ -97,10 +145,19 @@ struct LeadDetailView: View {
             }
 
             Section {
-                Button("Convert to Customer") {
-                    store.convertLeadToCustomer(lead)
-                    dismiss()
+                Button {
+                    convertedCustomer = store.convertLeadToCustomer(lead)
+                    if convertedCustomer != nil {
+                        lead.status = .converted
+                        originalLead = lead
+                    }
+                } label: {
+                    Text("Convert to Customer")
+                        .fontWeight(.semibold)
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
                 .disabled(lead.status == .converted || lead.lifecycleStatus == .archived)
 
                 if lead.lifecycleStatus == .archived {
@@ -109,6 +166,8 @@ struct LeadDetailView: View {
                         dismiss()
                     } label: {
                         Label("Restore Lead", systemImage: "arrow.uturn.backward.circle.fill")
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                 } else {
@@ -116,42 +175,74 @@ struct LeadDetailView: View {
                         store.archiveLead(lead)
                         dismiss()
                     } label: {
-                        Label("Archive Lead", systemImage: "archivebox.fill")
+                        CenteredArchiveActionLabel(title: "Archive Lead")
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(.red)
                 }
             }
         }
         .navigationTitle("Edit Lead")
-        .onAppear {
-            if lead.quoteOptions?.isEmpty != false {
-                lead.quoteOptions = [
-                    LeadQuoteOption(
-                        quotedPrice: lead.estimatedValue,
-                        frequency: .oneTime
-                    )
-                ]
+        .sheet(item: $convertedCustomer) { customer in
+            NavigationStack {
+                CustomerDetailView(customer: customer)
             }
+            .environmentObject(store)
         }
+        .navigationBarBackButtonHidden(true)
         .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Save") {
-                    isInputFocused = false
-                    store.updateLead(lead)
-                    dismiss()
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    requestDismissal()
+                } label: {
+                    Label("Back", systemImage: "chevron.left")
                 }
             }
 
-            if isInputFocused {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        isInputFocused = false
-                    } label: {
-                        Image(systemName: "keyboard.chevron.compact.down")
-                    }
-                    .accessibilityLabel("Dismiss Keyboard")
-                }
+            EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                isInputFocused = false
             }
+
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    saveChanges()
+                }
+                .disabled(!hasUnsavedChanges)
+            }
+
         }
+        .alert("Unsaved Changes", isPresented: $showingUnsavedChangesAlert) {
+            Button("Save Changes") { saveChanges() }
+            Button("Discard Changes", role: .destructive) { dismiss() }
+            Button("Continue Editing", role: .cancel) { }
+        } message: {
+            Text("This lead has changes that have not been saved.")
+        }
+    }
+
+    private var hasUnsavedChanges: Bool {
+        encodedLead(lead) != encodedLead(originalLead)
+    }
+
+    private func saveChanges() {
+        isInputFocused = false
+        store.updateLead(lead)
+        originalLead = lead
+        dismiss()
+    }
+
+    private func requestDismissal() {
+        isInputFocused = false
+        if hasUnsavedChanges {
+            showingUnsavedChangesAlert = true
+        } else {
+            dismiss()
+        }
+    }
+
+    private func encodedLead(_ lead: Lead) -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(lead)
     }
 }

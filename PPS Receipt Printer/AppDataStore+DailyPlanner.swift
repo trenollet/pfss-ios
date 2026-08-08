@@ -15,7 +15,8 @@ extension AppDataStore {
         for technician: EmployeeRecord,
         on date: Date,
         calendar: Calendar = .current,
-        transitionTravelMinutesOverride: Int? = nil
+        transitionTravelMinutesOverride: Int? = nil,
+        includingJobIDs: Set<UUID>? = nil
     ) -> DailyPlan {
         let planner = DailyPlannerEngine(
             configuration: DailyPlannerConfiguration(
@@ -25,10 +26,15 @@ extension AppDataStore {
             calendar: calendar
         )
 
+        let assignments = assignmentEngine.assignments.filter { assignment in
+            guard let includingJobIDs else { return true }
+            return includingJobIDs.contains(assignment.jobID)
+        }
+
         return planner.plan(
             for: technician,
             on: date,
-            assignments: assignmentEngine.assignments
+            assignments: assignments
         )
     }
 

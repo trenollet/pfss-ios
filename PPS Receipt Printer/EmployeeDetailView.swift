@@ -188,9 +188,10 @@ struct EmployeeDetailView: View {
                         Button(role: .destructive) {
                             showingArchiveConfirmation = true
                         } label: {
-                            Label("Archive Employee", systemImage: "archivebox.fill")
+                            CenteredArchiveActionLabel(title: "Archive Employee")
                         }
                         .buttonStyle(.borderedProminent)
+                        .tint(.red)
                         .disabled(isArchivingEmployee)
                     }
                 }
@@ -211,6 +212,10 @@ struct EmployeeDetailView: View {
                 }
             }
 
+            EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                isInputFocused = false
+            }
+
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
                     saveChanges()
@@ -218,16 +223,10 @@ struct EmployeeDetailView: View {
                 .disabled(
                     employee.firstName
                         .trimmingCharacters(in: .whitespacesAndNewlines)
-                        .isEmpty
+                        .isEmpty || !hasUnsavedChanges
                 )
             }
 
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") {
-                    isInputFocused = false
-                }
-            }
         }
         .alert(
             "Unsaved Changes",

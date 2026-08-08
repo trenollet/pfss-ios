@@ -63,6 +63,10 @@ struct SiteNewView: View {
                     .focused($isInputFocused)
                 TextField("Service Address", text: $serviceAddress)
                     .focused($isInputFocused)
+                MapAssistedAddressButton(
+                    address: $serviceAddress,
+                    label: "Select Service Address on Map"
+                )
 
                 Picker("Property Type", selection: $selectedPropertyType) {
                     Text("Select Property Type").tag("")
@@ -70,6 +74,7 @@ struct SiteNewView: View {
                         Text(propertyType).tag(propertyType)
                     }
                 }
+                .pickerStyle(.navigationLink)
 
                 if selectedPropertyType == Self.newPropertyTypeOption {
                     TextField("New Property Type", text: $newPropertyType)
@@ -91,15 +96,12 @@ struct SiteNewView: View {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { cancel() }
             }
+            EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                dismissKeyboard()
+            }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") { saveSite() }
                     .disabled(!canSave)
-            }
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") {
-                    isInputFocused = false
-                }
             }
         }
         .alert(
@@ -169,7 +171,7 @@ struct SiteNewView: View {
     }
 
     private func saveSite() {
-        isInputFocused = false
+        dismissKeyboard()
 
         let site = CustomerSite(
             customerNumber: selectedCustomerNumber,
@@ -190,7 +192,7 @@ struct SiteNewView: View {
     }
 
     private func cancel() {
-        isInputFocused = false
+        dismissKeyboard()
         if hasUnsavedChanges {
             showingUnsavedChangesAlert = true
         } else {
@@ -204,6 +206,18 @@ struct SiteNewView: View {
         } else {
             dismiss()
         }
+    }
+
+    private func dismissKeyboard() {
+        isInputFocused = false
+#if canImport(UIKit)
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+#endif
     }
 
     private func customerDisplayName(_ customer: Customer) -> String {

@@ -4,21 +4,24 @@ struct JobRecordsListView: View {
     @EnvironmentObject private var store: AppDataStore
     let statuses: Set<JobStatus>?
     let title: String
+    let customerNumber: String?
     @State private var showArchived = false
     @State private var showingNewJob = false
     @State private var searchText: String
     @State private var showingFilters = false
     @State private var selectedStatus: JobStatus?
     @State private var dateFilter: RecordDateFilter = .all
-    @State private var sortOrder: RecordListSortOrder = .dateDescending
+    @State private var sortOrder: RecordListSortOrder = .dateAscending
 
     init(
         statuses: Set<JobStatus>? = nil,
         title: String = "All Jobs",
-        initialSearchText: String = ""
+        initialSearchText: String = "",
+        customerNumber: String? = nil
     ) {
         self.statuses = statuses
         self.title = title
+        self.customerNumber = customerNumber
         _searchText = State(initialValue: initialSearchText)
     }
 
@@ -27,8 +30,11 @@ struct JobRecordsListView: View {
         let source = statuses.map { accepted in
             lifecycleSource.filter { accepted.contains($0.status) }
         } ?? lifecycleSource
+        let customerScoped = customerNumber.map { number in
+            source.filter { $0.customerNumber == number }
+        } ?? source
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let searched = query.isEmpty ? source : source.filter { job in
+        let searched = query.isEmpty ? customerScoped : customerScoped.filter { job in
             job.jobNumber.localizedCaseInsensitiveContains(query) ||
             job.customerNumber.localizedCaseInsensitiveContains(query) ||
             customerDisplayName(for: job.customerNumber).localizedCaseInsensitiveContains(query) ||
@@ -134,7 +140,7 @@ struct JobRecordsListView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Reset") { selectedStatus = nil; dateFilter = .all; sortOrder = .dateDescending }
+                        Button("Reset") { selectedStatus = nil; dateFilter = .all; sortOrder = .dateAscending }
                     }
                     ToolbarItem(placement: .confirmationAction) { Button("Done") { showingFilters = false } }
                 }
@@ -148,7 +154,7 @@ struct JobRecordsListView: View {
     }
 
     private var hasActiveFilters: Bool {
-        selectedStatus != nil || dateFilter != .all || sortOrder != .dateDescending
+        selectedStatus != nil || dateFilter != .all || sortOrder != .dateAscending
     }
 
     private var listDateColor: Color {
@@ -156,30 +162,38 @@ struct JobRecordsListView: View {
     }
 
     private func jobListStatusTitle(for job: JobRecord) -> String {
-        job.primaryTechnicianID == nil && job.status != .completed && job.status != .cancelled
-            ? "Unassigned" : job.status.rawValue
+        if job.primaryTechnicianID == nil &&
+            job.status != .completed &&
+            job.status != .cancelled {
+            return "Unassigned"
+        }
+        return workflowPresentation(for: job).statusTitle
     }
 
     private func jobListStatusColor(for job: JobRecord) -> Color {
         if job.primaryTechnicianID == nil && job.status != .completed && job.status != .cancelled { return .red }
-        switch job.status {
-        case .completed: return .green
-        case .scheduled, .assigned: return .blue
-        case .inProgress: return .orange
-        case .toBeScheduled: return .red
-        case .cancelled: return .secondary
+        switch workflowPresentation(for: job).accent {
+        case .green: return .green
+        case .blue: return .blue
+        case .orange: return .orange
+        case .purple: return .purple
+        case .red: return .red
+        case .secondary: return .secondary
         }
     }
 
     private func jobListStatusSymbol(for job: JobRecord) -> String {
         if job.primaryTechnicianID == nil && job.status != .completed && job.status != .cancelled { return "person.crop.circle.badge.exclamationmark" }
-        switch job.status {
-        case .completed: return "checkmark.circle.fill"
-        case .scheduled, .assigned: return "calendar.circle.fill"
-        case .inProgress: return "wrench.and.screwdriver.fill"
-        case .toBeScheduled: return "exclamationmark.circle.fill"
-        case .cancelled: return "xmark.circle.fill"
-        }
+        return workflowPresentation(for: job).statusSystemImage
+    }
+
+    private func workflowPresentation(
+        for job: JobRecord
+    ) -> JobWorkflowPresentation {
+        FieldOperationsEngine().context(
+            for: job,
+            invoice: store.invoice(for: job)
+        ).presentation
     }
 
     private func serviceName(for job: JobRecord) -> String {

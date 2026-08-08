@@ -426,6 +426,7 @@ extension OfflineEntityType {
         case .estimate: return "Estimate"
         case .employee: return "Employee"
         case .catalog: return "Catalog Item"
+        case .recurringWork: return "Recurring Work"
         case .custom: return "Company Record"
         }
     }

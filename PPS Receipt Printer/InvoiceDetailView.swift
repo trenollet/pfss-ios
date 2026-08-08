@@ -14,12 +14,20 @@ struct InvoiceDetailView: View {
     @EnvironmentObject var printer: BluetoothPrinter
 
     @State var invoice: InvoiceRecord
+    @State private var originalInvoice: InvoiceRecord
     var showsDismissButton = false
     @State private var sharedPDFURL: URL?
     @State private var pdfErrorMessage: String?
     @State private var isShowingPDFError = false
     @State private var isShowingReceiptPrinter = false
+    @State private var showingUnsavedChangesAlert = false
     @FocusState private var isInputFocused: Bool
+
+    init(invoice: InvoiceRecord, showsDismissButton: Bool = false) {
+        _invoice = State(initialValue: invoice)
+        _originalInvoice = State(initialValue: invoice)
+        self.showsDismissButton = showsDismissButton
+    }
 
     private var customerDisplayName: String {
         guard let customer = store.customers.first(where: {
@@ -237,42 +245,39 @@ struct InvoiceDetailView: View {
                         store.archiveInvoice(invoice)
                         dismiss()
                     } label: {
-                        Label("Archive Invoice", systemImage: "archivebox.fill")
+                        CenteredArchiveActionLabel(title: "Archive Invoice")
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(.red)
                 }
             }
         }
         .navigationTitle("Invoice")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
         .toolbar {
-            if showsDismissButton {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        isInputFocused = false
-                        dismiss()
-                    } label: {
-                        Label("Close", systemImage: "xmark")
-                    }
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    requestDismissal()
+                } label: {
+                    Label(
+                        showsDismissButton ? "Close" : "Back",
+                        systemImage: showsDismissButton ? "xmark" : "chevron.left"
+                    )
                 }
+            }
+
+            EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                isInputFocused = false
             }
 
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
                     saveInvoice()
                 }
+                .disabled(!hasUnsavedChanges)
             }
 
-            if isInputFocused {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        isInputFocused = false
-                    } label: {
-                        Image(systemName: "keyboard.chevron.compact.down")
-                    }
-                    .accessibilityLabel("Dismiss Keyboard")
-                }
-            }
         }
         .sheet(
             isPresented: Binding(
@@ -307,6 +312,17 @@ struct InvoiceDetailView: View {
                 "The invoice PDF could not be created."
             )
         }
+        .alert("Unsaved Changes", isPresented: $showingUnsavedChangesAlert) {
+            Button("Save Changes") { saveInvoice() }
+            Button("Discard Changes", role: .destructive) { dismiss() }
+            Button("Continue Editing", role: .cancel) { }
+        } message: {
+            Text("This invoice has changes that have not been saved.")
+        }
+    }
+
+    private var hasUnsavedChanges: Bool {
+        encodedInvoice(invoice) != encodedInvoice(originalInvoice)
     }
 
     private func saveInvoice() {
@@ -331,7 +347,23 @@ struct InvoiceDetailView: View {
         )
 
         store.updateInvoice(invoice)
+        originalInvoice = invoice
         dismiss()
+    }
+
+    private func requestDismissal() {
+        isInputFocused = false
+        if hasUnsavedChanges {
+            showingUnsavedChangesAlert = true
+        } else {
+            dismiss()
+        }
+    }
+
+    private func encodedInvoice(_ invoice: InvoiceRecord) -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(invoice)
     }
     private func createAndSharePDF() {
         isInputFocused = false

@@ -1,9 +1,9 @@
 # PFSS Scheduling Engine Architecture
 
-- Status: Proposed for Brick 11
+- Status: Implemented foundation; expanding in Phase 18
 - Owner: PFSS Project
 - Applies To: v0.9.8+
-- Last Updated: 2026-07-18
+- Last Updated: 2026-08-07
 
 ## Responsibility
 
@@ -21,7 +21,7 @@ Jobs + Employees + Availability
 
 Views provide inputs and display results. The engine returns values and explanations without mutating application state.
 
-## Proposed Types
+## Core Types
 
 ### SchedulingInterval
 
@@ -47,7 +47,7 @@ Contains validity, normalized interval, conflicts, warnings, and calculated capa
 
 Represents a non-mutating suggested opening with start, end, technician IDs, and any explanatory score or reason.
 
-## Initial Engine API Direction
+## Engine API Direction
 
 The exact Swift signatures may evolve during implementation, but responsibilities should remain equivalent:
 
@@ -105,9 +105,17 @@ Unit tests should cover:
 - Candidate generation across occupied intervals
 - Daylight-saving and calendar-boundary behavior where applicable
 
+## Phase 18 Consumers
+
+- Role-aware 1, 3, and 5-day Operations calendar
+- Recurring Work occurrence scheduling and conflict reporting
+
+These consumers must normalize their inputs into Scheduling Engine values and
+must use its conflict results. They may not implement independent overlap,
+availability, or capacity rules.
+
 ## Future Extensions
 
-- Recurring schedule templates and generated occurrences
 - Travel-time buffers
 - Route-aware candidate scoring
 - Technician skill and equipment constraints
@@ -121,3 +129,5 @@ Unit tests should cover:
 - `../Decisions/ADR-002-Scheduling-Source-of-Truth.md`
 - `../Standards/ProjectConstitution.md`
 - `AppArchitecture.md`
+- `OperationsCalendar.md`
+- `RecurringWorkEngine.md`

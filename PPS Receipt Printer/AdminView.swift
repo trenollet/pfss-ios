@@ -61,6 +61,15 @@ struct AdminView: View {
                                     .font(.headline)
                                 Text(employee.roleDisplayText)
                                     .foregroundStyle(.secondary)
+                                let email = employee.email.trimmingCharacters(
+                                    in: .whitespacesAndNewlines
+                                )
+                                if !email.isEmpty {
+                                    Text(email)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
                             }
                             .accessibilityElement(children: .combine)
                         } else {
@@ -73,7 +82,7 @@ struct AdminView: View {
                     }
                 }
 
-                if store.authenticatedCloudEmployee != nil {
+                if cloudManager.isEnrolled {
                     Section("Field Workflow") {
                         NavigationLink {
                             JobTimerReminderSettingsView()
@@ -297,11 +306,15 @@ struct AdminView: View {
 }
 
 private struct JobTimerReminderSettingsView: View {
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var store: AppDataStore
     @State private var arrivalToSetupMinutes = 5
     @State private var setupToWorkMinutes = 5
+    @State private var savedPreferences = JobTimerReminderPreferences()
     @State private var didLoad = false
-    @State private var isShowingSaved = false
+    @State private var isShowingUnsavedChanges = false
+    @State private var saveError = ""
+    @State private var isShowingSaveError = false
 
     private let choices = [0, 1, 3, 5, 10, 15, 20, 30]
 
@@ -326,31 +339,84 @@ private struct JobTimerReminderSettingsView: View {
                 )
             }
 
-            Section {
-                Button("Save Reminder Times") {
-                    let saved = store
-                        .updateAuthenticatedJobTimerReminderPreferences(
-                            JobTimerReminderPreferences(
-                                arrivalToSetupMinutes: arrivalToSetupMinutes,
-                                setupToWorkMinutes: setupToWorkMinutes
-                            )
-                        )
-                    isShowingSaved = saved
-                }
-            }
         }
         .navigationTitle("Job Timer Reminders")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .interactiveDismissDisabled(hasUnsavedChanges)
         .onAppear {
-            guard !didLoad,
-                  let preferences = store.authenticatedCloudEmployee?
-                    .jobTimerReminderPreferences else { return }
+            guard !didLoad else { return }
+            let preferences = store.authenticatedCloudEmployee?
+                .jobTimerReminderPreferences ?? JobTimerReminderPreferences()
             arrivalToSetupMinutes = preferences.arrivalToSetupMinutes
             setupToWorkMinutes = preferences.setupToWorkMinutes
+            savedPreferences = preferences
             didLoad = true
         }
-        .alert("Reminder Times Saved", isPresented: $isShowingSaved) {
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    requestDismissal()
+                } label: {
+                    Label("Back", systemImage: "chevron.left")
+                }
+            }
+
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    saveAndDismiss()
+                }
+                .disabled(!hasUnsavedChanges)
+            }
+        }
+        .alert("Unsaved Changes", isPresented: $isShowingUnsavedChanges) {
+            Button("Save Changes") {
+                saveAndDismiss()
+            }
+
+            Button("Discard Changes", role: .destructive) {
+                dismiss()
+            }
+
+            Button("Continue Editing", role: .cancel) { }
+        } message: {
+            Text("Your reminder times have changed and have not been saved.")
+        }
+        .alert("Unable to Save Reminder Times", isPresented: $isShowingSaveError) {
             Button("OK", role: .cancel) { }
+        } message: {
+            Text(saveError)
+        }
+    }
+
+    private var currentPreferences: JobTimerReminderPreferences {
+        JobTimerReminderPreferences(
+            arrivalToSetupMinutes: arrivalToSetupMinutes,
+            setupToWorkMinutes: setupToWorkMinutes
+        )
+    }
+
+    private var hasUnsavedChanges: Bool {
+        didLoad && currentPreferences != savedPreferences
+    }
+
+    private func saveAndDismiss() {
+        guard store.updateAuthenticatedJobTimerReminderPreferences(
+            currentPreferences
+        ) else {
+            saveError = "PFSS could not link this device to your employee profile. Refresh synchronization and try again."
+            isShowingSaveError = true
+            return
+        }
+        savedPreferences = currentPreferences
+        dismiss()
+    }
+
+    private func requestDismissal() {
+        if hasUnsavedChanges {
+            isShowingUnsavedChanges = true
+        } else {
+            dismiss()
         }
     }
 
@@ -800,22 +866,19 @@ private struct PFSSOwnerWorkProfileView: View {
                 )
             }
 
-            Section {
-                Button {
+        }
+        .navigationTitle("My Work Roles")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
                     save()
-                } label: {
-                    Label(
-                        isSaving ? "Saving Work Roles" : "Save Work Roles",
-                        systemImage: "checkmark.circle"
-                    )
                 }
                 .disabled(
                     isSaving || (!isSalesperson && !isTechnician)
                 )
             }
         }
-        .navigationTitle("My Work Roles")
-        .navigationBarTitleDisplayMode(.inline)
         .alert("Owner Work Profile", isPresented: $isShowingMessage) {
             Button("OK", role: .cancel) { }
         } message: {

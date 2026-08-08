@@ -1182,50 +1182,140 @@ final class PFSSCloudflareBetaManager: ObservableObject {
     }()
 }
 
+enum PFSSCloudSynchronizationStateKeys {
+    private static let legacyCursor = "PFSSCloudSynchronizationCursor"
+    private static let cursorPrefix = "PFSSCloudSynchronizationCursor."
+    private static let bootstrapPrefix =
+        "PFSSCloudSynchronizationBootstrap."
+
+    static func cursor(deviceID: String) -> String {
+        "\(cursorPrefix)\(normalized(deviceID))"
+    }
+
+    static func bootstrap(deviceID: String) -> String {
+        "\(bootstrapPrefix)\(normalized(deviceID))"
+    }
+
+    static func migrateLegacyCursorIfNeeded(
+        deviceID: String,
+        defaults: UserDefaults = .standard
+    ) {
+        let scopedKey = cursor(deviceID: deviceID)
+        guard defaults.object(forKey: scopedKey) == nil,
+              defaults.object(forKey: legacyCursor) != nil else { return }
+        defaults.set(defaults.integer(forKey: legacyCursor), forKey: scopedKey)
+        defaults.removeObject(forKey: legacyCursor)
+    }
+
+    static func clearAll(defaults: UserDefaults = .standard) {
+        for key in defaults.dictionaryRepresentation().keys where
+            key == legacyCursor ||
+            key.hasPrefix(cursorPrefix) ||
+            key.hasPrefix(bootstrapPrefix) {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    private static func normalized(_ deviceID: String) -> String {
+        deviceID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+}
+
 @MainActor
 private final class PFSSCloudSnapshotPublisher {
     private weak var store: AppDataStore?
     private let manager: PFSSCloudflareBetaManager
     private var scheduledTask: Task<Void, Never>?
     private var pollingTask: Task<Void, Never>?
-    private let cursorKey = "PFSSCloudSynchronizationCursor"
+    private let defaults: UserDefaults
+    private var cursorKey: String?
+    private var isBootstrapReady = false
+    private var didScheduleInitialSnapshot = false
 
-    init(store: AppDataStore, manager: PFSSCloudflareBetaManager) {
+    init(
+        store: AppDataStore,
+        manager: PFSSCloudflareBetaManager,
+        defaults: UserDefaults = .standard
+    ) {
         self.store = store
         self.manager = manager
+        self.defaults = defaults
     }
 
     func start() {
         store?.startOfflineServices()
         startPolling()
-        Task {
-            do {
-                try await manager.refreshSession()
-                if let member = manager.currentSession?.member {
-                    store?.updateCloudIdentity(
-                        role: member.role,
-                        employeeID: member.employeeID
-                    )
-                }
-                if store?.hasLocalCompanyData == false {
-                    let data = try await manager.synchronizationBootstrapData()
-                    _ = try store?.applySynchronizationBootstrap(data)
-                }
-                schedule()
-            } catch {
-                // Polling remains active and will retry session access without
-                // requiring the user to visit a particular screen.
-            }
-        }
     }
 
     private func startPolling() {
         pollingTask?.cancel()
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.synchronizeNow()
+                if await self?.prepareBootstrapIfNeeded() == true {
+                    await self?.synchronizeNow()
+                }
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
+        }
+    }
+
+    /// Establishes a complete local company snapshot before incremental
+    /// changes are allowed to run. Starting polling first can deliver one
+    /// record, make the store appear non-empty, and incorrectly skip the full
+    /// bootstrap on a newly enrolled device.
+    private func prepareBootstrapIfNeeded() async -> Bool {
+        guard let store else { return false }
+        if isBootstrapReady { return true }
+
+        do {
+            try await manager.refreshSession()
+            guard let session = manager.currentSession else { return false }
+            store.updateCloudIdentity(
+                role: session.member.role,
+                employeeID: session.member.employeeID,
+                displayName: session.member.displayName,
+                email: session.member.email
+            )
+
+            let deviceID = session.device.id
+            let scopedCursorKey = PFSSCloudSynchronizationStateKeys.cursor(
+                deviceID: deviceID
+            )
+            let scopedBootstrapKey = PFSSCloudSynchronizationStateKeys.bootstrap(
+                deviceID: deviceID
+            )
+            PFSSCloudSynchronizationStateKeys.migrateLegacyCursorIfNeeded(
+                deviceID: deviceID,
+                defaults: defaults
+            )
+            cursorKey = scopedCursorKey
+
+            if defaults.bool(forKey: scopedBootstrapKey) == false {
+                if store.hasLocalCompanyData {
+                    // Existing installations already hold the authoritative
+                    // local workspace. The marker prevents future launches
+                    // from treating them as newly enrolled devices.
+                    defaults.set(true, forKey: scopedBootstrapKey)
+                } else {
+                    let data = try await manager.synchronizationBootstrapData()
+                    guard try store.applySynchronizationBootstrap(data) else {
+                        return false
+                    }
+                    defaults.set(true, forKey: scopedBootstrapKey)
+                }
+            }
+
+            isBootstrapReady = true
+            if didScheduleInitialSnapshot == false {
+                didScheduleInitialSnapshot = true
+                schedule()
+            }
+            return true
+        } catch {
+            // Remain gated and retry. An empty installation must never build a
+            // partial workspace from incremental changes or publish it as the
+            // tenant snapshot.
+            return false
         }
     }
 
@@ -1237,7 +1327,9 @@ private final class PFSSCloudSnapshotPublisher {
         if let member = manager.currentSession?.member {
             store.updateCloudIdentity(
                 role: member.role,
-                employeeID: member.employeeID
+                employeeID: member.employeeID,
+                displayName: member.displayName,
+                email: member.email
             )
         }
 
@@ -1277,14 +1369,15 @@ private final class PFSSCloudSnapshotPublisher {
         }
 
         do {
-            var cursor = UserDefaults.standard.integer(forKey: cursorKey)
+            guard isBootstrapReady, let cursorKey else { return }
+            var cursor = defaults.integer(forKey: cursorKey)
             var hasMore = true
             while hasMore {
                 let page = try await manager.synchronizationChanges(after: cursor)
                 store.applyRemoteRecordOperations(page.operations)
                 cursor = page.cursor
                 hasMore = page.hasMore
-                UserDefaults.standard.set(cursor, forKey: cursorKey)
+                defaults.set(cursor, forKey: cursorKey)
             }
             store.updateCloudSynchronizationAccessStatus(.available)
         } catch {
@@ -1320,6 +1413,7 @@ private final class PFSSCloudSnapshotPublisher {
                 guard !Task.isCancelled,
                       let self,
                       let store = self.store,
+                      self.isBootstrapReady,
                       store.hasLocalCompanyData else { return }
                 if self.manager.currentSession == nil {
                     try await self.manager.refreshSession()

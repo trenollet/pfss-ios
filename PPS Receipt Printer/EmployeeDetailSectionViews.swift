@@ -4,6 +4,7 @@ struct EmployeeIdentityEditorView: View {
     @Binding var employee: EmployeeRecord
     var allowsRoleEditing = true
     @State private var showingRoles = false
+    @FocusState private var isInputFocused: Bool
 
     private let colors = ["blue", "green", "orange", "purple", "red", "yellow", "gray"]
 
@@ -12,14 +13,18 @@ struct EmployeeIdentityEditorView: View {
             Section("Contact") {
                 TextField("First Name", text: $employee.firstName)
                     .textContentType(.givenName)
+                    .focused($isInputFocused)
                 TextField("Last Name", text: $employee.lastName)
                     .textContentType(.familyName)
+                    .focused($isInputFocused)
                 TextField("Phone", text: $employee.phone)
                     .keyboardType(.phonePad)
+                    .focused($isInputFocused)
                 TextField("Email", text: $employee.email)
                     .keyboardType(.emailAddress)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .focused($isInputFocused)
             }
             Section("Access and Display") {
                 if allowsRoleEditing {
@@ -41,6 +46,12 @@ struct EmployeeIdentityEditorView: View {
         }
         .navigationTitle("Employee")
         .navigationBarTitleDisplayMode(.inline)
+        .scrollDismissesKeyboard(.interactively)
+        .toolbar {
+            EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                isInputFocused = false
+            }
+        }
         .sheet(isPresented: $showingRoles) {
             EmployeeRoleSelectionView(selectedRoles: $employee.roles)
         }
@@ -49,6 +60,7 @@ struct EmployeeIdentityEditorView: View {
 
 struct EmployeeBaseAddressEditorView: View {
     @Binding var baseAddress: String
+    @FocusState private var isInputFocused: Bool
 
     var body: some View {
         Form {
@@ -56,12 +68,19 @@ struct EmployeeBaseAddressEditorView: View {
                 TextField("Street, City, State ZIP", text: $baseAddress, axis: .vertical)
                     .textContentType(.fullStreetAddress)
                     .lineLimit(3...6)
+                    .focused($isInputFocused)
             } footer: {
                 Text("Used as the route starting point when a current or previous-stop location is unavailable.")
             }
         }
         .navigationTitle("Home / Base Address")
         .navigationBarTitleDisplayMode(.inline)
+        .scrollDismissesKeyboard(.interactively)
+        .toolbar {
+            EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                isInputFocused = false
+            }
+        }
     }
 }
 

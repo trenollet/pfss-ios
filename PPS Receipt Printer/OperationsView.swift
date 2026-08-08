@@ -186,15 +186,59 @@ struct OperationsView: View {
     // MARK: - Summary
 
     private var summaryGrid: some View {
-        CustomizableTileGrid(
-            storageKey: "pfss.tile-layout.operations.v1",
-            defaultTileIDs: [
-                "conflicts", "sync", "today", "technicians", "dispatchQueue",
-                "dispatchBoard", "dailyPlanner", "workforce", "capacity",
-                "revenue", "recommendations"
-            ]
-        ) { tileID in
-            switch tileID {
+        VStack(alignment: .leading, spacing: 24) {
+            operationsSection(
+                title: "Needs Attention",
+                subtitle: "Items that may interrupt today's work",
+                tileIDs: ["conflicts", "sync", "dispatchQueue"]
+            )
+            operationsSection(
+                title: "Run Today",
+                subtitle: "Live work, people, and dispatch",
+                tileIDs: ["today", "technicians", "dispatchBoard"]
+            )
+            operationsSection(
+                title: "Plan Ahead",
+                subtitle: "Build schedules and balance the team",
+                tileIDs: ["dailyPlanner", "recommendations", "capacity"]
+            )
+            operationsSection(
+                title: "Performance",
+                subtitle: "Readiness and results",
+                tileIDs: ["workforce", "revenue"]
+            )
+        }
+    }
+
+    private func operationsSection(
+        title: String,
+        subtitle: String,
+        tileIDs: [String]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 155), spacing: 12)],
+                spacing: 12
+            ) {
+                ForEach(tileIDs, id: \.self) { tileID in
+                    operationsTileView(tileID)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func operationsTileView(_ tileID: String) -> some View {
+        switch tileID {
             case "conflicts":
             if store.canOverrideSynchronizationConflicts {
                 operationsTile(
@@ -347,7 +391,6 @@ struct OperationsView: View {
             }
             default:
                 EmptyView()
-            }
         }
     }
 

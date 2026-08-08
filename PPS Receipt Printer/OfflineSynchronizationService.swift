@@ -105,6 +105,7 @@ final class OfflineSynchronizationService: ObservableObject {
     /// User-initiated synchronization ignores scheduled backoff but still
     /// requires connectivity and never submits an operation concurrently.
     func syncNow() {
+        _ = try? queue.requeueTransientFailures()
         scheduleProcessing(forceRetry: true)
     }
 
@@ -181,6 +182,13 @@ final class OfflineSynchronizationService: ObservableObject {
             operation.baseRevision = remoteRevision
         }
         let attemptNumber = operation.attemptCount + 1
+        let retryCycleBaseline = Int(
+            operation.metadata["retryCycleBaseline"] ?? "0"
+        ) ?? 0
+        let retryCycleAttemptNumber = max(
+            operation.attemptCount - retryCycleBaseline + 1,
+            1
+        )
         operation.status = .synchronizing
         operation.firstAttemptAt = operation.firstAttemptAt ?? now
         operation.lastAttemptAt = now
@@ -226,10 +234,10 @@ final class OfflineSynchronizationService: ObservableObject {
             }
 
         case let .failed(failure):
-            let reachedLimit = attemptNumber >= retryPolicy.maximumAttempts
+            let reachedLimit = retryCycleAttemptNumber >= retryPolicy.maximumAttempts
             let canRetry = failure.isRetryable && !reachedLimit
             let delay = canRetry
-                ? retryPolicy.delay(afterFailedAttempt: attemptNumber)
+                ? retryPolicy.delay(afterFailedAttempt: retryCycleAttemptNumber)
                 : nil
             let durableFailure = OfflineFailureDetails(
                 category: failure.category,

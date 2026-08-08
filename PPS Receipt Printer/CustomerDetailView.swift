@@ -34,6 +34,13 @@ struct CustomerDetailView: View {
         }
     }
 
+    private var assignableEmployees: [EmployeeRecord] {
+        store.activeEmployees.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
+                == .orderedAscending
+        }
+    }
+
     var body: some View {
         Form {
             Section("Customer") {
@@ -118,14 +125,43 @@ struct CustomerDetailView: View {
                     }
                 }
 
-                TextField("Assigned Employee", text: $customer.assignedEmployee)
-                    .focused($isInputFocused)
+                HStack {
+                    Text("Assigned Employee")
+                    Spacer()
+                    Picker("Assigned Employee", selection: $customer.assignedEmployee) {
+                        Text("Unassigned").tag("")
+                        ForEach(assignableEmployees) { employee in
+                            Text(employee.displayName).tag(employee.displayName)
+                        }
+                    }
+                    .labelsHidden()
+                }
 
                 DatePicker(
                     "Follow-Up Date",
                     selection: $customer.followUpDate,
                     displayedComponents: .date
                 )
+            }
+
+            Section("Customer Activity") {
+                NavigationLink {
+                    JobRecordsListView(
+                        title: "Customer Jobs",
+                        customerNumber: customer.customerNumber
+                    )
+                } label: {
+                    Label("Jobs", systemImage: "wrench.and.screwdriver")
+                }
+
+                NavigationLink {
+                    InvoiceRecordsListView(
+                        title: "Customer Invoices",
+                        customerNumber: customer.customerNumber
+                    )
+                } label: {
+                    Label("Invoices", systemImage: "doc.text")
+                }
             }
 
             Section {
@@ -142,10 +178,21 @@ struct CustomerDetailView: View {
                         store.archiveCustomer(customer)
                         dismiss()
                     } label: {
-                        Label("Archive Customer", systemImage: "archivebox.fill")
+                        CenteredArchiveActionLabel(title: "Archive Customer")
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(.red)
                 }
+            }
+
+            Section {
+                Text(
+                    "To create a new Estimate or Job for this customer, select the Customer Site first."
+                )
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .multilineTextAlignment(.center)
             }
         }
         .scrollDismissesKeyboard(.interactively)
@@ -170,18 +217,17 @@ struct CustomerDetailView: View {
                 }
             }
 
+            EditorKeyboardDismissAction(isVisible: isInputFocused) {
+                isInputFocused = false
+            }
+
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
                     saveChanges()
                 }
+                .disabled(!hasUnsavedChanges)
             }
 
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") {
-                    isInputFocused = false
-                }
-            }
         }
         .alert(
             "Unsaved Changes",

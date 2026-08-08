@@ -114,7 +114,7 @@ struct BusinessProfileView: View {
                     .disabled(
                         profile.businessName
                             .trimmingCharacters(in: .whitespacesAndNewlines)
-                            .isEmpty
+                            .isEmpty || !hasUnsavedChanges
                     )
             }
         }
