@@ -49,7 +49,7 @@ struct ServiceCatalogDetailView: View {
                 }
 
                 LabeledContent("Estimated Minutes Per Unit") {
-                    SelectAllIntegerField(
+                    SelectAllDecimalField(
                         placeholder: "Minutes",
                         value: $item.estimatedMinutesPerUnit
                     )
@@ -65,6 +65,13 @@ struct ServiceCatalogDetailView: View {
                             .tag(treatment)
                     }
                 }
+            }
+            .disabled(!store.canManageCompany)
+
+            Section {
+                Text("Classification changes apply only when this item is added to future work. Existing transaction snapshots remain unchanged.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Usage") {
@@ -97,6 +104,7 @@ struct ServiceCatalogDetailView: View {
                     .tint(.red)
                 }
             }
+            .disabled(!store.canManageCompany)
         }
         .navigationTitle("Edit Catalog Item")
         .toolbar {
@@ -110,6 +118,7 @@ struct ServiceCatalogDetailView: View {
                     store.updateServiceCatalogItem(item)
                     dismiss()
                 }
+                .disabled(!store.canManageCompany)
             }
 
         }

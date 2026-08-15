@@ -124,7 +124,7 @@ returned only after the complete transaction reaches `active`.
   combined-user/device limits, record limits, and trial durations approved.
 - [x] Production domain selection, commercial cancellation policy, launch legal
   documents, supported regions, and final App Store metadata transferred to
-  Phase 19 as release prerequisites.
+  the public-release phase, now Phase 25, as release prerequisites.
 
 ## First-Run Experience Contract
 
@@ -159,7 +159,7 @@ not expand the production account implementation boundary.
   Notifications V2 adapters, and Owner-facing plan and usage receipts.
 - [x] Approve the 90-day invited Beta duration and 14-day Trial duration.
 - [x] Transfer billing-retry grace duration, cancellation effective date, and
-  final post-cancellation retention policy to Phase 19 for approval alongside
+  final post-cancellation retention policy to Phase 25 for approval alongside
   the live App Store subscription configuration.
 
 ### Step 8b — Private PFSS Operations Control Plane
@@ -232,7 +232,7 @@ operations application into active Phase 17 pre-launch work.
 
 The former Step 8c is no longer part of Phase 17. Public product identity,
 App Store Connect, TestFlight, subscription activation, production launch
-configuration, and release acceptance are now owned by the Phase 19 workbook.
+configuration, and release acceptance are now owned by the Phase 25 workbook.
 The provider-neutral entitlement engine, StoreKit evidence types, server
 adapters, and Operations overrides completed here remain the foundation for
 that work.
@@ -337,7 +337,8 @@ that work.
   structures were established without making the client the billing authority.
 - Final regression passed all 185 iOS unit tests and all 55 Worker tests with
   strict TypeScript validation.
-- App Store deployment was intentionally transferred intact to Phase 19. Phase
+- App Store deployment was intentionally transferred intact and is now assigned
+  to Phase 25. Phase
   17 therefore closes as the completed production-account and Operations
   foundation, not as a public App Store release.
 

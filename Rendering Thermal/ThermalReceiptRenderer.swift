@@ -17,6 +17,67 @@ struct ThermalReceiptRenderer {
         site: CustomerSite?,
         catalogItems: [ServiceCatalogItem]
     ) -> String {
+        render(
+            documentTitle: "INVOICE",
+            documentNumber: invoice.invoiceNumber,
+            invoice: invoice,
+            businessProfile: businessProfile,
+            customer: customer,
+            site: site,
+            catalogItems: catalogItems,
+            payment: nil
+        )
+    }
+
+    static func render(
+        receipt: ReceiptSnapshot,
+        businessProfile: BusinessProfile,
+        customer: Customer?,
+        site: CustomerSite?,
+        catalogItems: [ServiceCatalogItem]
+    ) -> String {
+        let invoice = InvoiceRecord(
+            id: receipt.invoiceID,
+            invoiceNumber: receipt.invoiceNumber,
+            customerNumber: receipt.customerNumber,
+            siteID: receipt.siteID,
+            jobNumber: receipt.jobNumber,
+            lineItems: receipt.lineItems,
+            subtotal: receipt.subtotal,
+            discount: receipt.discount,
+            total: receipt.total,
+            taxSnapshot: receipt.taxSnapshot,
+            amountPaid: receipt.totalPaid,
+            balanceDue: receipt.balanceDue,
+            status: receipt.balanceDue > 0 ? .partiallyPaid : .paid,
+            issueDate: receipt.issuedAt,
+            dueDate: receipt.issuedAt,
+            paidDate: receipt.issuedAt,
+            notes: receipt.notes
+        )
+
+        return render(
+            documentTitle: "RECEIPT",
+            documentNumber: receipt.receiptNumber,
+            invoice: invoice,
+            businessProfile: businessProfile,
+            customer: customer,
+            site: site,
+            catalogItems: catalogItems,
+            payment: receipt
+        )
+    }
+
+    private static func render(
+        documentTitle: String,
+        documentNumber: String,
+        invoice: InvoiceRecord,
+        businessProfile: BusinessProfile,
+        customer: Customer?,
+        site: CustomerSite?,
+        catalogItems: [ServiceCatalogItem],
+        payment: ReceiptSnapshot?
+    ) -> String {
         var lines: [String] = [
 
             "",
@@ -30,8 +91,11 @@ struct ThermalReceiptRenderer {
         )
 
         lines.append(separatorLine())
-        lines.append(centered("INVOICE"))
-        lines.append(centered(invoice.invoiceNumber))
+        lines.append(centered(documentTitle))
+        lines.append(centered(documentNumber))
+        if let payment {
+            lines.append(centered("Invoice \(payment.invoiceNumber)"))
+        }
         lines.append("")
 
         appendInvoiceDetails(
@@ -55,6 +119,28 @@ struct ThermalReceiptRenderer {
             to: &lines,
             invoice: invoice
         )
+
+        if let payment {
+            lines.append(separatorLine())
+            lines.append(
+                twoColumnLine(
+                    left: "Payment",
+                    right: currency(payment.paymentAmount)
+                )
+            )
+            lines.append(
+                twoColumnLine(
+                    left: "Method",
+                    right: payment.paymentMethod.rawValue
+                )
+            )
+            lines.append(
+                twoColumnLine(
+                    left: "Balance",
+                    right: currency(payment.balanceDue)
+                )
+            )
+        }
 
         if !invoice.notes
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -267,6 +353,17 @@ struct ThermalReceiptRenderer {
                 twoColumnLine(
                     left: "Discount",
                     right: "-\(currency(abs(invoice.discount)))"
+                )
+            )
+        }
+
+        if let tax = invoice.taxSnapshot {
+            lines.append(
+                twoColumnLine(
+                    left: "Tax",
+                    right: currency(
+                        NSDecimalNumber(decimal: tax.addedTax).doubleValue
+                    )
                 )
             )
         }

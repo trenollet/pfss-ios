@@ -29,6 +29,12 @@ struct TechnicianDailyAgendaView: View {
     @State private var selectedJobID: UUID?
     @State private var selectedInvoiceDestination: InvoiceDestination?
     @State private var showingDatePicker = false
+    @ObservedObject private var declineCenter = PFSSJobDeclineReviewCenter.shared
+    @State private var declineJob: JobRecord?
+    @State private var declineReason = ""
+    @State private var declineErrorMessage = ""
+    @State private var showingDeclineError = false
+    @State private var isSubmittingDecline = false
 
     @StateObject private var locationManager = TechnicianLocationManager()
     @State private var displayedJobs: [JobRecord] = []
@@ -222,6 +228,16 @@ struct TechnicianDailyAgendaView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             store.startOfflineServices()
+            declineCenter.start()
+            await declineCenter.refresh()
+        }
+        .sheet(item: $declineJob) { job in
+            declineSheet(for: job)
+        }
+        .alert("Unable to Decline Job", isPresented: $showingDeclineError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(declineErrorMessage)
         }
         .sheet(isPresented: $showingDatePicker) {
             NavigationStack {
@@ -726,6 +742,26 @@ struct TechnicianDailyAgendaView: View {
             Divider()
 
             technicianActionRow(for: job)
+
+            if canDecline(job) {
+                if let assignment = store.assignment(forJobID: job.id),
+                   declineCenter.hasPendingReview(assignmentID: assignment.id) {
+                    Label("Manager Review Requested", systemImage: "flag.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity)
+                } else {
+                    Button(role: .destructive) {
+                        declineReason = ""
+                        declineJob = job
+                    } label: {
+                        Label("Decline Assigned Job", systemImage: "flag.fill")
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
         }
         .padding()
         .background(
@@ -739,6 +775,76 @@ struct TechnicianDailyAgendaView: View {
                 cornerRadius: 16
             )
         )
+    }
+
+    private func canDecline(_ job: JobRecord) -> Bool {
+        guard store.cloudEmployeeID == currentEmployee.id,
+              let assignment = store.assignment(forJobID: job.id),
+              assignment.primaryTechnicianID == currentEmployee.id else {
+            return false
+        }
+        return assignment.status == .scheduled || assignment.status == .dispatched
+    }
+
+    private func declineSheet(for job: JobRecord) -> some View {
+        NavigationStack {
+            Form {
+                Section("Assigned Job") {
+                    LabeledContent(
+                        "Customer",
+                        value: customerDisplayName(for: job.customerNumber)
+                    )
+                    LabeledContent("Job", value: job.jobNumber)
+                }
+                Section("Reason Required") {
+                    TextEditor(text: $declineReason)
+                        .frame(minHeight: 120)
+                    Text(
+                        "This sends a shared Job Review Required alert to every active Manager and Owner device."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Decline Job")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { declineJob = nil }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Submit") { submitDecline(job) }
+                        .disabled(
+                            declineReason.trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            ).count < 3 || isSubmittingDecline
+                        )
+                }
+            }
+        }
+    }
+
+    private func submitDecline(_ job: JobRecord) {
+        guard let assignment = store.assignment(forJobID: job.id) else {
+            declineErrorMessage = "This assignment is no longer available."
+            showingDeclineError = true
+            return
+        }
+        isSubmittingDecline = true
+        Task {
+            do {
+                try await declineCenter.submit(
+                    assignmentID: assignment.id,
+                    jobID: job.id,
+                    reason: declineReason
+                )
+                declineJob = nil
+            } catch {
+                declineErrorMessage = error.localizedDescription
+                showingDeclineError = true
+            }
+            isSubmittingDecline = false
+        }
     }
 
     private func technicianJobInformation(

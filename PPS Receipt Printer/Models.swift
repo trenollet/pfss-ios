@@ -657,6 +657,33 @@ struct BusinessOperationsSettings: Codable, Equatable {
     }
 }
 
+struct BusinessTaxSettings: Codable, Equatable {
+    var isEnabled: Bool = false
+    var standardRatePercent: Double = 0
+    var jurisdictionName: String = ""
+    var effectiveDate: Date = Date()
+    var sourceNotes: String = ""
+    var verifiedBy: String = ""
+    var verifiedAt: Date?
+
+    mutating func normalize() {
+        standardRatePercent = min(max(standardRatePercent, 0), 100)
+        jurisdictionName = jurisdictionName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        sourceNotes = sourceNotes.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        verifiedBy = verifiedBy.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+    }
+
+    var isConfigured: Bool {
+        isEnabled && !jurisdictionName.isEmpty && verifiedAt != nil
+    }
+}
+
 struct BusinessProfile: Codable {
     var businessName: String = ""
     var contactName: String = ""
@@ -677,6 +704,7 @@ struct BusinessProfile: Codable {
     var logoData: Data?
 
     var operations = BusinessOperationsSettings()
+    var taxSettings = BusinessTaxSettings()
 
     private enum CodingKeys: String, CodingKey {
         case businessName
@@ -693,6 +721,7 @@ struct BusinessProfile: Codable {
         case invoiceFooterText
         case logoData
         case operations
+        case taxSettings
     }
 
     init() {}
@@ -773,6 +802,12 @@ struct BusinessProfile: Codable {
         ) ?? BusinessOperationsSettings()
 
         operations.normalize()
+
+        taxSettings = try container.decodeIfPresent(
+            BusinessTaxSettings.self,
+            forKey: .taxSettings
+        ) ?? BusinessTaxSettings()
+        taxSettings.normalize()
     }
 }
 
@@ -802,6 +837,7 @@ struct JobRecord: Identifiable, Codable, WorkOrder {
     var completionDeadline: Date? = nil
     var assignmentPriority: AssignmentPriority = .normal
     var setupStartDate: Date? = nil
+    var workStartDate: Date? = nil
     var completedDate: Date?
 
     var status: JobStatus
@@ -847,6 +883,7 @@ extension JobRecord {
         case completionDeadline
         case assignmentPriority
         case setupStartDate
+        case workStartDate
         case completedDate
         case status
         case workflowState
@@ -969,6 +1006,11 @@ extension JobRecord {
         setupStartDate = try container.decodeIfPresent(
             Date.self,
             forKey: .setupStartDate
+        )
+
+        workStartDate = try container.decodeIfPresent(
+            Date.self,
+            forKey: .workStartDate
         )
 
         completedDate = try container.decodeIfPresent(
@@ -1104,6 +1146,21 @@ extension JobRecord {
             .max()
     }
 
+    /// The beginning of productive work after setup is complete.
+    ///
+    /// Phase 19 persists this directly. The timeline fallback keeps records
+    /// created by earlier builds readable without a destructive migration.
+    var trackedWorkStartDate: Date? {
+        if let workStartDate {
+            return workStartDate
+        }
+
+        return timelineEvents
+            .filter { $0.type == .workStarted }
+            .map(\.timestamp)
+            .min()
+    }
+
     var timeOnJob: TimeInterval? {
         guard let start = trackedStartDate,
               let completion = trackedCompletionDate,
@@ -1129,6 +1186,10 @@ struct InvoiceRecord: Identifiable, Codable, WorkOrder {
     var discount: Double
     var total: Double
 
+    /// Immutable evidence produced by TaxEngine. Nil identifies a legacy or
+    /// not-yet-calculated invoice without silently inventing tax facts.
+    var taxSnapshot: TaxCalculationSnapshot? = nil
+
     var amountPaid: Double
     var balanceDue: Double
 
@@ -1140,12 +1201,59 @@ struct InvoiceRecord: Identifiable, Codable, WorkOrder {
 
     var notes: String
 
+    /// Immutable payment evidence. A receipt is appended only when the
+    /// cumulative amount paid increases; later invoice edits cannot rewrite
+    /// the financial facts captured here.
+    var receipts: [ReceiptSnapshot]? = nil
+
     var lifecycleStatus: RecordLifecycleStatus = .active
+}
+
+enum ReceiptPaymentMethod: String, Codable, CaseIterable, Identifiable {
+    case unspecified = "Not Specified"
+    case cash = "Cash"
+    case check = "Check"
+    case card = "Card"
+    case electronic = "Electronic"
+    case other = "Other"
+
+    var id: String { rawValue }
+}
+
+/// Durable, point-in-time evidence for one payment event. Values are copied
+/// from the invoice so a reprice, catalog edit, or later payment cannot alter
+/// a receipt that has already been issued.
+struct ReceiptSnapshot: Identifiable, Codable {
+    var id: UUID
+    var paymentEventID: UUID
+    var receiptNumber: String
+    var invoiceID: UUID
+    var invoiceNumber: String
+    var customerNumber: String
+    var siteID: UUID?
+    var jobNumber: String
+    var lineItems: [ServiceLineItem]
+    var subtotal: Double
+    var discount: Double
+    var total: Double
+    var taxSnapshot: TaxCalculationSnapshot?
+    var paymentAmount: Double
+    var totalPaid: Double
+    var balanceDue: Double
+    var paymentMethod: ReceiptPaymentMethod
+    var issuedAt: Date
+    var notes: String
 }
 struct ServiceLineItem: Identifiable, Codable {
     var id = UUID()
 
     var catalogItemID: UUID?
+
+    // Immutable catalog classification copied when the line is created. This
+    // prevents later catalog edits from changing historical tax meaning.
+    var catalogItemNameSnapshot: String?
+    var catalogItemTypeSnapshot: CatalogItemType?
+    var taxTreatmentSnapshot: TaxTreatment?
 
     var serviceType: ServiceType
     var otherService: String
@@ -1155,11 +1263,14 @@ struct ServiceLineItem: Identifiable, Codable {
     var unitPrice: Double
     var lineTotal: Double
 
-    var estimatedMinutesPerUnit: Int = 0
+    var estimatedMinutesPerUnit: Double = 0
 
     private enum CodingKeys: String, CodingKey {
         case id
         case catalogItemID
+        case catalogItemNameSnapshot
+        case catalogItemTypeSnapshot
+        case taxTreatmentSnapshot
         case serviceType
         case otherService
         case description
@@ -1172,16 +1283,22 @@ struct ServiceLineItem: Identifiable, Codable {
     init(
         id: UUID = UUID(),
         catalogItemID: UUID? = nil,
+        catalogItemNameSnapshot: String? = nil,
+        catalogItemTypeSnapshot: CatalogItemType? = nil,
+        taxTreatmentSnapshot: TaxTreatment? = nil,
         serviceType: ServiceType,
         otherService: String,
         description: String,
         quantity: Double,
         unitPrice: Double,
         lineTotal: Double,
-        estimatedMinutesPerUnit: Int = 0
+        estimatedMinutesPerUnit: Double = 0
     ) {
         self.id = id
         self.catalogItemID = catalogItemID
+        self.catalogItemNameSnapshot = catalogItemNameSnapshot
+        self.catalogItemTypeSnapshot = catalogItemTypeSnapshot
+        self.taxTreatmentSnapshot = taxTreatmentSnapshot
         self.serviceType = serviceType
         self.otherService = otherService
         self.description = description
@@ -1204,6 +1321,19 @@ struct ServiceLineItem: Identifiable, Codable {
         catalogItemID = try container.decodeIfPresent(
             UUID.self,
             forKey: .catalogItemID
+        )
+
+        catalogItemNameSnapshot = try container.decodeIfPresent(
+            String.self,
+            forKey: .catalogItemNameSnapshot
+        )
+        catalogItemTypeSnapshot = try container.decodeIfPresent(
+            CatalogItemType.self,
+            forKey: .catalogItemTypeSnapshot
+        )
+        taxTreatmentSnapshot = try container.decodeIfPresent(
+            TaxTreatment.self,
+            forKey: .taxTreatmentSnapshot
         )
 
         serviceType = try container.decode(
@@ -1236,10 +1366,16 @@ struct ServiceLineItem: Identifiable, Codable {
             forKey: .lineTotal
         )
 
-        estimatedMinutesPerUnit = try container.decodeIfPresent(
-            Int.self,
-            forKey: .estimatedMinutesPerUnit
-        ) ?? 0
+        estimatedMinutesPerUnit =
+            (try? container.decodeIfPresent(
+                Double.self,
+                forKey: .estimatedMinutesPerUnit
+            )) ?? Double(
+                (try? container.decodeIfPresent(
+                    Int.self,
+                    forKey: .estimatedMinutesPerUnit
+                )) ?? 0
+            )
     }
 }
 struct ServiceCatalogItem: Identifiable, Codable {
@@ -1248,7 +1384,7 @@ struct ServiceCatalogItem: Identifiable, Codable {
     var itemDescription: String
     var defaultQuantity: Double
     var defaultPrice: Double
-    var estimatedMinutesPerUnit: Int = 0
+    var estimatedMinutesPerUnit: Double = 0
     var itemType: CatalogItemType = .service
     var taxTreatment: TaxTreatment = .nonTaxable
     var usageCount: Int = 0
@@ -1275,7 +1411,7 @@ struct ServiceCatalogItem: Identifiable, Codable {
         itemDescription: String,
         defaultQuantity: Double,
         defaultPrice: Double,
-        estimatedMinutesPerUnit: Int = 0,
+        estimatedMinutesPerUnit: Double = 0,
         itemType: CatalogItemType = .service,
         taxTreatment: TaxTreatment = .nonTaxable,
         usageCount: Int = 0,
@@ -1303,10 +1439,16 @@ struct ServiceCatalogItem: Identifiable, Codable {
         itemDescription = try container.decode(String.self, forKey: .itemDescription)
         defaultQuantity = try container.decode(Double.self, forKey: .defaultQuantity)
         defaultPrice = try container.decode(Double.self, forKey: .defaultPrice)
-        estimatedMinutesPerUnit = try container.decodeIfPresent(
-            Int.self,
-            forKey: .estimatedMinutesPerUnit
-        ) ?? 0
+        estimatedMinutesPerUnit =
+            (try? container.decodeIfPresent(
+                Double.self,
+                forKey: .estimatedMinutesPerUnit
+            )) ?? Double(
+                (try? container.decodeIfPresent(
+                    Int.self,
+                    forKey: .estimatedMinutesPerUnit
+                )) ?? 0
+            )
 
         itemType = try container.decodeIfPresent(
             CatalogItemType.self,

@@ -3,7 +3,7 @@
 - Status: Active
 - Owner: PFSS Project
 - Applies To: v0.9+
-- Last Updated: 2026-08-08
+- Last Updated: 2026-08-14
 
 ## Purpose
 
@@ -27,8 +27,10 @@ This folder is the permanent system of record for PFSS product direction, archit
   Phase 17 provider decisions are recorded in ADR-003 and ADR-004.
 - `Phase Development/` — active and completed phase workbooks, acceptance
   criteria, and verification records.
-  Phases 17 and 18 are closed, and Phase 19 owns App Store deployment and the
-  production release.
+  Phases 17, 18, and 19 are closed. Phase 20 owns the new
+  multi-device synchronization architecture, Phases 21–24 are reserved for
+  approved pre-launch development, and Phase 25 owns App Store deployment and
+  the production release.
 - `ReleaseNotes/` — release-by-release user and developer notes.
 - `ReleaseHistory/` — durable milestone snapshots and historical release records.
 

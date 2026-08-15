@@ -232,6 +232,12 @@ final class AppDataStore: ObservableObject {
         )
 
         loadData()
+        offlineSynchronizationService?.onOperationSupersededByCloud = {
+            [weak self] operation, revision in
+            var acceptedOperation = operation
+            acceptedOperation.metadata["remoteRevision"] = revision
+            self?.applyRemoteRecordOperations([acceptedOperation])
+        }
         removeLeakedOfflineTestFixturesIfNeeded()
         migrateLegacyRecurringWorkIfNeeded()
         materializeRecurringWorkHorizon()
@@ -1059,6 +1065,7 @@ final class AppDataStore: ObservableObject {
             toDayContaining: nextDate
         )
         nextJob.setupStartDate = nil
+        nextJob.workStartDate = nil
         nextJob.completedDate = nil
         nextJob.status = .toBeScheduled
         nextJob.workflowState = .notStarted
@@ -1184,7 +1191,9 @@ final class AppDataStore: ObservableObject {
         let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedReason.isEmpty,
               let actor = employees.first(where: { $0.id == actorEmployeeID }),
-              actor.canOverrideScheduling,
+              actor.canOverrideScheduling || (
+                  canManageCompany && actor.id == cloudEmployeeID
+              ),
               let jobIndex = jobs.firstIndex(where: { $0.id == jobID }),
               let eventIndex = jobs[jobIndex].timelineEvents.firstIndex(where: {
                   $0.id == eventID && $0.type != .timelineCorrected
@@ -1201,6 +1210,8 @@ final class AppDataStore: ObservableObject {
         switch correctedType {
         case .setupStarted:
             jobs[jobIndex].setupStartDate = correctedTimestamp
+        case .workStarted:
+            jobs[jobIndex].workStartDate = correctedTimestamp
         case .workCompleted, .jobCompleted:
             jobs[jobIndex].completedDate = correctedTimestamp
         default:
@@ -1244,7 +1255,8 @@ final class AppDataStore: ObservableObject {
 
         return fieldOperationsEngine.context(
             for: job,
-            invoice: invoice
+            invoice: invoice,
+            assignment: assignment(forJobID: job.id)
         )
     }
 
@@ -1537,8 +1549,24 @@ final class AppDataStore: ObservableObject {
             return
         }
 
-        let previousStatus = invoices[index].status
-        let normalizedInvoice = normalizedPaymentState(for: invoice)
+        let previousInvoice = invoices[index]
+        let previousStatus = previousInvoice.status
+        // A status or payment update must not silently reprice a historical
+        // invoice. Explicit editor/tax actions recalculate before this call.
+        var normalizedInvoice = InvoiceEngine.normalizedPaymentState(
+            for: invoice
+        )
+        if ReceiptEngine.requiresReceipt(
+            previous: previousInvoice,
+            proposed: normalizedInvoice
+        ) {
+            normalizedInvoice = ReceiptEngine.recordingPayment(
+                previous: previousInvoice,
+                proposed: normalizedInvoice,
+                receiptNumber: generateReceiptNumber(),
+                timestamp: Date()
+            )
+        }
         invoices[index] = normalizedInvoice
         if previousStatus != normalizedInvoice.status {
             enqueueInvoiceOperation(
@@ -1551,44 +1579,6 @@ final class AppDataStore: ObservableObject {
             normalizedInvoice,
             previousStatus: previousStatus
         )
-    }
-
-    private func normalizedPaymentState(
-        for invoice: InvoiceRecord,
-        at timestamp: Date = Date()
-    ) -> InvoiceRecord {
-        var normalized = invoice
-        let total = max(normalized.total, 0)
-
-        if normalized.status == .paid {
-            normalized.amountPaid = total
-        } else {
-            normalized.amountPaid = min(
-                max(normalized.amountPaid, 0),
-                total
-            )
-
-            if total > 0 && normalized.amountPaid >= total {
-                normalized.status = .paid
-            } else if normalized.amountPaid > 0 {
-                normalized.status = .partiallyPaid
-            } else if normalized.status == .partiallyPaid {
-                normalized.status = .sent
-            }
-        }
-
-        normalized.balanceDue = max(
-            0,
-            total - normalized.amountPaid
-        )
-
-        if normalized.status == .paid {
-            normalized.paidDate = normalized.paidDate ?? timestamp
-        } else {
-            normalized.paidDate = nil
-        }
-
-        return normalized
     }
 
     private func synchronizeCompletedJobFromInvoice(
@@ -1755,9 +1745,10 @@ final class AppDataStore: ObservableObject {
 
         let persistedJob = jobs[jobIndex]
 
-        if let existingInvoice = invoices.first(where: {
-            $0.jobNumber == persistedJob.jobNumber
-        }) {
+        if let existingInvoice = InvoiceEngine.existingInvoice(
+            forJobNumber: persistedJob.jobNumber,
+            in: invoices
+        ) {
             if jobs[jobIndex].workflowState != .invoiceCreated &&
                jobs[jobIndex].workflowState != .paymentReceived {
                 jobs[jobIndex].workflowState = .invoiceCreated
@@ -1785,33 +1776,25 @@ final class AppDataStore: ObservableObject {
         ) ?? issueDate
 
         let updatedLineItems = PricingCalculator.updatedLineItems(
-            persistedJob.lineItems
+            persistedJob.lineItems.map(snapshotCatalogClassification)
         )
-        let subtotal = PricingCalculator.subtotal(
-            for: updatedLineItems
+        let taxSnapshot = companyStandardTaxSnapshot(
+            lines: updatedLineItems,
+            discount: persistedJob.discount,
+            calculatedAt: issueDate
         )
-        let total = PricingCalculator.total(
-            subtotal: subtotal,
-            discount: persistedJob.discount
-        )
-
-        let invoice = InvoiceRecord(
+        let invoice = InvoiceEngine.makeDraft(from: .init(
             invoiceNumber: generateInvoiceNumber(),
             customerNumber: persistedJob.customerNumber,
             siteID: persistedJob.siteID,
             jobNumber: persistedJob.jobNumber,
             lineItems: updatedLineItems,
-            subtotal: subtotal,
             discount: persistedJob.discount,
-            total: total,
-            amountPaid: 0,
-            balanceDue: total,
-            status: .draft,
+            taxSnapshot: taxSnapshot,
             issueDate: issueDate,
             dueDate: dueDate,
-            paidDate: nil,
             notes: persistedJob.workNotes
-        )
+        ))
 
         invoices.append(invoice)
 
@@ -1835,6 +1818,78 @@ final class AppDataStore: ObservableObject {
         }
 
         return invoice
+    }
+
+    func applyCompanyStandardTaxToUncalculatedDraftInvoices() {
+        guard businessProfile.taxSettings.isConfigured else { return }
+        var updated = invoices
+        var changed = false
+        for index in updated.indices where
+            updated[index].status == .draft && updated[index].taxSnapshot == nil {
+            let lines = PricingCalculator.updatedLineItems(
+                updated[index].lineItems.map(snapshotCatalogClassification)
+            )
+            guard let snapshot = companyStandardTaxSnapshot(
+                lines: lines,
+                discount: updated[index].discount,
+                calculatedAt: updated[index].issueDate
+            ) else { continue }
+            updated[index].lineItems = lines
+            updated[index].taxSnapshot = snapshot
+            updated[index].subtotal = PricingCalculator.subtotal(for: lines)
+            updated[index] = InvoiceEngine.applyingTax(
+                snapshot,
+                to: updated[index],
+                at: updated[index].issueDate
+            )
+            changed = true
+        }
+        if changed { invoices = updated }
+    }
+
+    private func companyStandardTaxSnapshot(
+        lines: [ServiceLineItem],
+        discount: Double,
+        calculatedAt: Date
+    ) -> TaxCalculationSnapshot? {
+        let settings = businessProfile.taxSettings
+        guard settings.isConfigured,
+              Calendar.current.startOfDay(for: settings.effectiveDate)
+                <= Calendar.current.startOfDay(for: calculatedAt) else {
+            return nil
+        }
+        let quote = TaxRateQuote(
+            jurisdiction: settings.jurisdictionName,
+            rate: Decimal(settings.standardRatePercent / 100),
+            source: "Company Standard Rate · Verified by \(settings.verifiedBy)",
+            effectiveDate: settings.effectiveDate
+        )
+        return try? TaxEngine.calculate(
+            lines: lines,
+            discount: Decimal(discount),
+            quote: quote,
+            calculatedAt: calculatedAt
+        )
+    }
+
+    private func snapshotCatalogClassification(
+        _ line: ServiceLineItem
+    ) -> ServiceLineItem {
+        guard let catalogItemID = line.catalogItemID,
+              let catalogItem = serviceCatalogItems.first(where: {
+                  $0.id == catalogItemID
+              }) else { return line }
+        var snapshot = line
+        if snapshot.catalogItemNameSnapshot == nil {
+            snapshot.catalogItemNameSnapshot = catalogItem.itemName
+        }
+        if snapshot.catalogItemTypeSnapshot == nil {
+            snapshot.catalogItemTypeSnapshot = catalogItem.itemType
+        }
+        if snapshot.taxTreatmentSnapshot == nil {
+            snapshot.taxTreatmentSnapshot = catalogItem.taxTreatment
+        }
+        return snapshot
     }
     
     func seedRecommendationRulesIfNeeded() {
@@ -1997,6 +2052,15 @@ final class AppDataStore: ObservableObject {
         enqueueChangedRecords(employees, type: .employee, current: current)
         enqueueChangedRecords(serviceCatalogItems, type: .catalog, current: current)
         enqueueChangedRecords(assignmentStore.assignments, type: .assignment, current: current)
+        if canManageCompany {
+            let profileKey = synchronizationKey(
+                type: .custom,
+                id: Self.businessProfileSynchronizationID
+            )
+            if current[profileKey] != synchronizedRecordState[profileKey] {
+                enqueueBusinessProfileSynchronization()
+            }
+        }
     }
 
     private func enqueueChangedRecords<Value: Encodable & Identifiable>(
@@ -2027,8 +2091,18 @@ final class AppDataStore: ObservableObject {
         appendSynchronizedRecords(employees, type: .employee, to: &result)
         appendSynchronizedRecords(serviceCatalogItems, type: .catalog, to: &result)
         appendSynchronizedRecords(assignmentStore.assignments, type: .assignment, to: &result)
+        if let data = try? Self.recordSynchronizationEncoder.encode(businessProfile) {
+            result[synchronizationKey(
+                type: .custom,
+                id: Self.businessProfileSynchronizationID
+            )] = data
+        }
         return result
     }
+
+    static let businessProfileSynchronizationID = UUID(
+        uuidString: "00000000-0000-0000-0000-000000000001"
+    )!
 
     private func appendSynchronizedRecords<Value: Encodable & Identifiable>(
         _ values: [Value],

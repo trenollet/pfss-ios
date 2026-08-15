@@ -67,8 +67,7 @@ struct SchedulingCalculator {
         for lineItem: ServiceLineItem
     ) -> Int {
         let rawMinutes =
-            Double(lineItem.estimatedMinutesPerUnit)
-            * lineItem.quantity
+            lineItem.estimatedMinutesPerUnit * lineItem.quantity
 
         return max(
             Int(rawMinutes.rounded()),

@@ -26,8 +26,10 @@ struct ServiceCatalogView: View {
     var body: some View {
         List {
                 Section {
-                    Button("Add New Catalog Item") {
-                        showingNewItemForm = true
+                    if store.canManageCompany {
+                        Button("Add New Catalog Item") {
+                            showingNewItemForm = true
+                        }
                     }
 
                     Toggle("Show Archived", isOn: $showArchived)

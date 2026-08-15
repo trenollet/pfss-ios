@@ -58,15 +58,17 @@ struct ServiceCatalogPickerView: View {
                         Label("Custom Line Item", systemImage: "square.and.pencil")
                     }
 
-                    Button {
-                        showingNewCatalogItem = true
-                    } label: {
-                        Label(
-                            suggestedNewItemName.isEmpty
-                            ? "New Catalog Item"
-                            : "Create \"\(suggestedNewItemName)\"",
-                            systemImage: "plus.circle"
-                        )
+                    if store.canManageCompany {
+                        Button {
+                            showingNewCatalogItem = true
+                        } label: {
+                            Label(
+                                suggestedNewItemName.isEmpty
+                                ? "New Catalog Item"
+                                : "Create \"\(suggestedNewItemName)\"",
+                                systemImage: "plus.circle"
+                            )
+                        }
                     }
                 }
 

@@ -30,6 +30,14 @@
 	</array>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>PFSS uses your location in the background only when you enable Automatic Mileage Tracking, so it can detect drives and place completed trips in your private review queue.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>PFSS uses vehicle-motion activity only when you enable Automatic Mileage Tracking, helping detect drives without running high-accuracy GPS continuously.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>

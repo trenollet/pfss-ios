@@ -432,9 +432,13 @@ private struct TechnicianJobsDayView: View {
                                 }
                                 Text(serviceName(job))
                                     .foregroundStyle(.secondary)
-                                Label(job.status.rawValue, systemImage: "wrench.and.screwdriver.fill")
-                                    .font(.caption)
-                                    .foregroundStyle(.orange)
+                                let presentation = lifecyclePresentation(for: job)
+                                Label(
+                                    presentation.statusTitle,
+                                    systemImage: presentation.statusSystemImage
+                                )
+                                .font(.caption)
+                                .foregroundStyle(presentation.accent.color)
                             }
                             .padding(.vertical, 4)
                         }
@@ -456,6 +460,16 @@ private struct TechnicianJobsDayView: View {
         job.serviceType == .other && !job.otherService.isEmpty
             ? job.otherService
             : job.serviceType.rawValue
+    }
+
+    private func lifecyclePresentation(
+        for job: JobRecord
+    ) -> JobWorkflowPresentation {
+        FieldOperationsEngine().context(
+            for: job,
+            invoice: store.invoice(for: job),
+            assignment: store.assignment(forJobID: job.id)
+        ).presentation
     }
 }
 

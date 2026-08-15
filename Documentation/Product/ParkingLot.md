@@ -123,13 +123,12 @@ before treating the Catalyst build as supported. This replaces reliance on the
 temporary `My Mac (Designed for iPad)` development runtime; it does not create a
 separate product fork or independent data model.
 
-### Track mileage
+### Mileage reimbursement extensions
 
-track technician mileage in the app for job assignments
-track adhoc mileage input
-downloadable montlhy reimbursment report
-IRS mileage in admin settings
-allowed to claim option in admin for employees
+Automatic and manual mileage tracking, trip classification, history, and CSV
+reporting moved into the approved Phase 19 plan. Deferred extensions include an
+IRS mileage-rate setting, reimbursement calculations, payroll integration, and
+company controls governing which employees may submit mileage claims.
 
 ### REvamp the Dashboard
 Use tiles to navigate Operations, Tech My Day, Leads, Customers, Estimates, and Invoices

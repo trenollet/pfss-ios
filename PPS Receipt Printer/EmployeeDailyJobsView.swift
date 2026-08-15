@@ -256,11 +256,13 @@ struct EmployeeDailyJobsView: View {
 
                 Spacer()
 
-                Text(job.status.rawValue)
-                    .font(.caption)
-                    .foregroundStyle(
-                        statusColor(for: job.status)
-                    )
+                let presentation = lifecyclePresentation(for: job)
+                Label(
+                    presentation.statusTitle,
+                    systemImage: presentation.statusSystemImage
+                )
+                .font(.caption)
+                .foregroundStyle(presentation.accent.color)
             }
         }
         .padding(.vertical, 4)
@@ -383,25 +385,14 @@ struct EmployeeDailyJobsView: View {
         return site.serviceAddress
     }
 
-    private func statusColor(
-        for status: JobStatus
-    ) -> Color {
-        switch status {
-        case .completed:
-            return .green
-
-        case .cancelled:
-            return .red
-
-        case .inProgress:
-            return .orange
-
-        case .assigned, .scheduled:
-            return .blue
-
-        case .toBeScheduled:
-            return .secondary
-        }
+    private func lifecyclePresentation(
+        for job: JobRecord
+    ) -> JobWorkflowPresentation {
+        FieldOperationsEngine().context(
+            for: job,
+            invoice: store.invoice(for: job),
+            assignment: store.assignment(forJobID: job.id)
+        ).presentation
     }
 
     private func durationText(

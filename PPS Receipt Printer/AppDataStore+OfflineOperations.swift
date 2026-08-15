@@ -418,9 +418,26 @@ extension AppDataStore {
                 in: &recurringWorkTemplates
             )
             materializeRecurringWorkHorizon()
-        case .payment, .route, .custom:
+        case .custom:
+            guard mutation.entityID == Self.businessProfileSynchronizationID,
+                  let profile = decodeRemote(BusinessProfile.self, mutation) else {
+                return
+            }
+            businessProfile = profile
+            applyCompanyStandardTaxToUncalculatedDraftInvoices()
+        case .payment, .route:
             break
         }
+    }
+
+    func enqueueBusinessProfileSynchronization() {
+        guard offlineSynchronizationMode.requiresRemoteQueue,
+              canManageCompany else { return }
+        enqueueRecordMutation(
+            entityType: .custom,
+            entityID: Self.businessProfileSynchronizationID,
+            value: businessProfile
+        )
     }
 
     private func decodeRemote<Value: Decodable>(

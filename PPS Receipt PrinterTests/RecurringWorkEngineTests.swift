@@ -76,6 +76,36 @@ struct RecurringWorkEngineTests {
         #expect(result.isEmpty)
     }
 
+    @Test func heldTemplateGeneratesNothing() throws {
+        let anchor = try testDate(year: 2026, month: 8, day: 10)
+        var template = makeTemplate(anchor: anchor, rule: .weekly)
+        template.status = .held
+
+        let result = try engine.plan(
+            template: template,
+            generatedAt: try testDate(year: 2026, month: 8, day: 7),
+            calendar: testCalendar
+        )
+
+        #expect(result.isEmpty)
+    }
+
+    @Test func resumedScheduleStartsAtHeldOccurrenceIndex() throws {
+        let anchor = try testDate(year: 2026, month: 9, day: 1)
+        var template = makeTemplate(anchor: anchor, rule: .weekly)
+        template.scheduleStartIndex = 3
+        template.endCondition = .occurrenceCount(6)
+
+        let result = try engine.plan(
+            template: template,
+            generatedAt: try testDate(year: 2026, month: 9, day: 1),
+            calendar: testCalendar
+        )
+
+        #expect(result.map(\.occurrenceIndex) == [3, 4, 5])
+        #expect(result.first?.scheduledDate == anchor)
+    }
+
     @MainActor
     @Test func synchronizedSkipPrunesStaleUnstartedOccurrence() throws {
         let anchor = try testDate(year: 2026, month: 8, day: 10)
@@ -119,6 +149,38 @@ struct RecurringWorkEngineTests {
             $0.recurringWorkTemplateID == template.id &&
             $0.recurrenceSequence == 2
         }))
+    }
+
+    @MainActor
+    @Test func synchronizedHoldPrunesRemoteUnstartedCopies() throws {
+        let anchor = try testDate(year: 2026, month: 8, day: 10)
+        var template = makeTemplate(anchor: anchor, rule: .weekly)
+        template.status = .held
+        template.heldOccurrenceIndex = 1
+
+        var completed = template.prototype
+        completed.recurringWorkTemplateID = template.id
+        completed.recurrenceSequence = 0
+        completed.workflowState = .completed
+        completed.status = .completed
+
+        var stale = template.prototype
+        stale.id = UUID()
+        stale.recurringWorkTemplateID = template.id
+        stale.recurrenceSequence = 1
+        stale.workflowState = .notStarted
+        stale.status = .assigned
+
+        let store = AppDataStore(persistenceEnabled: false)
+        store.recurringWorkTemplates = [template]
+        store.jobs = [completed, stale]
+
+        store.materializeRecurringWorkHorizon(
+            generatedAt: try testDate(year: 2026, month: 8, day: 7)
+        )
+
+        #expect(store.jobs.contains(where: { $0.id == completed.id }))
+        #expect(store.jobs.contains(where: { $0.id == stale.id }) == false)
     }
 
     @Test func monthlySeriesClampsToShorterMonth() throws {
@@ -253,6 +315,59 @@ struct RecurringWorkEngineTests {
         #expect(rebuiltJobs.contains(where: {
             oldFutureDates.contains($0.scheduledDate)
         }) == false)
+    }
+
+    @MainActor
+    @Test func holdAndReleaseRebuildsOnlyRemainingUnstartedWork() throws {
+        let anchor = try testDate(year: 2026, month: 8, day: 10)
+        var template = makeTemplate(anchor: anchor, rule: .weekly)
+        template.endCondition = .occurrenceCount(4)
+        template.generationHorizonDays = 365
+
+        let oldPlan = try engine.plan(
+            template: template,
+            generatedAt: try testDate(year: 2026, month: 8, day: 7),
+            calendar: testCalendar
+        )
+        var oldJobs = oldPlan.map { occurrence in
+            var job = template.prototype
+            job.id = occurrence.jobID
+            job.recurringWorkTemplateID = template.id
+            job.recurrenceSeriesID = template.id
+            job.recurringWorkOccurrenceKey = occurrence.occurrenceKey
+            job.recurrenceSequence = occurrence.occurrenceIndex
+            job.scheduledDate = occurrence.scheduledDate
+            job.workflowState = .notStarted
+            job.status = .scheduled
+            return job
+        }
+        oldJobs[0].workflowState = .completed
+        oldJobs[0].status = .completed
+        let completedID = oldJobs[0].id
+        let selectedID = oldJobs[1].id
+
+        let store = AppDataStore(persistenceEnabled: false)
+        store.recurringWorkTemplates = [template]
+        store.jobs = oldJobs
+
+        store.holdRecurringWork(
+            templateID: template.id,
+            fromJobID: selectedID,
+            at: try testDate(year: 2026, month: 8, day: 12)
+        )
+
+        #expect(store.recurringWorkTemplates.first?.status == .held)
+        #expect(store.jobs.map(\.id) == [completedID])
+
+        let releaseDate = try testDate(year: 2026, month: 9, day: 1)
+        store.releaseRecurringWork(templateID: template.id, at: releaseDate)
+
+        #expect(store.recurringWorkTemplates.first?.status == .active)
+        #expect(store.jobs.contains(where: { $0.id == completedID }))
+        let rebuilt = store.jobs.filter { $0.workflowState == .notStarted }
+            .sorted { $0.recurrenceSequence < $1.recurrenceSequence }
+        #expect(rebuilt.map(\.recurrenceSequence) == [1, 2, 3])
+        #expect(rebuilt.first?.scheduledDate == releaseDate)
     }
 
     private func makeTemplate(

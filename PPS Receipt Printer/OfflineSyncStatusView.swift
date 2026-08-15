@@ -207,10 +207,24 @@ struct OfflineSyncDetailsView: View {
     private var visibleOperations: [PendingOfflineOperation] {
         Array(
             queue.orderedOperations
-                .filter { !$0.status.isTerminal || $0.status == .synchronized }
+                .filter {
+                    !$0.status.isTerminal || $0.status == .synchronized
+                }
+                .filter { !$0.status.requiresHumanAttention }
                 .reversed()
                 .prefix(50)
         )
+    }
+
+    private var blockingOperations: [PendingOfflineOperation] {
+        queue.orderedOperations
+            .filter { $0.status.requiresHumanAttention }
+            .sorted {
+                if $0.updatedAt != $1.updatedAt {
+                    return $0.updatedAt > $1.updatedAt
+                }
+                return $0.sequenceNumber < $1.sequenceNumber
+            }
     }
 
     var body: some View {
@@ -276,6 +290,21 @@ struct OfflineSyncDetailsView: View {
 
             }
 
+            if !blockingOperations.isEmpty {
+                Section {
+                    ForEach(blockingOperations) { operation in
+                        operationRow(operation, showsRecordIdentifier: true)
+                    }
+                } header: {
+                    Label("Action Required", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                } footer: {
+                    Text(
+                        "PFSS lists blocking failures here regardless of how many changes are waiting behind them."
+                    )
+                }
+            }
+
             Section("Synchronization Activity") {
                 if visibleOperations.isEmpty {
                     ContentUnavailableView(
@@ -330,7 +359,10 @@ struct OfflineSyncDetailsView: View {
         }
     }
 
-    private func operationRow(_ operation: PendingOfflineOperation) -> some View {
+    private func operationRow(
+        _ operation: PendingOfflineOperation,
+        showsRecordIdentifier: Bool = false
+    ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(operation.actionName)
@@ -343,6 +375,13 @@ struct OfflineSyncDetailsView: View {
             Text("\(operation.entityType.rawValue.capitalized) • \(operation.createdAt.formatted(date: .abbreviated, time: .shortened))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if showsRecordIdentifier,
+               let entityID = operation.entityID {
+                Text("Record ID: \(entityID.uuidString.lowercased())")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
             if let failure = operation.failure {
                 Text(failure.message)
                     .font(.caption)

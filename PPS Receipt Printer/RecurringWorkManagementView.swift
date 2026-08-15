@@ -41,17 +41,22 @@ struct RecurringWorkManagementView: View {
     @Environment(\.dismiss) private var dismiss
 
     let templateID: UUID
+    let currentJobID: UUID?
     let onSeriesUpdated: (() -> Void)?
 
     @State private var showingTerminationConfirmation = false
+    @State private var showingHoldConfirmation = false
+    @State private var showingReleaseConfirmation = false
     @State private var seriesEditorState: RecurringWorkSeriesEditorState?
     @State private var jobToSkip: JobRecord?
 
     init(
         templateID: UUID,
+        currentJobID: UUID? = nil,
         onSeriesUpdated: (() -> Void)? = nil
     ) {
         self.templateID = templateID
+        self.currentJobID = currentJobID
         self.onSeriesUpdated = onSeriesUpdated
     }
 
@@ -116,6 +121,12 @@ struct RecurringWorkManagementView: View {
 
                     if template.status == .active {
                         Button {
+                            showingHoldConfirmation = true
+                        } label: {
+                            Label("Place Series on Hold", systemImage: "pause.rectangle")
+                        }
+
+                        Button {
                             store.pauseRecurringWork(templateID: templateID)
                         } label: {
                             Label("Pause Future Generation", systemImage: "pause.circle")
@@ -126,9 +137,17 @@ struct RecurringWorkManagementView: View {
                         } label: {
                             Label("Resume Recurring Work", systemImage: "play.circle")
                         }
+                    } else if template.status == .held {
+                        Button {
+                            showingReleaseConfirmation = true
+                        } label: {
+                            Label("Release Series Hold", systemImage: "play.rectangle")
+                        }
                     }
 
-                    if template.status == .active || template.status == .paused {
+                    if template.status == .active ||
+                        template.status == .paused ||
+                        template.status == .held {
                         Button(role: .destructive) {
                             showingTerminationConfirmation = true
                         } label: {
@@ -138,7 +157,7 @@ struct RecurringWorkManagementView: View {
                 } header: {
                     Text("Controls")
                 } footer: {
-                    Text("Pausing keeps existing scheduled jobs. Stopping removes only future unstarted jobs; completed work remains in history.")
+                    Text("Holding removes the selected and later unstarted jobs until release, then rebuilds them from the release date. Pausing keeps existing scheduled jobs. Completed and in-progress work remains unchanged.")
                 }
 
                 Section("Upcoming Jobs") {
@@ -204,6 +223,35 @@ struct RecurringWorkManagementView: View {
                 }
             )
             .id(state.id)
+        }
+        .confirmationDialog(
+            "Place this recurring series on hold?",
+            isPresented: $showingHoldConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Place Series on Hold") {
+                store.holdRecurringWork(
+                    templateID: templateID,
+                    fromJobID: currentJobID
+                )
+                onSeriesUpdated?()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("The selected occurrence and every later unstarted job will be removed from the schedule until this hold is released.")
+        }
+        .confirmationDialog(
+            "Release this recurring series hold?",
+            isPresented: $showingReleaseConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Release and Rebuild Schedule") {
+                store.releaseRecurringWork(templateID: templateID)
+                onSeriesUpdated?()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("The held occurrence will be scheduled for today and later jobs will follow the series frequency from that date.")
         }
         .confirmationDialog(
             "Stop this recurring series?",
@@ -388,7 +436,13 @@ private struct RecurringWorkSeriesEditorView: View {
 
 private extension RecurringWorkTemplateStatus {
     var displayName: String {
-        rawValue.capitalized
+        switch self {
+        case .active: return "Active"
+        case .paused: return "Paused"
+        case .held: return "On Hold"
+        case .terminated: return "Stopped"
+        case .archived: return "Archived"
+        }
     }
 }
 

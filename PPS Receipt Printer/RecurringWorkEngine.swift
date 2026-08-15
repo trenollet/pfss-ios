@@ -40,6 +40,7 @@ enum RecurringWorkEndCondition: Codable, Hashable {
 enum RecurringWorkTemplateStatus: String, Codable, CaseIterable {
     case active
     case paused
+    case held
     case terminated
     case archived
 }
@@ -68,6 +69,10 @@ struct RecurringWorkTemplate: Identifiable, Codable {
     var generationHorizonDays: Int
     var prototype: JobRecord
     var exceptions: [RecurringWorkOccurrenceException]
+    var scheduleStartIndex: Int?
+    var heldOccurrenceIndex: Int?
+    var heldScheduledDate: Date?
+    var holdStartedAt: Date?
     var createdAt: Date
     var updatedAt: Date
 
@@ -81,6 +86,10 @@ struct RecurringWorkTemplate: Identifiable, Codable {
         generationHorizonDays: Int = 120,
         prototype: JobRecord,
         exceptions: [RecurringWorkOccurrenceException] = [],
+        scheduleStartIndex: Int? = nil,
+        heldOccurrenceIndex: Int? = nil,
+        heldScheduledDate: Date? = nil,
+        holdStartedAt: Date? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -93,6 +102,10 @@ struct RecurringWorkTemplate: Identifiable, Codable {
         self.generationHorizonDays = min(max(generationHorizonDays, 7), 730)
         self.prototype = prototype
         self.exceptions = exceptions
+        self.scheduleStartIndex = scheduleStartIndex
+        self.heldOccurrenceIndex = heldOccurrenceIndex
+        self.heldScheduledDate = heldScheduledDate
+        self.holdStartedAt = holdStartedAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -151,7 +164,8 @@ struct RecurringWorkEngine {
 
         let excluded = Set(template.exceptions.map(\.occurrenceIndex))
         var result: [RecurringWorkPlannedOccurrence] = []
-        var index = 0
+        let scheduleStartIndex = max(template.scheduleStartIndex ?? 0, 0)
+        var index = scheduleStartIndex
 
         while index < Self.maximumOccurrencesPerPlan {
             if case let .occurrenceCount(count) = template.endCondition,
@@ -162,7 +176,7 @@ struct RecurringWorkEngine {
             guard let date = occurrenceDate(
                 anchor: template.anchorDate,
                 rule: template.rule,
-                index: index,
+                index: index - scheduleStartIndex,
                 calendar: calendar
             ) else { break }
 

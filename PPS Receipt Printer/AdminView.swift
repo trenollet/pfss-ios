@@ -85,6 +85,15 @@ struct AdminView: View {
                 if cloudManager.isEnrolled {
                     Section("Field Workflow") {
                         NavigationLink {
+                            MileageTrackingSettingsView()
+                        } label: {
+                            Label(
+                                "Mileage Tracking",
+                                systemImage: "car.rear.road.lane"
+                            )
+                        }
+
+                        NavigationLink {
                             JobTimerReminderSettingsView()
                         } label: {
                             Label(

@@ -10,6 +10,10 @@ import Foundation
 
 enum OfflineSynchronizationAdapterResult {
     case synchronized(remoteRevision: String?)
+    case supersededByCloud(
+        remoteRevision: String,
+        operation: PendingOfflineOperation
+    )
     case failed(OfflineFailureDetails)
     /// Part 5 will add merge and human-review policies around this result.
     case conflicted(OfflineConflictInformation)
@@ -59,6 +63,8 @@ final class OfflineSynchronizationService: ObservableObject {
     let queue: OfflineOperationQueue
     let connectivity: any OfflineConnectivityMonitoring
     let adapter: any OfflineSynchronizationAdapter
+
+    var onOperationSupersededByCloud: ((PendingOfflineOperation, String) -> Void)?
 
     private let retryPolicy: OfflineRetryPolicy
     private let conflictResolver = OfflineConflictResolver()
@@ -224,6 +230,25 @@ final class OfflineSynchronizationService: ObservableObject {
             if let remoteRevision {
                 operation.metadata["remoteRevision"] = remoteRevision
             }
+            do {
+                try queue.update(operation)
+                lastProcessedOperationID = operation.id
+                return true
+            } catch {
+                state = .failed
+                return false
+            }
+
+        case let .supersededByCloud(remoteRevision, cloudOperation):
+            onOperationSupersededByCloud?(cloudOperation, remoteRevision)
+            operation.status = .synchronized
+            operation.synchronizedAt = completedAt
+            operation.failure = nil
+            operation.conflict = nil
+            operation.nextRetryAt = nil
+            operation.metadata["remoteRevision"] = remoteRevision
+            operation.metadata["staleDeviceChangeDiscarded"] = "true"
+            operation.retryAttempts[operation.retryAttempts.count - 1].outcome = .succeeded
             do {
                 try queue.update(operation)
                 lastProcessedOperationID = operation.id

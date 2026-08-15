@@ -1132,6 +1132,137 @@ describe("managed Owner identity boundary", () => {
 });
 
 describe("tenant isolation", () => {
+  it("shares technician job declines with managers and resolves them idempotently", async () => {
+    const owner = await seedIdentity("Decline Owner", "owner");
+    const manager = await seedMemberInTenant(owner, "Decline Manager", "manager");
+    const technician = await seedMemberInTenant(owner, "Decline Technician", "member");
+    const employeeID = crypto.randomUUID();
+    await env.DB.prepare(
+      "UPDATE tenant_members SET employee_id = ?1 WHERE id = ?2",
+    ).bind(employeeID, technician.memberID).run();
+
+    const assignmentID = crypto.randomUUID();
+    const jobID = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const assignment = {
+      id: assignmentID,
+      jobID,
+      jobNumber: "JOB-DECLINE-001",
+      customerNumber: "PPS-DECLINE-001",
+      status: "Scheduled",
+      crew: { members: [{
+        id: crypto.randomUUID(), employeeID,
+        role: "Primary Technician", assignedDate: now, removedDate: null,
+      }] },
+    };
+    const recordData = Buffer.from(JSON.stringify(assignment)).toString("base64");
+    const mutation = Buffer.from(JSON.stringify({ recordData })).toString("base64");
+    const operation = {
+      id: crypto.randomUUID(), idempotencyKey: crypto.randomUUID(),
+      type: "recordMutation", entityType: "assignment", entityID: assignmentID,
+      payload: { body: mutation }, createdAt: now,
+    };
+    const accepted = await worker.fetch(request(owner, "/v1/operations", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(operation),
+    }), env);
+    expect(accepted.status).toBe(201);
+
+    const idempotencyKey = crypto.randomUUID();
+    const submit = () => worker.fetch(request(technician, "/v1/job-declines", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ assignmentID, jobID, reason: "Schedule conflict", idempotencyKey }),
+    }), env);
+    expect((await submit()).status).toBe(201);
+    const duplicate = await submit();
+    expect(duplicate.status).toBe(200);
+    expect((await duplicate.json<{ duplicate: boolean }>()).duplicate).toBe(true);
+
+    const inbox = await worker.fetch(
+      request(manager, "/v1/job-declines?status=pending"), env,
+    );
+    const listed = await inbox.json<{ reviews: Array<{ id: string }> }>();
+    expect(listed.reviews).toHaveLength(1);
+    const reviewID = listed.reviews[0].id;
+    const resolve = () => worker.fetch(request(
+      manager, `/v1/job-declines/${reviewID}/resolve`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "rescheduled", note: "Moved to Friday" }),
+      },
+    ), env);
+    expect((await resolve()).status).toBe(200);
+    const repeated = await resolve();
+    expect((await repeated.json<{ duplicate: boolean }>()).duplicate).toBe(true);
+  });
+  it("synchronizes mileage only across devices owned by the same member", async () => {
+    const owner = await seedIdentity("Mileage Owner");
+    const secondDevice = await seedAdditionalDevice(owner, "Mileage Second");
+    const otherMember = await seedMemberInTenant(owner, "Other Member", "manager");
+    const tripID = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const trip = {
+      id: tripID, accountID: owner.tenantID, userID: owner.memberID,
+      originatingDeviceID: owner.deviceID, entrySource: "automatic",
+      startedAt: now, endedAt: now, timeZoneIdentifier: "America/Chicago",
+      route: [{ latitude: 35.4, longitude: -97.5, timestamp: now,
+        horizontalAccuracyMeters: 5, speedMetersPerSecond: 12 }],
+      distanceMeters: 1609.344, classification: "personal",
+      businessPurpose: "", note: "private", createdAt: now, updatedAt: now,
+      detectionVersion: 1, accuracy: { acceptedPointCount: 1,
+        rejectedPointCount: 0, averageHorizontalAccuracyMeters: 5 },
+      classificationHistory: [],
+    };
+    const upload = await worker.fetch(request(owner, "/v1/mileage/sync", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cursor: 0, trips: [{ id: tripID,
+        originatingDeviceID: owner.deviceID, classification: "personal",
+        startedAt: now, updatedAt: now, payload: trip }], deletions: [] }),
+    }), env);
+    expect(upload.status).toBe(200);
+
+    const restored = await worker.fetch(request(secondDevice, "/v1/mileage/sync", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cursor: 0, trips: [], deletions: [] }),
+    }), env);
+    const restoredBody = await restored.json<{ changes: Array<{
+      payload?: { id: string; note: string };
+    }> }>();
+    expect(restoredBody.changes[0]?.payload?.id).toBe(tripID);
+    expect(restoredBody.changes[0]?.payload?.note).toBe("private");
+
+    const isolated = await worker.fetch(request(otherMember, "/v1/mileage/sync", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cursor: 0, trips: [], deletions: [] }),
+    }), env);
+    const isolatedBody = await isolated.json<{ changes: unknown[] }>();
+    expect(isolatedBody.changes).toEqual([]);
+  });
+
+  it("exposes business summaries without route or personal-trip details", async () => {
+    const owner = await seedIdentity("Mileage Summary");
+    const manager = await seedMemberInTenant(owner, "Mileage Manager", "manager");
+    const now = new Date().toISOString();
+    const uploadTrip = async (classification: "business" | "personal") => {
+      const id = crypto.randomUUID();
+      const payload = { id, startedAt: now, distanceMeters: 3218.688,
+        businessPurpose: "Customer visit", route: [{ latitude: 35.4 }] };
+      return worker.fetch(request(owner, "/v1/mileage/sync", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cursor: 0, trips: [{ id,
+          originatingDeviceID: owner.deviceID, classification,
+          startedAt: now, updatedAt: now, payload }], deletions: [] }),
+      }), env);
+    };
+    expect((await uploadTrip("business")).status).toBe(200);
+    expect((await uploadTrip("personal")).status).toBe(200);
+    const summary = await worker.fetch(request(manager,
+      `/v1/mileage/business-summary?from=${encodeURIComponent(now)}&through=${encodeURIComponent(now)}`), env);
+    expect(summary.status).toBe(200);
+    const body = await summary.json<{ trips: Array<Record<string, unknown>> }>();
+    expect(body.trips).toHaveLength(1);
+    expect(body.trips[0]?.businessPurpose).toBe("Customer visit");
+    expect(body.trips[0]).not.toHaveProperty("route");
+  });
   it("publishes record changes only to devices in the same tenant", async () => {
     const alphaOwner = await seedIdentity("Sync Alpha");
     const alphaMember = await seedMemberInTenant(alphaOwner, "Sync Member");
@@ -1298,6 +1429,165 @@ describe("tenant isolation", () => {
         WHERE tenant_id = ?1 AND entity_type = 'recurringWork'`,
     ).bind(owner.tenantID).first<{ entityID: string }>();
     expect(stored?.entityID).toBe(templateID.toLowerCase());
+  });
+
+  it("restricts synchronized company profiles to Managers and Owners", async () => {
+    const owner = await seedIdentity("Company Profile Authority");
+    const member = await seedMemberInTenant(owner, "Company Profile Member");
+    const profileID = "00000000-0000-0000-0000-000000000001";
+    const mutation = (identity: SeededIdentity) => request(
+      identity,
+      "/v1/operations",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: crypto.randomUUID(),
+          idempotencyKey: `company-profile-${crypto.randomUUID()}`,
+          type: "recordMutation",
+          entityType: "custom",
+          entityID: profileID,
+          actionName: "upsertRecord",
+          createdAt: new Date().toISOString(),
+        }),
+      },
+    );
+
+    const memberResponse = await worker.fetch(mutation(member), env);
+    expect(memberResponse.status).toBe(403);
+
+    const ownerResponse = await worker.fetch(mutation(owner), env);
+    expect(ownerResponse.status).toBe(201);
+    const stored = await env.DB.prepare(
+      `SELECT entity_id AS entityID FROM synchronized_records
+        WHERE tenant_id = ?1 AND entity_type = 'custom'`,
+    ).bind(owner.tenantID).first<{ entityID: string }>();
+    expect(stored?.entityID).toBe(profileID);
+  });
+
+  it("preserves the cloud technician when a Member submits a stale job snapshot", async () => {
+    const owner = await seedIdentity("Protected Job Owner");
+    const member = await seedMemberInTenant(owner, "Protected Job Technician");
+    const authorizedTechnicianID = crypto.randomUUID();
+    const staleTechnicianID = crypto.randomUUID();
+    const jobID = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const makeOperation = (
+      record: Record<string, unknown>,
+      baseRevision: string | null,
+    ) => {
+      const recordData = Buffer.from(JSON.stringify(record)).toString("base64");
+      const mutation = Buffer.from(JSON.stringify({
+        entityType: "job", entityID: jobID, recordData, modifiedAt: now,
+      })).toString("base64");
+      return {
+        id: crypto.randomUUID(),
+        idempotencyKey: crypto.randomUUID(),
+        type: "recordMutation",
+        entityType: "job",
+        entityID: jobID,
+        actionName: "upsertRecord",
+        baseRevision,
+        payload: { schemaVersion: 1, contentType: "test", body: mutation },
+        createdAt: now,
+      };
+    };
+
+    const created = await worker.fetch(request(owner, "/v1/operations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(makeOperation({
+        id: jobID,
+        status: "Assigned",
+        primaryTechnicianID: authorizedTechnicianID,
+      }, null)),
+    }), env);
+    expect(created.status).toBe(201);
+    const revision = (await created.json<{ revision: string }>()).revision;
+
+    const updated = await worker.fetch(request(member, "/v1/operations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(makeOperation({
+        id: jobID,
+        status: "Traveling",
+        primaryTechnicianID: staleTechnicianID,
+      }, revision)),
+    }), env);
+    expect(updated.status).toBe(201);
+
+    const stored = await env.DB.prepare(
+      `SELECT operation_json AS operationJSON FROM synchronized_records
+        WHERE tenant_id = ?1 AND entity_type = 'job' AND entity_id = ?2`,
+    ).bind(owner.tenantID, jobID.toLowerCase()).first<{ operationJSON: string }>();
+    const operation = JSON.parse(stored!.operationJSON) as {
+      payload: { body: string };
+      metadata: { serverProtectedFields: string[] };
+    };
+    const mutation = JSON.parse(Buffer.from(operation.payload.body, "base64")
+      .toString("utf8")) as { recordData: string };
+    const record = JSON.parse(Buffer.from(mutation.recordData, "base64")
+      .toString("utf8")) as { status: string; primaryTechnicianID: string };
+    expect(record.status).toBe("Traveling");
+    expect(record.primaryTechnicianID).toBe(authorizedTechnicianID);
+    expect(operation.metadata.serverProtectedFields).toEqual(["primaryTechnicianID"]);
+  });
+
+  it("allows a Member to synchronize a new Job assigned to their own profile", async () => {
+    const owner = await seedIdentity("Offline Job Owner");
+    const member = await seedMemberInTenant(owner, "Offline Job Technician");
+    const employeeID = crypto.randomUUID();
+    await env.DB.prepare(
+      "UPDATE tenant_members SET employee_id = ?1 WHERE id = ?2",
+    ).bind(employeeID, member.memberID).run();
+    const jobID = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const send = async (primaryTechnicianID: string | null) => {
+      const recordData = Buffer.from(JSON.stringify({
+        id: jobID, status: "Assigned", primaryTechnicianID,
+      })).toString("base64");
+      const mutation = Buffer.from(JSON.stringify({
+        entityType: "job", entityID: jobID, recordData, modifiedAt: now,
+      })).toString("base64");
+      return worker.fetch(request(member, "/v1/operations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: crypto.randomUUID(),
+          idempotencyKey: crypto.randomUUID(),
+          type: "recordMutation",
+          entityType: "job",
+          entityID: jobID,
+          actionName: "upsertRecord",
+          payload: { schemaVersion: 1, contentType: "test", body: mutation },
+          createdAt: now,
+        }),
+      }), env);
+    };
+
+    expect((await send(employeeID)).status).toBe(201);
+
+    const unauthorizedJobID = crypto.randomUUID();
+    const recordData = Buffer.from(JSON.stringify({
+      id: unauthorizedJobID,
+      status: "Assigned",
+      primaryTechnicianID: crypto.randomUUID(),
+    })).toString("base64");
+    const mutation = Buffer.from(JSON.stringify({
+      entityType: "job", entityID: unauthorizedJobID, recordData, modifiedAt: now,
+    })).toString("base64");
+    const forbidden = await worker.fetch(request(member, "/v1/operations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: crypto.randomUUID(), idempotencyKey: crypto.randomUUID(),
+        type: "recordMutation", entityType: "job", entityID: unauthorizedJobID,
+        actionName: "upsertRecord",
+        payload: { schemaVersion: 1, contentType: "test", body: mutation },
+        createdAt: now,
+      }),
+    }), env);
+    expect(forbidden.status).toBe(403);
   });
 
   it("prevents Members from promoting their own employee record", async () => {
@@ -1547,6 +1837,70 @@ describe("tenant isolation", () => {
     );
     expect((await clearedInbox.json<{ conflicts: unknown[] }>()).conflicts)
       .toHaveLength(0);
+  });
+
+  it("automatically keeps cloud data when a device change is over eight hours stale", async () => {
+    const owner = await seedIdentity("Stale Window Owner");
+    const staleDevice = await seedAdditionalDevice(owner, "Week Offline iPad");
+    const entityID = crypto.randomUUID();
+    const send = (
+      identity: SeededIdentity,
+      label: string,
+      baseRevision: string | null,
+      createdAt: string,
+    ) => worker.fetch(request(identity, "/v1/operations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: crypto.randomUUID(),
+        idempotencyKey: `stale-window-${crypto.randomUUID()}`,
+        type: "recordMutation",
+        entityType: "customer",
+        entityID,
+        actionName: "upsertRecord",
+        baseRevision,
+        payload: { schemaVersion: 1, contentType: "test", body: label },
+        createdAt,
+      }),
+    }), env);
+
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const first = await send(owner, "original", null, weekAgo);
+    const firstRevision = (await first.json<{ revision: string }>()).revision;
+    const current = await send(
+      owner,
+      "current cloud value",
+      firstRevision,
+      new Date().toISOString(),
+    );
+    const currentRevision = (await current.json<{ revision: string }>()).revision;
+
+    const stale = await send(staleDevice, "obsolete iPad value", firstRevision, weekAgo);
+    expect(stale.status).toBe(200);
+    const receipt = await stale.json<{
+      revision: string;
+      supersededByCloud: boolean;
+      currentOperation: { payload: { body: string } };
+    }>();
+    expect(receipt.supersededByCloud).toBe(true);
+    expect(receipt.revision).toBe(currentRevision);
+    expect(receipt.currentOperation.payload.body).toBe("current cloud value");
+
+    const accepted = await env.DB.prepare(
+      `SELECT operation_json AS operationJSON
+         FROM synchronized_records
+        WHERE tenant_id = ?1 AND entity_type = 'customer' AND entity_id = ?2`,
+    ).bind(owner.tenantID, entityID.toLowerCase()).first<{
+      operationJSON: string;
+    }>();
+    expect(JSON.parse(accepted!.operationJSON).payload.body)
+      .toBe("current cloud value");
+
+    const unresolved = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM synchronization_conflicts
+        WHERE tenant_id = ?1 AND entity_id = ?2 AND status = 'unresolved'`,
+    ).bind(owner.tenantID, entityID.toLowerCase()).first<{ count: number }>();
+    expect(Number(unresolved?.count ?? 0)).toBe(0);
   });
 
   it("keeps backup listing and download inside the authenticated tenant", async () => {

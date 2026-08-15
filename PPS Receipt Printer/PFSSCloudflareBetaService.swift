@@ -28,6 +28,55 @@ struct PFSSCloudflareBackup: Identifiable, Codable, Hashable {
     var id: String { archiveID }
 }
 
+enum PFSSJobDeclineStatus: String, Codable, Hashable {
+    case pending
+    case resolved
+}
+
+enum PFSSJobDeclineResolutionAction: String, Codable, CaseIterable, Hashable {
+    case reassigned
+    case rescheduled
+    case returned
+    case cancelled
+
+    var title: String {
+        switch self {
+        case .reassigned: return "Reassigned"
+        case .rescheduled: return "Rescheduled"
+        case .returned: return "Returned to Technician"
+        case .cancelled: return "Cancelled"
+        }
+    }
+}
+
+struct PFSSJobDeclineReview: Identifiable, Codable, Hashable {
+    var id: String
+    var assignmentID: String
+    var jobID: String
+    var jobNumber: String
+    var customerNumber: String
+    var technicianMemberID: String
+    var technicianEmployeeID: String
+    var originatingDeviceID: String
+    var reason: String
+    var status: PFSSJobDeclineStatus
+    var resolutionAction: PFSSJobDeclineResolutionAction?
+    var resolutionNote: String?
+    var resolvedByMemberID: String?
+    var createdAt: Date
+    var updatedAt: Date
+    var resolvedAt: Date?
+}
+
+private struct PFSSJobDeclineReviewEnvelope: Decodable {
+    var review: PFSSJobDeclineReview
+    var duplicate: Bool
+}
+
+private struct PFSSJobDeclineReviewList: Decodable {
+    var reviews: [PFSSJobDeclineReview]
+}
+
 enum PFSSTenantRole: String, Codable, Equatable {
     case owner
     case manager
@@ -193,6 +242,7 @@ struct PFSSEmployeeArchiveAccessResult: Decodable, Equatable {
 
 struct PFSSCloudflareSession: Codable, Equatable {
     struct Tenant: Codable, Equatable {
+        var id: String? = nil
         var displayName: String
     }
 
@@ -308,6 +358,8 @@ private struct PFSSCloudflareBackupList: Decodable {
 
 private struct PFSSCloudflareOperationResponse: Decodable {
     var revision: String
+    var supersededByCloud: Bool?
+    var currentOperation: PendingOfflineOperation?
 }
 
 private struct PFSSCloudflareSynchronizationChange: Decodable {
@@ -546,6 +598,66 @@ final class PFSSCloudflareBetaManager: ObservableObject {
         )
         try await refreshSession()
         return receipt
+    }
+
+    func submitJobDecline(
+        assignmentID: UUID,
+        jobID: UUID,
+        reason: String,
+        idempotencyKey: UUID
+    ) async throws -> PFSSJobDeclineReview {
+        var request = try request(
+            path: "/v1/job-declines",
+            method: "POST",
+            authenticated: true
+        )
+        request.httpBody = try Self.encoder.encode([
+            "assignmentID": assignmentID.uuidString.lowercased(),
+            "jobID": jobID.uuidString.lowercased(),
+            "reason": reason.trimmingCharacters(in: .whitespacesAndNewlines),
+            "idempotencyKey": idempotencyKey.uuidString.lowercased()
+        ])
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        return try Self.decoder.decode(
+            PFSSJobDeclineReviewEnvelope.self,
+            from: try await perform(request)
+        ).review
+    }
+
+    func jobDeclineReviews(
+        status: PFSSJobDeclineStatus = .pending
+    ) async throws -> [PFSSJobDeclineReview] {
+        let data = try await perform(
+            try request(
+                path: "/v1/job-declines?status=\(status.rawValue)",
+                authenticated: true
+            )
+        )
+        return try Self.decoder.decode(
+            PFSSJobDeclineReviewList.self,
+            from: data
+        ).reviews
+    }
+
+    func resolveJobDecline(
+        reviewID: String,
+        action: PFSSJobDeclineResolutionAction,
+        note: String
+    ) async throws -> PFSSJobDeclineReview {
+        var request = try request(
+            path: "/v1/job-declines/\(reviewID)/resolve",
+            method: "POST",
+            authenticated: true
+        )
+        request.httpBody = try Self.encoder.encode([
+            "action": action.rawValue,
+            "note": note.trimmingCharacters(in: .whitespacesAndNewlines)
+        ])
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        return try Self.decoder.decode(
+            PFSSJobDeclineReviewEnvelope.self,
+            from: try await perform(request)
+        ).review
     }
 
     func enroll(code: String, deviceName: String) async throws {
@@ -967,6 +1079,56 @@ final class PFSSCloudflareBetaManager: ObservableObject {
         return (response.cursor, response.hasMore, operations)
     }
 
+    func synchronizeMileageTrips(
+        cursor: Int,
+        trips: [MileageTrip],
+        deletions: [UUID: Date]
+    ) async throws -> PFSSMileageSynchronizationResponse {
+        struct Upload: Encodable {
+            let id: UUID
+            let originatingDeviceID: UUID
+            let classification: MileageTripClassification
+            let startedAt: Date
+            let updatedAt: Date
+            let payload: MileageTrip
+        }
+        struct Deletion: Encodable {
+            let id: UUID
+            let deletedAt: Date
+        }
+        struct RequestBody: Encodable {
+            let cursor: Int
+            let trips: [Upload]
+            let deletions: [Deletion]
+        }
+        var request = try request(
+            path: "/v1/mileage/sync",
+            method: "POST",
+            authenticated: true
+        )
+        request.httpBody = try Self.encoder.encode(RequestBody(
+            cursor: max(cursor, 0),
+            trips: trips.map {
+                Upload(
+                    id: $0.id,
+                    originatingDeviceID: $0.originatingDeviceID,
+                    classification: $0.classification,
+                    startedAt: $0.startedAt,
+                    updatedAt: $0.updatedAt,
+                    payload: $0
+                )
+            },
+            deletions: deletions.map {
+                Deletion(id: $0.key, deletedAt: $0.value)
+            }
+        ))
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        return try Self.decoder.decode(
+            PFSSMileageSynchronizationResponse.self,
+            from: try await perform(request)
+        )
+    }
+
     func synchronizationConflicts() async throws
         -> [PFSSCloudflareSynchronizationConflict] {
         let data = try await perform(
@@ -1180,6 +1342,25 @@ final class PFSSCloudflareBetaManager: ObservableObject {
         encoder.dateEncodingStrategy = .iso8601
         return encoder
     }()
+}
+
+struct PFSSMileageSynchronizationResponse: Decodable {
+    let cursor: Int
+    let hasMore: Bool
+    let changes: [PFSSMileageSynchronizationChange]
+}
+
+struct PFSSMileageSynchronizationChange: Decodable {
+    enum ChangeType: String, Decodable {
+        case upsert
+        case delete
+    }
+
+    let sequence: Int
+    let tripID: UUID
+    let type: ChangeType
+    let payload: MileageTrip?
+    let changedAt: Date
 }
 
 enum PFSSCloudSynchronizationStateKeys {
@@ -1514,10 +1695,17 @@ final class PFSSCloudflareSynchronizationAdapter: OfflineSynchronizationAdapter 
                     "Operation synchronization failed (\(http.statusCode))."
                 )
             }
-            let result = try JSONDecoder().decode(
+            let result = try Self.decoder.decode(
                 PFSSCloudflareOperationResponse.self,
                 from: data
             )
+            if result.supersededByCloud == true,
+               let currentOperation = result.currentOperation {
+                return .supersededByCloud(
+                    remoteRevision: result.revision,
+                    operation: currentOperation
+                )
+            }
             return .synchronized(remoteRevision: result.revision)
         } catch {
             return .failed(OfflineFailureDetails(

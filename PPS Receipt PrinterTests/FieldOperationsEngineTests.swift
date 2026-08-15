@@ -42,31 +42,33 @@ final class FieldOperationsEngineTests: XCTestCase {
         }
     }
 
-    func testSentInvoiceUsesTechnicianCompletePresentationWithoutChangingFinancialState() {
+    func testSentInvoiceUsesClosedPresentationWithoutChangingFinancialState() {
         let context = FieldOperationsEngine().context(
             for: makeJob(workflowState: .invoiceCreated, status: .inProgress),
             invoice: makeInvoice(status: .sent)
         )
 
         XCTAssertEqual(context.currentState, .invoiceCreated)
-        XCTAssertEqual(context.presentation.statusTitle, "Invoice Sent")
-        XCTAssertEqual(context.presentation.statusSystemImage, "paperplane.fill")
+        XCTAssertEqual(context.presentation.statusTitle, "Closed")
+        XCTAssertEqual(context.presentation.statusSystemImage, "checkmark.seal.fill")
         XCTAssertEqual(context.presentation.accent, .green)
-        XCTAssertEqual(context.presentation.completionTitle, "Job Complete")
+        XCTAssertEqual(context.presentation.completionTitle, "Invoice Sent")
         XCTAssertTrue(context.presentation.isTechnicianComplete)
+        XCTAssertTrue(context.presentation.isClosed)
     }
 
-    func testPaidInvoiceUsesSharedPaymentReceivedCompletionPresentation() {
+    func testPaidInvoiceUsesSharedClosedPresentation() {
         let context = FieldOperationsEngine().context(
             for: makeJob(workflowState: .invoiceCreated, status: .inProgress),
             invoice: makeInvoice(status: .paid)
         )
 
         XCTAssertEqual(context.currentState, .paymentReceived)
-        XCTAssertEqual(context.presentation.statusTitle, "Payment Received")
+        XCTAssertEqual(context.presentation.statusTitle, "Closed")
         XCTAssertEqual(context.presentation.accent, .green)
-        XCTAssertEqual(context.presentation.completionTitle, "Job Complete")
+        XCTAssertEqual(context.presentation.completionTitle, "Paid")
         XCTAssertTrue(context.presentation.isTechnicianComplete)
+        XCTAssertTrue(context.presentation.isClosed)
     }
 
     func testInitialContextBeginsWithTravelAction() {
@@ -161,6 +163,7 @@ final class FieldOperationsEngineTests: XCTestCase {
             )
         )
         XCTAssertEqual(job.workflowState, .working)
+        XCTAssertEqual(job.workStartDate, date(hour: 8, minute: 35))
 
         job = try XCTUnwrap(
             engine.transition(
@@ -447,6 +450,47 @@ final class FieldOperationsEngineTests: XCTestCase {
         XCTAssertEqual(context.nextAction, .viewDetails)
         XCTAssertTrue(context.isTerminal)
         XCTAssertEqual(context.progressPercentage, 0)
+    }
+
+    func testLifecycleTimeDetailsPreferDedicatedTimestamps() {
+        var job = makeJob(workflowState: .completed, status: .completed)
+        job.setupStartDate = date(hour: 8, minute: 10)
+        job.workStartDate = date(hour: 8, minute: 25)
+        job.completedDate = date(hour: 10, minute: 40)
+
+        let details = FieldOperationsEngine().context(for: job).timeDetails
+
+        XCTAssertEqual(details.setupStarted, date(hour: 8, minute: 10))
+        XCTAssertEqual(details.workStarted, date(hour: 8, minute: 25))
+        XCTAssertEqual(details.completed, date(hour: 10, minute: 40))
+        XCTAssertEqual(details.timeOnJob ?? -1, 150 * 60, accuracy: 0.001)
+    }
+
+    func testLifecycleTimeDetailsRecoverLegacyTimelineValues() {
+        var job = makeJob(workflowState: .completed, status: .completed)
+        job.timelineEvents = [
+            JobTimelineEvent(type: .setupStarted, title: "Setup Started", timestamp: date(hour: 8)),
+            JobTimelineEvent(type: .workStarted, title: "Job Started", timestamp: date(hour: 8, minute: 20)),
+            JobTimelineEvent(type: .workCompleted, title: "Job Completed", timestamp: date(hour: 9, minute: 30))
+        ]
+
+        let details = FieldOperationsEngine().context(for: job).timeDetails
+
+        XCTAssertEqual(details.setupStarted, date(hour: 8))
+        XCTAssertEqual(details.workStarted, date(hour: 8, minute: 20))
+        XCTAssertEqual(details.completed, date(hour: 9, minute: 30))
+        XCTAssertEqual(details.timeOnJob ?? -1, 90 * 60, accuracy: 0.001)
+    }
+
+    func testCompletedJobOverridesStaleWorkflowStateForClosedPresentation() {
+        let job = makeJob(workflowState: .workComplete, status: .completed)
+        let context = FieldOperationsEngine().context(for: job)
+
+        XCTAssertEqual(context.currentState, .completed)
+        XCTAssertEqual(context.presentation.statusTitle, "Closed")
+        XCTAssertTrue(context.presentation.isClosed)
+        XCTAssertTrue(context.isTerminal)
+        XCTAssertEqual(context.progressPercentage, 100)
     }
 
     // MARK: - Fixtures
