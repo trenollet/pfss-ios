@@ -203,7 +203,11 @@ struct JobTimelineView: View {
                             Button {
                                 onCorrect(event)
                             } label: {
-                                Image(systemName: "clock.arrow.trianglehead.2.counterclockwise.rotate.90")
+                                Label(
+                                    "Correct",
+                                    systemImage: "clock.arrow.trianglehead.2.counterclockwise.rotate.90"
+                                )
+                                .font(.caption.weight(.semibold))
                             }
                             .buttonStyle(.borderless)
                             .accessibilityLabel("Correct \(event.title) time")

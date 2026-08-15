@@ -35,4 +35,4 @@ calendar views, customer conversion, and core Sales and Service workflows.
 ## Notes
 
 App Store naming, subscription-product activation, TestFlight, public listing,
-and production launch remain assigned to Phase 19.
+and production launch remain assigned to Phase 25.

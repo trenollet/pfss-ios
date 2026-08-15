@@ -190,7 +190,7 @@ struct OperationsView: View {
             operationsSection(
                 title: "Needs Attention",
                 subtitle: "Items that may interrupt today's work",
-                tileIDs: ["conflicts", "sync", "dispatchQueue"]
+                tileIDs: ["conflicts", "sync", "heldJobs", "dispatchQueue"]
             )
             operationsSection(
                 title: "Run Today",
@@ -302,6 +302,18 @@ struct OperationsView: View {
                 color: .blue
             ) {
                 OperationsActiveAssignmentsView()
+            }
+            case "heldJobs":
+            operationsTile(
+                title: "Jobs on Hold",
+                value: "\(heldJobCount)",
+                icon: "pause.rectangle.fill",
+                subtitle: heldJobCount == 0
+                    ? "No held recurring work"
+                    : "Review or release held work",
+                color: heldJobCount == 0 ? .secondary : .orange
+            ) {
+                HeldJobsView()
             }
             case "technicians":
             operationsTile(
@@ -415,6 +427,10 @@ struct OperationsView: View {
         PFSSConflictInbox.unresolvedItems(
             in: store.offlineOperationQueue.orderedOperations
         ).count
+    }
+
+    private var heldJobCount: Int {
+        store.recurringWorkTemplates.filter { $0.status == .held }.count
     }
 
     // MARK: - Live Model Builders

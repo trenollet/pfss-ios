@@ -18,6 +18,8 @@ struct CustomLineItemView: View {
     @State private var itemDescription = ""
     @State private var quantity = "1"
     @State private var unitPrice = ""
+    @State private var itemType: CatalogItemType = .service
+    @State private var taxTreatment: TaxTreatment = .nonTaxable
 
     @FocusState private var isInputFocused: Bool
 
@@ -37,6 +39,9 @@ struct CustomLineItemView: View {
         NavigationStack {
             Form {
                 Section("Custom Line Item") {
+                    Picker("Item Type", selection: $itemType) {
+                        ForEach(CatalogItemType.allCases) { Text($0.rawValue).tag($0) }
+                    }
                     Picker("Service Type", selection: $serviceType) {
                         ForEach(ServiceType.allCases) { service in
                             Text(service.rawValue).tag(service)
@@ -69,6 +74,10 @@ struct CustomLineItemView: View {
                         Spacer()
                         Text(lineTotal, format: .currency(code: "USD"))
                             .bold()
+                    }
+
+                    Picker("Tax Treatment", selection: $taxTreatment) {
+                        ForEach(TaxTreatment.allCases) { Text($0.rawValue).tag($0) }
                     }
                 }
 
@@ -104,6 +113,11 @@ struct CustomLineItemView: View {
     private func addLineItem() {
         let item = ServiceLineItem(
             catalogItemID: nil,
+            catalogItemNameSnapshot: otherService.isEmpty
+                ? serviceType.rawValue
+                : otherService,
+            catalogItemTypeSnapshot: itemType,
+            taxTreatmentSnapshot: taxTreatment,
             serviceType: serviceType,
             otherService: otherService,
             description: itemDescription,

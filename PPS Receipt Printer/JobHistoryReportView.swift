@@ -19,7 +19,7 @@ struct JobHistoryReportView: View {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         return store.jobs
-            .filter { $0.status == .completed }
+            .filter { lifecycleContext(for: $0).presentation.isClosed }
             .filter { dateFilter.includes(reportDate(for: $0)) }
             .filter { statusFilter.includes(store.invoice(for: $0)?.status) }
             .filter { job in
@@ -117,6 +117,7 @@ struct JobHistoryReportView: View {
 
     private func jobHistoryRow(_ job: JobRecord) -> some View {
         let status = store.invoice(for: job)?.status
+        let presentation = lifecycleContext(for: job).presentation
 
         return VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline) {
@@ -126,16 +127,21 @@ struct JobHistoryReportView: View {
                 Spacer()
 
                 Label(
-                    status?.rawValue ?? "Not Invoiced",
-                    systemImage: invoiceStatusSymbol(status)
+                    presentation.statusTitle,
+                    systemImage: presentation.statusSystemImage
                 )
                 .font(.body.weight(.bold))
-                .foregroundStyle(invoiceStatusColor(status))
+                .foregroundStyle(presentation.accent.color)
             }
 
             Text("Job: \(job.jobNumber)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            LabeledContent("Invoice") {
+                Text(status?.rawValue ?? "Not Invoiced")
+                    .foregroundStyle(invoiceStatusColor(status))
+            }
 
             LabeledContent("Date") {
                 Text(reportDate(for: job).formatted(date: .abbreviated, time: .shortened))
@@ -198,7 +204,9 @@ struct JobHistoryReportView: View {
     }
 
     private func formattedTimeOnJob(for job: JobRecord) -> String {
-        guard let duration = job.timeOnJob else { return "—" }
+        guard let duration = lifecycleContext(for: job).timeDetails.timeOnJob else {
+            return "—"
+        }
         let totalMinutes = max(Int(duration / 60), 0)
         let hours = totalMinutes / 60
         let minutes = totalMinutes % 60
@@ -235,7 +243,15 @@ struct JobHistoryReportView: View {
     }
 
     private func reportDate(for job: JobRecord) -> Date {
-        job.completedDate ?? job.scheduledDate
+        lifecycleContext(for: job).timeDetails.completed ?? job.scheduledDate
+    }
+
+    private func lifecycleContext(for job: JobRecord) -> JobWorkflowContext {
+        FieldOperationsEngine().context(
+            for: job,
+            invoice: store.invoice(for: job),
+            assignment: store.assignment(forJobID: job.id)
+        )
     }
 }
 

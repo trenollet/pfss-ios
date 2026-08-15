@@ -3,7 +3,7 @@
 - Status: Active
 - Owner: PFSS Project
 - Applies To: v0.9+
-- Last Updated: 2026-08-08
+- Last Updated: 2026-08-14
 
 ## Current Foundation
 
@@ -176,7 +176,7 @@ a durable identity, tenant-provisioning, and recovery system.
 - Remove the beta endpoint from production builds and prevent production
   credentials from authenticating against beta infrastructure.
 
-These capabilities remain production requirements and are assigned to Phase 19
+These capabilities remain production requirements and are assigned to Phase 25
 rather than expanding the completed Phase 17 account-platform scope.
 
 Phase 17 implementation and acceptance are closed in
@@ -204,23 +204,65 @@ Committed scope:
 Planning and acceptance are tracked in
 `../Phase Development/Phase_18_Project_Workbook.md`.
 
-## Phase 19 — App Store Deployment and Production Release
+## Phase 19 — Field Intelligence, Workforce Response, and Financial Integrity
 
-**Status:** Planned
+**Status:** Completed — 2026-08-14
 
-Phase 19 owns the public app name and identity, permanent production domain and
-infrastructure, launch legal and commercial policies, App Store Connect,
-subscription products, TestFlight, sandbox billing verification, review
-materials, and production-release acceptance. This work was transferred from
-Phase 17 so Phase 18 product expansion can be completed before the public store
-release candidate is frozen.
+Delivered scope:
+
+- Automatic, battery-aware mileage tracking with background trip detection
+- Unclassified trip queue with one-tap Personal or Business classification
+- Route review, manual trip entry, trip history, and CSV mileage reporting
+- Technician Job Decline with a server-backed Manager/Owner review inbox
+- Shared Job Review Required alerts and audited resolution
+- Closed Job and time-detail presentation consistency
+- Catalog tax classification
+- Reusable Tax, Invoice, and Receipt engines
+- Full automated regression, signed iPhone/iPad acceptance, documentation, and
+  GitHub closeout
 
 Planning and acceptance are tracked in
 `../Phase Development/Phase_19_Project_Workbook.md`.
 
+## Phase 20 — Multi-Device Synchronization Architecture
+
+**Status:** Next — architecture and implementation planning
+
+Phase 20 replaces broad whole-record conflict handling with a server-
+authoritative, versioned, field-aware synchronization architecture. It adds
+versioned intent and patches, three-way merge, domain-specific conflict policy,
+dependency-aware queues, poison-operation quarantine, durable server change
+cursors, stale-device pull/rebase recovery, focused human review, tombstones,
+push hints, and synchronization observability.
+
+Planning and acceptance are tracked in
+`../Phase Development/Phase_20_Project_Workbook.md`.
+
+## Phases 21–24 — Pre-Launch Product Development
+
+**Status:** Reserved — scope to be defined after Phase 20
+
+These phases remain available for operational expansion, product stabilization,
+security hardening, performance, and other field priorities discovered before
+the public release candidate is frozen. Each phase will receive its own approved
+workbook and acceptance gate before implementation begins.
+
+## Phase 25 — App Store Deployment and Production Release
+
+**Status:** Planned
+
+Phase 25 owns the public app name and identity, permanent production domain and
+infrastructure, launch legal and commercial policies, App Store Connect,
+subscription products, TestFlight, sandbox billing verification, review
+materials, and production-release acceptance. The launch scope is transferred
+intact; only its schedule changes.
+
+Planning and acceptance are tracked in
+`../Phase Development/Phase_25_Project_Workbook.md`.
+
 ## Phase 18 Navigation and UI Consistency
 
-**Status:** Active — Phase 18 Step 2
+**Status:** Completed — Phase 18
 
 - Replace the adaptive system `TabView` presentation with a PFSS-owned primary
   navigation bar that remains at the bottom on both iPhone and iPad.
@@ -262,7 +304,6 @@ Required capabilities:
 - Reporting and dashboards
 - Industry packs and configurable workflows
 - AI-assisted recommendations
-- Mileage tracking and reporting for techs
 - New My Day screen for both Sales and Tech.  - Shows # of sales follow up and / or services and click the card shows the activity (sales or service) list for the day.
 - iPhone Widget for My Day
 

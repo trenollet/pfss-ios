@@ -35,7 +35,8 @@ for cross-device, role, synchronization, migration, offline, and server impact.
 ## Entry Gate
 
 - [x] Phase 17 production-account platform completed.
-- [x] App Store deployment separated into Phase 19.
+- [x] App Store deployment separated from product development and subsequently
+  moved to Phase 25.
 - [x] Product owner approves the Phase 18 feature list.
 
 ## Phase 18 Theme
@@ -102,7 +103,8 @@ Phases 16 and 17 and establish the architectural contracts required by Phase
 ### Acceptance Criteria
 
 - [x] Roadmap status matches the live application and completed phases.
-- [x] Parking-lot items are clearly classified as Phase 18, Phase 19, pre-v1.0,
+- [x] Parking-lot items are clearly classified as Phase 18, future development,
+  pre-v1.0,
   or post-v1.0.
 - [x] Phase 18 architecture and feature documents define one source of truth for
   each new capability.
@@ -583,6 +585,6 @@ production company for revocation, deletion, or conflict-injection tests.
   iPad devices, including roles, editing, pricing, maps, calendars, Recurring
   Work, field workflow, financial workflow, fresh-device bootstrap, offline
   creation, reconnect, and cross-device synchronization.
-- Version `1.0`, build `18.7.8`, is the accepted Phase 18 field build. Phase 19
+- Version `1.0`, build `18.7.8`, is the accepted Phase 18 field build. Phase 25
   owns naming, public identity, App Store Connect, TestFlight, subscriptions,
   production infrastructure, and release acceptance.

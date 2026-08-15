@@ -21,6 +21,7 @@ struct InvoiceDetailView: View {
     @State private var isShowingPDFError = false
     @State private var isShowingReceiptPrinter = false
     @State private var showingUnsavedChangesAlert = false
+    @State private var showingTaxCalculation = false
     @FocusState private var isInputFocused: Bool
 
     init(invoice: InvoiceRecord, showsDismissButton: Bool = false) {
@@ -52,6 +53,15 @@ struct InvoiceDetailView: View {
             0,
             invoice.total - max(invoice.amountPaid, 0)
         )
+    }
+
+    private var invoiceSite: CustomerSite? {
+        guard let siteID = invoice.siteID else { return nil }
+        return store.sites.first { $0.id == siteID }
+    }
+
+    private var reviewerName: String {
+        store.authenticatedCloudEmployee?.displayName ?? "Authorized Owner or Manager"
     }
 
     var body: some View {
@@ -123,6 +133,26 @@ struct InvoiceDetailView: View {
                                     .foregroundStyle(.secondary)
                             }
 
+                            HStack(spacing: 6) {
+                                Text(
+                                    item.catalogItemTypeSnapshot?.rawValue
+                                    ?? "Legacy Item"
+                                )
+
+                                Text("•")
+
+                                Text(
+                                    item.taxTreatmentSnapshot?.rawValue
+                                    ?? "Tax Classification Not Recorded"
+                                )
+                            }
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(
+                                item.taxTreatmentSnapshot == nil
+                                ? Color.orange
+                                : Color.secondary
+                            )
+
                             HStack {
                                 Text(
                                     "\(item.quantity, specifier: "%.2f") × \(item.unitPrice, format: .currency(code: "USD"))"
@@ -158,6 +188,23 @@ struct InvoiceDetailView: View {
                     )
                 }
 
+                if let tax = invoice.taxSnapshot {
+                    LabeledContent("Tax") {
+                        Text(
+                            NSDecimalNumber(decimal: tax.addedTax).doubleValue,
+                            format: .currency(code: "USD")
+                        )
+                    }
+                    LabeledContent("Applied Rate") {
+                        let percent = NSDecimalNumber(
+                            decimal: tax.appliedRate * 100
+                        ).doubleValue
+                        Text("\(percent, specifier: "%.3f")%")
+                    }
+                } else {
+                    LabeledContent("Tax", value: "Not calculated")
+                }
+
                 LabeledContent("Total") {
                     Text(
                         invoice.total,
@@ -186,6 +233,51 @@ struct InvoiceDetailView: View {
                         format: .currency(code: "USD")
                     )
                     .fontWeight(.bold)
+                }
+            }
+
+            Section("Tax Classification") {
+                ForEach(TaxTreatment.allCases) { treatment in
+                    let count = invoice.lineItems.filter {
+                        $0.taxTreatmentSnapshot == treatment
+                    }.count
+
+                    if count > 0 {
+                        LabeledContent(treatment.rawValue) {
+                            Text("\(count) line\(count == 1 ? "" : "s")")
+                        }
+                    }
+                }
+
+                let legacyCount = invoice.lineItems.filter {
+                    $0.taxTreatmentSnapshot == nil
+                }.count
+
+                if legacyCount > 0 {
+                    LabeledContent("Not Recorded") {
+                        Text("\(legacyCount) legacy line\(legacyCount == 1 ? "" : "s")")
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                Text(
+                    invoice.taxSnapshot == nil
+                    ? "Tax has not been calculated for this invoice. PFSS will "
+                        + "not guess a jurisdiction rate."
+                    : "The displayed tax is retained with this invoice. Later "
+                        + "catalog or rate changes do not silently recalculate it."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                if store.canManageCompany {
+                    Button(
+                        invoice.taxSnapshot == nil
+                        ? "Calculate Invoice Tax"
+                        : "Review or Correct Invoice Tax"
+                    ) {
+                        showingTaxCalculation = true
+                    }
                 }
             }
 
@@ -319,6 +411,14 @@ struct InvoiceDetailView: View {
         } message: {
             Text("This invoice has changes that have not been saved.")
         }
+        .sheet(isPresented: $showingTaxCalculation) {
+            InvoiceTaxCalculationView(
+                invoice: $invoice,
+                site: invoiceSite,
+                reviewerName: reviewerName,
+                companyTaxSettings: store.businessProfile.taxSettings
+            )
+        }
     }
 
     private var hasUnsavedChanges: Bool {
@@ -328,23 +428,7 @@ struct InvoiceDetailView: View {
     private func saveInvoice() {
         isInputFocused = false
 
-        invoice.lineItems = PricingCalculator.updatedLineItems(
-            invoice.lineItems
-        )
-
-        invoice.subtotal = PricingCalculator.subtotal(
-            for: invoice.lineItems
-        )
-
-        invoice.total = PricingCalculator.total(
-            subtotal: invoice.subtotal,
-            discount: invoice.discount
-        )
-
-        invoice.amountPaid = min(
-            max(invoice.amountPaid, 0),
-            max(invoice.total, 0)
-        )
+        invoice = InvoiceEngine.recalculated(invoice)
 
         store.updateInvoice(invoice)
         originalInvoice = invoice
@@ -413,6 +497,16 @@ struct InvoiceDetailView: View {
             site = nil
         }
 
+        if let receipt = ReceiptEngine.latestReceipt(in: invoice) {
+            return ThermalReceiptRenderer.render(
+                receipt: receipt,
+                businessProfile: store.businessProfile,
+                customer: customer,
+                site: site,
+                catalogItems: store.serviceCatalogItems
+            )
+        }
+
         return ThermalReceiptRenderer.render(
             invoice: invoice,
             businessProfile: store.businessProfile,
@@ -427,6 +521,11 @@ struct InvoiceDetailView: View {
     private func serviceName(
         for item: ServiceLineItem
     ) -> String {
+        if let snapshotName = item.catalogItemNameSnapshot,
+           !snapshotName.isEmpty {
+            return snapshotName
+        }
+
         if let catalogItemID = item.catalogItemID,
            let catalogItem = store.serviceCatalogItems.first(where: {
                $0.id == catalogItemID

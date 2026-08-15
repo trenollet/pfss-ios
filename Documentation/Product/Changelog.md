@@ -2,11 +2,45 @@
 
 - Status: Active
 - Owner: PFSS Project
-- Last Updated: 2026-08-08
+- Last Updated: 2026-08-14
 
 This file records durable project-level changes. Detailed user-facing notes remain in `../ReleaseNotes/`, and milestone narratives remain in `../ReleaseHistory/`.
 
 ## Unreleased
+
+### Phase 19 — Field Intelligence, Workforce Response, and Financial Integrity
+
+- Added opt-in automatic mileage tracking, private multi-device trip backup,
+  review, manual entry, correction, reporting, and CSV export.
+- Added server-backed Technician decline review with Manager/Owner alerts,
+  authorization, audit history, and offline retry.
+- Unified Job lifecycle and time-detail presentation, authorized timestamp
+  correction, Held Jobs, and recurring-series hold/release behavior.
+- Added fractional catalog labor minutes, durable tax classification, verified
+  company tax settings, and reusable decimal Tax and Invoice engines.
+- Added immutable, idempotent receipt snapshots and durable thermal output from
+  accepted payment facts.
+- Completed 246 iOS unit tests and 64 Worker tests with no failures or skips,
+  plus signed iPhone and iPad field acceptance.
+- Closed Phase 19 on build 19.9.1 and transferred the multi-device
+  synchronization redesign to Phase 20.
+
+### Roadmap Alignment
+
+- Assigned the server-authoritative multi-device synchronization redesign to
+  Phase 20, reserved Phases 21–24 for pre-launch product development, and moved
+  App Store deployment and production release intact to Phase 25.
+- Moved App Store deployment and production release intact from Phase 19 to
+  Phase 20 in the earlier roadmap; this historical transfer is now superseded
+  by the Phase 25 alignment above.
+- Added the proposed Phase 19 product-development plan for product-owner review
+  before implementation begins.
+- Approved automatic mileage tracking as the first Phase 19 capability and
+  documented battery-aware detection, background permissions, trip review,
+  Personal/Business privacy, manual entry, and CSV reporting requirements.
+- Renamed the proposed Phase 19 theme to Field Intelligence, Workforce Response,
+  and Financial Integrity; moved reimbursement-rate and payroll extensions to
+  the parking lot.
 
 ### Phase 18 — Operational Expansion and Field Productivity
 

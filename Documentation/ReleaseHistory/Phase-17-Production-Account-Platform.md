@@ -50,14 +50,15 @@ enforcement, and a private Operations control plane.
 
 App Store Connect, public naming and metadata, TestFlight, subscription-product
 activation, permanent production infrastructure and domain, launch policy, and
-App Review were moved to Phase 19. Phase 18 will first define and deliver the
-next approved product-expansion feature set.
+App Review were subsequently moved to Phase 25. Phases 18 through 24 provide the
+approved product-development runway before the release candidate is frozen.
 
 ## References
 
 - `../Phase Development/Phase_17_Project_Workbook.md`
 - `../Phase Development/Phase_18_Project_Workbook.md`
 - `../Phase Development/Phase_19_Project_Workbook.md`
+- `../Phase Development/Phase_20_Project_Workbook.md`
 - `../Architecture/ProductionAccountPlatform.md`
 - `../Architecture/PFSSOperationsControlPlane.md`
 - `../Decisions/ADR-003-App-Store-Subscription-Authority.md`

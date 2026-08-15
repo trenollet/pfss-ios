@@ -138,7 +138,22 @@ extension AppDataStore {
         var materializedJobs = jobs
         var didChangeJobs = false
 
-        for template in recurringWorkTemplates where template.status == .active {
+        for template in recurringWorkTemplates {
+            if template.status == .held,
+               let heldIndex = template.heldOccurrenceIndex {
+                let heldJobIDs = Set(materializedJobs.filter {
+                    isReplaceableRecurringOccurrence($0, templateID: template.id) &&
+                    $0.recurrenceSequence >= heldIndex
+                }.map(\.id))
+                if !heldJobIDs.isEmpty {
+                    materializedJobs.removeAll { heldJobIDs.contains($0.id) }
+                    removeAssignments(forJobIDs: heldJobIDs)
+                    didChangeJobs = true
+                }
+                continue
+            }
+
+            guard template.status == .active else { continue }
             // Skip decisions live on the synchronized template, while Job
             // occurrences are materialized locally on every device. A device
             // that generated an occurrence before receiving the exception
@@ -188,6 +203,23 @@ extension AppDataStore {
                     materializedJobs[existingIndex].recurrenceSeriesID = template.id
                     materializedJobs[existingIndex].recurringWorkTemplateID = template.id
                     materializedJobs[existingIndex].recurringWorkOccurrenceKey = occurrence.occurrenceKey
+                    if occurrence.occurrenceIndex >= (template.scheduleStartIndex ?? 0),
+                       isReplaceableRecurringOccurrence(
+                           materializedJobs[existingIndex],
+                           templateID: template.id
+                       ) {
+                        materializedJobs[existingIndex].scheduledDate = occurrence.scheduledDate
+                        materializedJobs[existingIndex].arrivalWindowEnd = recurringShiftedDate(
+                            template.prototype.arrivalWindowEnd,
+                            toDayContaining: occurrence.scheduledDate
+                        )
+                        materializedJobs[existingIndex].completionDeadline = recurringShiftedDate(
+                            template.prototype.completionDeadline,
+                            toDayContaining: occurrence.scheduledDate
+                        )
+                        materializedJobs[existingIndex].recurrenceFrequency =
+                            template.rule.jobRecurrenceFrequency
+                    }
                     didChangeJobs = true
                     continue
                 }
@@ -208,6 +240,7 @@ extension AppDataStore {
                     toDayContaining: occurrence.scheduledDate
                 )
                 job.setupStartDate = nil
+                job.workStartDate = nil
                 job.completedDate = nil
                 job.status = .toBeScheduled
                 job.workflowState = .notStarted
@@ -236,6 +269,80 @@ extension AppDataStore {
     func resumeRecurringWork(templateID: UUID) {
         updateRecurringWorkStatus(templateID: templateID, status: .active)
         materializeRecurringWorkHorizon()
+    }
+
+    func holdRecurringWork(
+        templateID: UUID,
+        fromJobID jobID: UUID?,
+        at date: Date = Date()
+    ) {
+        guard let templateIndex = recurringWorkTemplates.firstIndex(where: {
+            $0.id == templateID
+        }) else { return }
+
+        let candidates = jobs.filter {
+            isReplaceableRecurringOccurrence($0, templateID: templateID)
+        }
+        let selectedJob = jobID.flatMap { selectedID in
+            candidates.first(where: { $0.id == selectedID })
+        } ?? candidates.min(by: { $0.scheduledDate < $1.scheduledDate })
+        guard let selectedJob else { return }
+
+        let heldIndex = selectedJob.recurrenceSequence
+        let heldJobIDs = Set(candidates.filter {
+            $0.recurrenceSequence >= heldIndex
+        }.map(\.id))
+
+        recurringWorkTemplates[templateIndex].status = .held
+        recurringWorkTemplates[templateIndex].heldOccurrenceIndex = heldIndex
+        recurringWorkTemplates[templateIndex].heldScheduledDate = selectedJob.scheduledDate
+        recurringWorkTemplates[templateIndex].holdStartedAt = date
+        recurringWorkTemplates[templateIndex].revision += 1
+        recurringWorkTemplates[templateIndex].updatedAt = date
+
+        jobs.removeAll { heldJobIDs.contains($0.id) }
+        removeAssignments(forJobIDs: heldJobIDs)
+        synchronizeAssignmentsFromJobs()
+    }
+
+    func releaseRecurringWork(
+        templateID: UUID,
+        at releaseDate: Date = Date()
+    ) {
+        guard let templateIndex = recurringWorkTemplates.firstIndex(where: {
+            $0.id == templateID && $0.status == .held
+        }),
+        let heldIndex = recurringWorkTemplates[templateIndex].heldOccurrenceIndex else {
+            return
+        }
+
+        let oldHeldDate = recurringWorkTemplates[templateIndex].heldScheduledDate
+            ?? recurringWorkTemplates[templateIndex].anchorDate
+        let newAnchor = recurringReleaseDate(
+            releaseDate,
+            preservingTimeFrom: oldHeldDate
+        )
+        let shift = newAnchor.timeIntervalSince(oldHeldDate)
+
+        recurringWorkTemplates[templateIndex].status = .active
+        recurringWorkTemplates[templateIndex].anchorDate = newAnchor
+        recurringWorkTemplates[templateIndex].scheduleStartIndex = heldIndex
+        if case let .endDate(endDate) = recurringWorkTemplates[templateIndex].endCondition {
+            recurringWorkTemplates[templateIndex].endCondition = .endDate(
+                endDate.addingTimeInterval(shift)
+            )
+        }
+        recurringWorkTemplates[templateIndex].prototype.scheduledDate = newAnchor
+        recurringWorkTemplates[templateIndex].prototype.recurrenceFrequency =
+            recurringWorkTemplates[templateIndex].rule.jobRecurrenceFrequency
+        recurringWorkTemplates[templateIndex].heldOccurrenceIndex = nil
+        recurringWorkTemplates[templateIndex].heldScheduledDate = nil
+        recurringWorkTemplates[templateIndex].holdStartedAt = nil
+        recurringWorkTemplates[templateIndex].revision += 1
+        recurringWorkTemplates[templateIndex].updatedAt = releaseDate
+
+        materializeRecurringWorkHorizon(generatedAt: releaseDate)
+        synchronizeAssignmentsFromJobs()
     }
 
     func updateRecurringWorkSeries(
@@ -429,6 +536,20 @@ extension AppDataStore {
             second: time.second ?? 0,
             of: target
         )
+    }
+
+    private func recurringReleaseDate(
+        _ releaseDate: Date,
+        preservingTimeFrom source: Date
+    ) -> Date {
+        let calendar = Calendar.current
+        let time = calendar.dateComponents([.hour, .minute, .second], from: source)
+        return calendar.date(
+            bySettingHour: time.hour ?? 0,
+            minute: time.minute ?? 0,
+            second: time.second ?? 0,
+            of: releaseDate
+        ) ?? releaseDate
     }
 
     private func recurrenceEndCondition(

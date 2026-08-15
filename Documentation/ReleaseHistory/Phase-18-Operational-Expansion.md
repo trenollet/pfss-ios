@@ -40,12 +40,13 @@ multi-device and offline operation.
 
 Public naming, App Store Connect, StoreKit subscription-product activation,
 TestFlight, listing assets and metadata, App Review, and production launch are
-owned by Phase 19.
+owned by Phase 25.
 
 ## References
 
 - `../Phase Development/Phase_18_Project_Workbook.md`
 - `../Phase Development/Phase_19_Project_Workbook.md`
+- `../Phase Development/Phase_20_Project_Workbook.md`
 - `../Architecture/FieldPricingEngine.md`
 - `../Architecture/AddressSelectionService.md`
 - `../Architecture/OperationsCalendar.md`

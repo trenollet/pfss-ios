@@ -1,10 +1,17 @@
 import SwiftUI
 
+enum JobLifecycleListScope {
+    case all
+    case open
+    case closed
+}
+
 struct JobRecordsListView: View {
     @EnvironmentObject private var store: AppDataStore
     let statuses: Set<JobStatus>?
     let title: String
     let customerNumber: String?
+    let lifecycleScope: JobLifecycleListScope
     @State private var showArchived = false
     @State private var showingNewJob = false
     @State private var searchText: String
@@ -17,11 +24,13 @@ struct JobRecordsListView: View {
         statuses: Set<JobStatus>? = nil,
         title: String = "All Jobs",
         initialSearchText: String = "",
-        customerNumber: String? = nil
+        customerNumber: String? = nil,
+        lifecycleScope: JobLifecycleListScope = .all
     ) {
         self.statuses = statuses
         self.title = title
         self.customerNumber = customerNumber
+        self.lifecycleScope = lifecycleScope
         _searchText = State(initialValue: initialSearchText)
     }
 
@@ -30,9 +39,20 @@ struct JobRecordsListView: View {
         let source = statuses.map { accepted in
             lifecycleSource.filter { accepted.contains($0.status) }
         } ?? lifecycleSource
+        let lifecycleScoped = source.filter { job in
+            switch lifecycleScope {
+            case .all:
+                return true
+            case .open:
+                return !workflowPresentation(for: job).isClosed
+                    && job.status != .cancelled
+            case .closed:
+                return workflowPresentation(for: job).isClosed
+            }
+        }
         let customerScoped = customerNumber.map { number in
-            source.filter { $0.customerNumber == number }
-        } ?? source
+            lifecycleScoped.filter { $0.customerNumber == number }
+        } ?? lifecycleScoped
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let searched = query.isEmpty ? customerScoped : customerScoped.filter { job in
             job.jobNumber.localizedCaseInsensitiveContains(query) ||
@@ -42,6 +62,7 @@ struct JobRecordsListView: View {
             serviceName(for: job).localizedCaseInsensitiveContains(query) ||
             employeeName(for: job.primaryTechnicianID).localizedCaseInsensitiveContains(query) ||
             job.status.rawValue.localizedCaseInsensitiveContains(query) ||
+            workflowPresentation(for: job).statusTitle.localizedCaseInsensitiveContains(query) ||
             job.workNotes.localizedCaseInsensitiveContains(query)
         }
         let statusFiltered = selectedStatus.map { status in
@@ -192,7 +213,8 @@ struct JobRecordsListView: View {
     ) -> JobWorkflowPresentation {
         FieldOperationsEngine().context(
             for: job,
-            invoice: store.invoice(for: job)
+            invoice: store.invoice(for: job),
+            assignment: store.assignment(forJobID: job.id)
         ).presentation
     }
 

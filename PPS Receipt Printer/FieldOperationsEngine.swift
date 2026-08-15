@@ -94,6 +94,25 @@ struct JobWorkflowPresentation: Equatable {
     let accent: JobWorkflowAccent
     let completionTitle: String?
     let isTechnicianComplete: Bool
+    let isClosed: Bool
+}
+
+/// Canonical lifecycle timestamps shown by every operational surface.
+/// Dedicated Job fields are preferred, with Assignment and timeline values
+/// retained as migration-safe fallbacks for records created by older builds.
+struct JobLifecycleTimeDetails: Equatable {
+    let setupStarted: Date?
+    let workStarted: Date?
+    let completed: Date?
+
+    var timeOnJob: TimeInterval? {
+        guard let setupStarted,
+              let completed,
+              completed >= setupStarted else {
+            return nil
+        }
+        return completed.timeIntervalSince(setupStarted)
+    }
 }
 
 /// Shared workflow snapshot for the live field operation currently in progress.
@@ -111,6 +130,7 @@ struct JobWorkflowContext {
     let canCompleteJob: Bool
     let isTerminal: Bool
     let presentation: JobWorkflowPresentation
+    let timeDetails: JobLifecycleTimeDetails
 }
 
 enum WorkflowValidationLevel: String, Codable {
@@ -144,16 +164,23 @@ struct WorkflowValidationResult: Codable, Equatable {
 struct FieldOperationsEngine {
     func context(
         for job: JobRecord,
-        invoice: InvoiceRecord? = nil
+        invoice: InvoiceRecord? = nil,
+        assignment: Assignment? = nil
     ) -> JobWorkflowContext {
         let currentState = synchronizedState(
             for: job,
-            invoice: invoice
+            invoice: invoice,
+            assignment: assignment
         )
 
         let orderedTimeline = job.timelineEvents.sorted {
             $0.timestamp < $1.timestamp
         }
+
+        let workflowPresentation = presentation(
+            for: currentState,
+            invoice: invoice
+        )
 
         return JobWorkflowContext(
             currentState: currentState,
@@ -166,7 +193,9 @@ struct FieldOperationsEngine {
                 for: currentState,
                 invoice: invoice
             ),
-            progressPercentage: progress(for: currentState),
+            progressPercentage: workflowPresentation.isClosed
+                ? 100
+                : progress(for: currentState),
             canCreateInvoice: currentState == .workComplete,
             canCollectPayment:
                 currentState == .invoiceCreated &&
@@ -180,10 +209,8 @@ struct FieldOperationsEngine {
             isTerminal:
                 currentState == .completed ||
                 currentState == .cancelled,
-            presentation: presentation(
-                for: currentState,
-                invoice: invoice
-            )
+            presentation: workflowPresentation,
+            timeDetails: timeDetails(for: job, assignment: assignment)
         )
     }
 
@@ -195,19 +222,25 @@ struct FieldOperationsEngine {
             switch invoice.status {
             case .sent, .overdue:
                 return JobWorkflowPresentation(
-                    statusTitle: "Invoice Sent",
-                    statusSystemImage: "paperplane.fill",
+                    statusTitle: "Closed",
+                    statusSystemImage: "checkmark.seal.fill",
                     accent: .green,
-                    completionTitle: "Job Complete",
-                    isTechnicianComplete: true
+                    completionTitle: invoice.status == .overdue
+                        ? "Invoice Overdue"
+                        : "Invoice Sent",
+                    isTechnicianComplete: true,
+                    isClosed: true
                 )
             case .partiallyPaid, .paid:
                 return JobWorkflowPresentation(
-                    statusTitle: "Payment Received",
-                    statusSystemImage: "flag.checkered",
+                    statusTitle: "Closed",
+                    statusSystemImage: "checkmark.seal.fill",
                     accent: .green,
-                    completionTitle: "Job Complete",
-                    isTechnicianComplete: true
+                    completionTitle: invoice.status == .paid
+                        ? "Paid"
+                        : "Partially Paid",
+                    isTechnicianComplete: true,
+                    isClosed: true
                 )
             case .draft, .void:
                 break
@@ -216,37 +249,40 @@ struct FieldOperationsEngine {
 
         if state == .paymentReceived || state == .completed {
             return JobWorkflowPresentation(
-                statusTitle: state == .completed ? "Complete" : "Payment Received",
-                statusSystemImage: "flag.checkered",
+                statusTitle: "Closed",
+                statusSystemImage: "checkmark.seal.fill",
                 accent: .green,
-                completionTitle: "Job Complete",
-                isTechnicianComplete: true
+                completionTitle: state == .paymentReceived
+                    ? "Payment Received"
+                    : "Job Complete",
+                isTechnicianComplete: true,
+                isClosed: true
             )
         }
 
         switch state {
         case .notStarted:
-            return .init(statusTitle: "Not Started", statusSystemImage: "clock", accent: .secondary, completionTitle: nil, isTechnicianComplete: false)
+            return .init(statusTitle: "Not Started", statusSystemImage: "clock", accent: .secondary, completionTitle: nil, isTechnicianComplete: false, isClosed: false)
         case .traveling:
-            return .init(statusTitle: "Traveling", statusSystemImage: "car.fill", accent: .blue, completionTitle: nil, isTechnicianComplete: false)
+            return .init(statusTitle: "Traveling", statusSystemImage: "car.fill", accent: .blue, completionTitle: nil, isTechnicianComplete: false, isClosed: false)
         case .travelPaused:
-            return .init(statusTitle: "Travel Paused", statusSystemImage: "pause.circle.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false)
+            return .init(statusTitle: "Travel Paused", statusSystemImage: "pause.circle.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false, isClosed: false)
         case .arrived:
-            return .init(statusTitle: "Arrived", statusSystemImage: "mappin.circle.fill", accent: .blue, completionTitle: nil, isTechnicianComplete: false)
+            return .init(statusTitle: "Arrived", statusSystemImage: "mappin.circle.fill", accent: .blue, completionTitle: nil, isTechnicianComplete: false, isClosed: false)
         case .settingUp:
-            return .init(statusTitle: "Setting Up", statusSystemImage: "wrench.and.screwdriver.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false)
+            return .init(statusTitle: "Setting Up", statusSystemImage: "wrench.and.screwdriver.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false, isClosed: false)
         case .working:
-            return .init(statusTitle: "Working", statusSystemImage: "hammer.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false)
+            return .init(statusTitle: "Working", statusSystemImage: "hammer.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false, isClosed: false)
         case .paused:
-            return .init(statusTitle: "Paused", statusSystemImage: "pause.circle.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false)
+            return .init(statusTitle: "Paused", statusSystemImage: "pause.circle.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false, isClosed: false)
         case .packingUp:
-            return .init(statusTitle: "Packing Up", statusSystemImage: "shippingbox.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false)
+            return .init(statusTitle: "Packing Up", statusSystemImage: "shippingbox.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false, isClosed: false)
         case .workComplete:
-            return .init(statusTitle: "Work Complete", statusSystemImage: "checkmark.circle.fill", accent: .purple, completionTitle: nil, isTechnicianComplete: false)
+            return .init(statusTitle: "Work Complete", statusSystemImage: "checkmark.circle.fill", accent: .purple, completionTitle: nil, isTechnicianComplete: false, isClosed: false)
         case .invoiceCreated:
-            return .init(statusTitle: "Invoice Created", statusSystemImage: "doc.text.fill", accent: .purple, completionTitle: nil, isTechnicianComplete: false)
+            return .init(statusTitle: "Invoice Created", statusSystemImage: "doc.text.fill", accent: .purple, completionTitle: nil, isTechnicianComplete: false, isClosed: false)
         case .cancelled:
-            return .init(statusTitle: "Cancelled", statusSystemImage: "xmark.circle.fill", accent: .red, completionTitle: nil, isTechnicianComplete: false)
+            return .init(statusTitle: "Cancelled", statusSystemImage: "xmark.circle.fill", accent: .red, completionTitle: nil, isTechnicianComplete: false, isClosed: false)
         case .paymentReceived, .completed:
             preconditionFailure("Technician-complete states are handled above.")
         }
@@ -379,6 +415,11 @@ struct FieldOperationsEngine {
             updated.setupStartDate = timestamp
         }
 
+        if action == .startWork,
+           updated.workStartDate == nil {
+            updated.workStartDate = timestamp
+        }
+
         if action == .finishWork,
            updated.completedDate == nil {
             updated.completedDate = timestamp
@@ -506,7 +547,8 @@ struct FieldOperationsEngine {
 
     private func synchronizedState(
         for job: JobRecord,
-        invoice: InvoiceRecord?
+        invoice: InvoiceRecord?,
+        assignment: Assignment? = nil
     ) -> JobWorkflowState {
         if job.status == .cancelled ||
            job.workflowState == .cancelled {
@@ -521,17 +563,48 @@ struct FieldOperationsEngine {
             return .invoiceCreated
         }
 
+        if job.status == .completed || assignment?.status == .closed {
+            return .completed
+        }
+
         if job.workflowState != .notStarted {
             return job.workflowState
         }
 
         // Historical compatibility for jobs created before the workflow state
         // was tracked explicitly.
-        if job.status == .completed {
-            return .completed
-        }
-
         return .notStarted
+    }
+
+    private func timeDetails(
+        for job: JobRecord,
+        assignment: Assignment?
+    ) -> JobLifecycleTimeDetails {
+        let setupStarted = job.setupStartDate ?? job.timelineEvents
+            .filter { $0.type == .setupStarted }
+            .map(\.timestamp)
+            .min()
+
+        let workStarted = job.workStartDate ?? job.timelineEvents
+            .filter { $0.type == .workStarted }
+            .map(\.timestamp)
+            .min()
+
+        let timelineCompletion = job.timelineEvents
+            .filter {
+                $0.type == .workCompleted ||
+                $0.type == .jobCompleted
+            }
+            .map(\.timestamp)
+            .max()
+
+        return JobLifecycleTimeDetails(
+            setupStarted: setupStarted,
+            workStarted: workStarted,
+            completed: job.completedDate
+                ?? assignment?.workCompletedDate
+                ?? timelineCompletion
+        )
     }
 
     private func nextAction(

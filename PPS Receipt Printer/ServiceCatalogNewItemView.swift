@@ -30,8 +30,8 @@ struct ServiceCatalogNewItemView: View {
     private var priceValue: Double {
         Double(defaultPrice) ?? 0
     }
-    private var estimatedMinutesValue: Int {
-        max(Int(estimatedMinutesPerUnit) ?? 0, 0)
+    private var estimatedMinutesValue: Double {
+        max(Double(estimatedMinutesPerUnit) ?? 0, 0)
     }
 
     var body: some View {
@@ -74,7 +74,7 @@ struct ServiceCatalogNewItemView: View {
                         SelectAllTextField(
                             placeholder: "Minutes",
                             text: $estimatedMinutesPerUnit,
-                            keyboardType: .numberPad
+                            keyboardType: .decimalPad
                         )
                         .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
@@ -86,6 +86,12 @@ struct ServiceCatalogNewItemView: View {
                                 .tag(treatment)
                         }
                     }
+                }
+
+                Section {
+                    Text("Tax treatment is copied into each estimate, Job, and invoice line when used. Later catalog changes do not rewrite existing transactions.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
             }
@@ -110,7 +116,10 @@ struct ServiceCatalogNewItemView: View {
                     Button("Save") {
                         saveCatalogItem()
                     }
-                    .disabled(itemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(
+                        itemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || !store.canManageCompany
+                    )
                 }
 
             }
@@ -118,6 +127,7 @@ struct ServiceCatalogNewItemView: View {
     }
 
     private func saveCatalogItem() {
+        guard store.canManageCompany else { return }
         let item = ServiceCatalogItem(
             itemName: itemName,
             itemDescription: itemDescription,

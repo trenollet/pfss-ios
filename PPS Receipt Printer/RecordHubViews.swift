@@ -113,7 +113,7 @@ struct JobsView: View {
             title: "Jobs",
             searchText: $searchText,
             layoutKey: "pfss.tile-layout.jobs.v1",
-            tileIDs: ["new", "active", "completed", "all"]
+            tileIDs: ["new", "active", "held", "completed", "all"]
         ) { tileID in
             switch tileID {
             case "new":
@@ -128,20 +128,38 @@ struct JobsView: View {
             case "active":
             RecordHubTile(
                 title: "Active",
-                count: store.activeJobs.filter { activeJobStatuses.contains($0.status) }.count,
+                count: store.activeJobs.filter { job in
+                    activeJobStatuses.contains(job.status)
+                        && store.workflowContext(for: job.id)?.presentation.isClosed != true
+                }.count,
                 icon: "wrench.and.screwdriver.fill",
                 color: .orange
             ) {
-                JobRecordsListView(statuses: activeJobStatuses, title: "Active Jobs")
+                JobRecordsListView(
+                    statuses: activeJobStatuses,
+                    title: "Active Jobs",
+                    lifecycleScope: .open
+                )
             }
             case "completed":
             RecordHubTile(
                 title: "Completed",
-                count: store.activeJobs.filter { $0.status == .completed }.count,
+                count: store.activeJobs.filter {
+                    store.workflowContext(for: $0.id)?.presentation.isClosed == true
+                }.count,
                 icon: "checkmark.circle.fill",
                 color: .green
             ) {
-                JobRecordsListView(statuses: [.completed], title: "Completed Jobs")
+                JobRecordsListView(title: "Closed Jobs", lifecycleScope: .closed)
+            }
+            case "held":
+            RecordHubTile(
+                title: "Jobs on Hold",
+                count: heldJobCount,
+                icon: "pause.rectangle.fill",
+                color: .orange
+            ) {
+                HeldJobsView()
             }
             case "all":
             RecordHubTile(
@@ -178,6 +196,10 @@ struct JobsView: View {
         return store.activeJobs.filter {
             searchableJobText($0, store: store).localizedCaseInsensitiveContains(query)
         }.count
+    }
+
+    private var heldJobCount: Int {
+        store.recurringWorkTemplates.filter { $0.status == .held }.count
     }
 }
 

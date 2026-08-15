@@ -169,15 +169,70 @@ struct JobDetailView: View {
     }
 
     private var timelineCorrectionActor: EmployeeRecord? {
+        if store.canManageCompany,
+           let authenticatedEmployee = store.authenticatedCloudEmployee {
+            return authenticatedEmployee
+        }
         guard let selectedTechnicianID else { return nil }
         return store.employees.first {
             $0.id == selectedTechnicianID && $0.canOverrideScheduling
         }
     }
 
+    private var linkedInvoice: InvoiceRecord? {
+        store.invoice(for: storedJob)
+    }
+
+    private func correctionEvent(
+        matching types: [JobTimelineEventType]
+    ) -> JobTimelineEvent? {
+        workflowContext.timeline.last {
+            types.contains($0.type)
+                && $0.type != .timelineCorrected
+        }
+    }
+
+    @ViewBuilder
+    private func lifecycleTimeRow(
+        _ title: String,
+        value: Date?,
+        eventTypes: [JobTimelineEventType]
+    ) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(lifecycleTimestamp(value))
+                .foregroundStyle(.secondary)
+            if timelineCorrectionActor != nil,
+               let event = correctionEvent(matching: eventTypes) {
+                Button {
+                    timelineCorrectionEvent = event
+                } label: {
+                    Image(systemName: "clock.arrow.trianglehead.2.counterclockwise.rotate.90")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Correct \(title) time")
+            }
+        }
+    }
+
     @MainActor
     private func workflowCoordinator() -> FieldOperationsWorkflowCoordinator {
         FieldOperationsWorkflowCoordinator(store: store)
+    }
+
+    private func lifecycleTimestamp(_ value: Date?) -> String {
+        value?.formatted(date: .abbreviated, time: .shortened) ?? "Not recorded"
+    }
+
+    private func lifecycleDuration(_ value: TimeInterval?) -> String {
+        guard let value else { return "Not available" }
+        let totalMinutes = max(Int(value / 60), 0)
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        if hours == 0 { return "\(minutes) min" }
+        if minutes == 0 { return hours == 1 ? "1 hr" : "\(hours) hrs" }
+        return "\(hours) hr \(minutes) min"
     }
 
     private var availableSites: [CustomerSite] {
@@ -244,6 +299,33 @@ struct JobDetailView: View {
                 )
             }
 
+            Section("Time Details") {
+                lifecycleTimeRow(
+                    "Setup Started",
+                    value: workflowContext.timeDetails.setupStarted,
+                    eventTypes: [.setupStarted]
+                )
+                lifecycleTimeRow(
+                    "Work Started",
+                    value: workflowContext.timeDetails.workStarted,
+                    eventTypes: [.workStarted]
+                )
+                lifecycleTimeRow(
+                    "Completed",
+                    value: workflowContext.timeDetails.completed,
+                    eventTypes: [.workCompleted, .jobCompleted]
+                )
+                LabeledContent("Time on Job") {
+                    Text(lifecycleDuration(workflowContext.timeDetails.timeOnJob))
+                        .fontWeight(.semibold)
+                }
+                if timelineCorrectionActor != nil {
+                    Text("Select the correction icon beside a recorded time to adjust it. The original time remains in the audit history.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Technicians") {
                 if store.canManageCompany {
                     Picker(
@@ -302,6 +384,25 @@ struct JobDetailView: View {
                         performWorkflowAction(action)
                     }
                 )
+            }
+
+            if let invoice = linkedInvoice {
+                Section("Invoice") {
+                    Button {
+                        presentedInvoice = invoice
+                    } label: {
+                        HStack {
+                            Label(invoice.invoiceNumber, systemImage: "doc.text.fill")
+                            Spacer()
+                            Text(invoice.status.rawValue)
+                                .foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             if showServiceDetails {
             Section("Service") {
@@ -504,6 +605,7 @@ struct JobDetailView: View {
                     NavigationLink {
                         RecurringWorkManagementView(
                             templateID: templateID,
+                            currentJobID: job.id,
                             onSeriesUpdated: {
                                 refreshJobFromRecurringSeries(
                                     templateID: templateID

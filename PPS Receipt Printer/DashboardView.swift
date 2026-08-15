@@ -9,6 +9,8 @@ import SwiftUI
 
 struct DashboardView: View {
     @EnvironmentObject private var store: AppDataStore
+    @ObservedObject private var mileageRepository = MileageTripRepository.shared
+    @ObservedObject private var declineCenter = PFSSJobDeclineReviewCenter.shared
     @Binding var selectedSection: AppSection
 
     private var todaysJobCount: Int {
@@ -21,8 +23,17 @@ struct DashboardView: View {
         store.assignmentEngine.unassignedAssignments.count
     }
 
+    private var monthToDateMileage: Int {
+        Int(ceil(mileageRepository.monthToDateMileageMiles()))
+    }
+
+    private var mileageReviewSubtitle: String {
+        let count = mileageRepository.unclassifiedTrips.count
+        return "\(count) \(count == 1 ? "Trip" : "Trips") to Review"
+    }
+
     private var dashboardTileIDs: [String] {
-        var tileIDs = ["sales", "service", "myDay", "operations"]
+        var tileIDs = ["sales", "service", "myDay", "mileage", "operations"]
         if store.shouldPresentAdminDashboardTile {
             tileIDs.append("admin")
         }
@@ -33,6 +44,32 @@ struct DashboardView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
+                    if store.canManageCompany && !declineCenter.pendingReviews.isEmpty {
+                        NavigationLink {
+                            PFSSJobDeclineReviewListView()
+                                .environmentObject(store)
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "flag.fill")
+                                    .font(.title2)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Job Review Required")
+                                        .font(.headline)
+                                    Text("A technician declined assigned work.")
+                                        .font(.subheadline)
+                                }
+                                Spacer()
+                                Text(declineCenter.pendingReviews.count.formatted())
+                                    .font(.title2.bold())
+                                Image(systemName: "chevron.right")
+                            }
+                            .foregroundStyle(.white)
+                            .padding()
+                            .background(Color.red)
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
+                        }
+                        .buttonStyle(.plain)
+                    }
                     if case let .accountHold(hold) =
                         store.cloudSynchronizationAccessStatus {
                         accountHoldNotice(hold)
@@ -89,6 +126,22 @@ struct DashboardView: View {
                                     .buttonStyle(.plain)
                                     .accessibilityHint("Opens Operations")
                                 }
+                            case "mileage":
+                                NavigationLink {
+                                    MileageWorkspaceView()
+                                } label: {
+                                    DashboardStatCard(
+                                        title: "Mileage",
+                                        value: "\(monthToDateMileage) mi",
+                                        icon: "car.rear.road.lane",
+                                        subtitle: mileageReviewSubtitle,
+                                        accentColor: .green,
+                                        trend: .neutral,
+                                        navigationIndicator: true
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityHint("Opens mileage review and manual entry")
                             case "admin":
                                 if store.shouldPresentAdminDashboardTile {
                                     dashboardTile(
@@ -111,6 +164,10 @@ struct DashboardView: View {
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Dashboard")
             .navigationBarTitleDisplayMode(.large)
+        }
+        .task {
+            declineCenter.start()
+            await declineCenter.refresh()
         }
     }
 

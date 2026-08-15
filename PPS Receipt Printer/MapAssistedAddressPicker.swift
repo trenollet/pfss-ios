@@ -40,7 +40,8 @@ struct MapAssistedAddressPicker: View {
     @Environment(\.dismiss) private var dismiss
 
     let initialAddress: String
-    let onApply: (String) -> Void
+    let requiresCoordinate: Bool
+    let onApply: (String, CLLocationCoordinate2D?) -> Void
 
     @StateObject private var locationManager = TechnicianLocationManager()
     @State private var cameraPosition: MapCameraPosition = .automatic
@@ -53,6 +54,27 @@ struct MapAssistedAddressPicker: View {
     @FocusState private var isAddressFocused: Bool
 
     private let addressService = AddressSelectionService()
+
+    init(
+        initialAddress: String,
+        onApply: @escaping (String) -> Void
+    ) {
+        self.initialAddress = initialAddress
+        requiresCoordinate = false
+        self.onApply = { address, _ in onApply(address) }
+    }
+
+    init(
+        initialAddress: String,
+        onApplySelection: @escaping (String, CLLocationCoordinate2D) -> Void
+    ) {
+        self.initialAddress = initialAddress
+        requiresCoordinate = true
+        self.onApply = { address, coordinate in
+            guard let coordinate else { return }
+            onApplySelection(address, coordinate)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -168,13 +190,15 @@ struct MapAssistedAddressPicker: View {
                     onApply(
                         reviewedAddress.trimmingCharacters(
                             in: .whitespacesAndNewlines
-                        )
+                        ),
+                        selectedCoordinate
                     )
                 }
                 .disabled(
                     reviewedAddress.trimmingCharacters(
                         in: .whitespacesAndNewlines
-                    ).isEmpty || isResolvingAddress
+                    ).isEmpty || isResolvingAddress ||
+                    (requiresCoordinate && selectedCoordinate == nil)
                 )
             }
         }

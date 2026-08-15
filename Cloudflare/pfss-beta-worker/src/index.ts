@@ -3135,6 +3135,65 @@ function canResolveConflicts(identity: DeviceIdentity): boolean {
   return identity.role === "owner" || identity.role === "manager";
 }
 
+const STALE_DEVICE_CONFLICT_WINDOW_MS = 8 * 60 * 60 * 1000;
+
+function cloudRecordClearlyNewer(
+  cloudUpdatedAt: string,
+  submittedOperation: Record<string, unknown>,
+): boolean {
+  const cloudTime = Date.parse(cloudUpdatedAt);
+  const deviceTime = Date.parse(String(submittedOperation.createdAt ?? ""));
+  return Number.isFinite(cloudTime) && Number.isFinite(deviceTime) &&
+    cloudTime - deviceTime > STALE_DEVICE_CONFLICT_WINDOW_MS;
+}
+
+async function staleDeviceCloudReceipt(
+  env: Env,
+  identity: DeviceIdentity,
+  entityType: string,
+  entityID: string,
+  revision: string,
+  currentOperation: Record<string, unknown>,
+): Promise<Response> {
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE synchronization_conflicts
+          SET status = 'keptCloud', resolved_at = ?1,
+              resolved_by_member_id = ?2, resolved_by_device_id = ?3,
+              resolver_role = 'system',
+              resolution_reason = 'Cloud record was more than eight hours newer than the stale device change.',
+              affected_fields_json = '[]', final_revision = ?4
+        WHERE tenant_id = ?5 AND source_device_id = ?3
+          AND entity_type = ?6 AND entity_id = ?7 AND status = 'unresolved'`,
+    ).bind(
+      now, identity.memberID, identity.deviceID, revision,
+      identity.tenantID, entityType, entityID,
+    ),
+    env.DB.prepare(
+      `INSERT INTO access_audit_events
+        (id, tenant_id, actor_member_id, actor_device_id, event_type,
+         metadata_json, created_at)
+       VALUES (?1, ?2, ?3, ?4, 'sync.stale_device_change_discarded',
+               ?5, ?6)`,
+    ).bind(
+      crypto.randomUUID(), identity.tenantID, identity.memberID,
+      identity.deviceID,
+      JSON.stringify({
+        entityType, entityID, policyWindowHours: 8,
+        retainedRevision: revision,
+      }),
+      now,
+    ),
+  ]);
+  return json({
+    revision,
+    duplicate: false,
+    supersededByCloud: true,
+    currentOperation,
+  }, 200);
+}
+
 async function recordSynchronizationConflict(
   env: Env,
   identity: DeviceIdentity,
@@ -4022,6 +4081,87 @@ function employeeRolesFromOperation(
   }
 }
 
+function recordPayloadFromOperation(
+  operation: Record<string, unknown>,
+): Record<string, unknown> | null {
+  try {
+    const payload = operation.payload as { body?: string } | undefined;
+    const mutation = JSON.parse(atob(payload?.body ?? "")) as {
+      recordData?: string;
+    };
+    return JSON.parse(atob(mutation.recordData ?? "")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function primaryTechnicianFromRecord(
+  entityType: string,
+  record: Record<string, unknown> | null,
+): string | null {
+  if (!record) return null;
+  if (entityType === "job") {
+    return record.primaryTechnicianID == null
+      ? null : String(record.primaryTechnicianID).toLowerCase();
+  }
+  if (entityType === "assignment") {
+    const crew = record.crew as { members?: Array<Record<string, unknown>> } | undefined;
+    const primary = (crew?.members ?? []).find((member) =>
+      String(member.role ?? "") === "Primary Technician" && member.removedDate == null,
+    );
+    return primary?.employeeID == null
+      ? null : String(primary.employeeID).toLowerCase();
+  }
+  return null;
+}
+
+function preserveCloudAssignmentAuthority(
+  submittedOperation: Record<string, unknown>,
+  acceptedOperation: Record<string, unknown>,
+  entityType: string,
+): Record<string, unknown> {
+  const submittedRecord = recordPayloadFromOperation(submittedOperation);
+  const acceptedRecord = recordPayloadFromOperation(acceptedOperation);
+  if (!submittedRecord || !acceptedRecord) return submittedOperation;
+
+  const protectedFields: string[] = [];
+  if (entityType === "job") {
+    if (Object.prototype.hasOwnProperty.call(acceptedRecord, "primaryTechnicianID")) {
+      submittedRecord.primaryTechnicianID = acceptedRecord.primaryTechnicianID;
+    } else {
+      delete submittedRecord.primaryTechnicianID;
+    }
+    protectedFields.push("primaryTechnicianID");
+  } else if (entityType === "assignment") {
+    if (Object.prototype.hasOwnProperty.call(acceptedRecord, "crew")) {
+      submittedRecord.crew = acceptedRecord.crew;
+    } else {
+      delete submittedRecord.crew;
+    }
+    protectedFields.push("crew");
+  } else {
+    return submittedOperation;
+  }
+
+  try {
+    const rewritten = structuredClone(submittedOperation);
+    const payload = rewritten.payload as { body?: string } | undefined;
+    const mutation = JSON.parse(atob(payload?.body ?? "")) as {
+      recordData?: string;
+    };
+    mutation.recordData = utf8Base64(submittedRecord);
+    if (!payload) return submittedOperation;
+    payload.body = utf8Base64(mutation);
+    rewritten.metadata = {
+      ...((rewritten.metadata as Record<string, unknown> | undefined) ?? {}),
+      serverProtectedFields: protectedFields,
+    };
+    return rewritten;
+  } catch {
+    return submittedOperation;
+  }
+}
+
 type CatalogRecordPayload = {
   id?: string;
   itemName?: string;
@@ -4437,7 +4577,7 @@ async function acceptOperation(
   env: Env,
   identity: DeviceIdentity,
 ): Promise<Response> {
-  const operation = await request.json<Record<string, unknown>>();
+  let operation = await request.json<Record<string, unknown>>();
   const id = String(operation.id ?? "");
   const idempotencyKey = String(operation.idempotencyKey ?? "");
   if (!id || !idempotencyKey) return json({ error: "invalid_operation" }, 400);
@@ -4456,7 +4596,7 @@ async function acceptOperation(
   if (isRecordMutation) {
     const allowed = new Set([
       "customer", "site", "lead", "estimate", "job", "assignment",
-      "invoice", "employee", "catalog", "recurringWork",
+      "invoice", "employee", "catalog", "recurringWork", "custom",
     ]);
     if (!allowed.has(entityType) || !entityID) {
       return json({ error: "invalid_record_mutation" }, 400);
@@ -4464,6 +4604,7 @@ async function acceptOperation(
     if (
       identity.role === "member" &&
       (entityType === "recurringWork" ||
+        entityType === "custom" ||
         (entityType === "employee" && entityID !== identity.employeeID?.toLowerCase()))
     ) {
       return json({ error: "forbidden" }, 403);
@@ -4502,6 +4643,46 @@ async function acceptOperation(
         return json({ error: "employee_role_change_requires_manager" }, 403);
       }
     }
+    if (
+      identity.role === "member" &&
+      (entityType === "job" || entityType === "assignment")
+    ) {
+      const acceptedRecord = await env.DB.prepare(
+        `SELECT operation_json AS operationJSON
+           FROM synchronized_records
+          WHERE tenant_id = ?1 AND entity_type = ?2 AND entity_id = ?3`,
+      ).bind(identity.tenantID, entityType, entityID).first<{
+        operationJSON: string;
+      }>();
+      const submittedPrimary = primaryTechnicianFromRecord(
+        entityType,
+        recordPayloadFromOperation(operation),
+      );
+      const acceptedPrimary = acceptedRecord
+        ? primaryTechnicianFromRecord(
+            entityType,
+            recordPayloadFromOperation(JSON.parse(acceptedRecord.operationJSON)),
+          )
+        : null;
+      if (submittedPrimary !== acceptedPrimary) {
+        // A field device can carry a stale technician/crew snapshot while making
+        // an otherwise valid workflow update. Preserve the cloud-authorized
+        // assignment instead of rejecting and stalling the entire offline queue.
+        // This still prevents the member device from reassigning the work.
+        if (!acceptedRecord) {
+          const memberEmployeeID = identity.employeeID?.toLowerCase() ?? null;
+          if (submittedPrimary !== null && submittedPrimary !== memberEmployeeID) {
+            return json({ error: "technician_assignment_change_requires_manager" }, 403);
+          }
+        } else {
+          operation = preserveCloudAssignmentAuthority(
+            operation,
+            JSON.parse(acceptedRecord.operationJSON),
+            entityType,
+          );
+        }
+      }
+    }
   }
   const existing = await env.DB.prepare(
     `SELECT revision FROM synchronized_operations
@@ -4514,13 +4695,15 @@ async function acceptOperation(
   if (isRecordMutation) {
     const current = await env.DB.prepare(
       `SELECT revision, operation_json AS operationJSON,
-              updated_by_device_id AS updatedByDeviceID
+              updated_by_device_id AS updatedByDeviceID,
+              updated_at AS updatedAt
          FROM synchronized_records
         WHERE tenant_id = ?1 AND entity_type = ?2 AND entity_id = ?3`,
     ).bind(identity.tenantID, entityType, entityID).first<{
       revision: string;
       operationJSON: string;
       updatedByDeviceID: string;
+      updatedAt: string;
     }>();
     const baseRevision = operation.baseRevision == null
       ? null
@@ -4530,6 +4713,12 @@ async function acceptOperation(
         !(baseRevision === null && current.updatedByDeviceID === identity.deviceID)) ||
       (!current && baseRevision !== null)
     ) {
+      if (current && cloudRecordClearlyNewer(current.updatedAt, operation)) {
+        return staleDeviceCloudReceipt(
+          env, identity, entityType, entityID, current.revision,
+          JSON.parse(current.operationJSON),
+        );
+      }
       const conflictID = await recordSynchronizationConflict(
         env, identity, operation, entityType, entityID,
         current?.revision ?? "", JSON.parse(current?.operationJSON ?? "{}"),
@@ -4845,6 +5034,436 @@ async function synchronizationChanges(
     ? changes[changes.length - 1].sequence
     : after;
   return json({ cursor, hasMore: changes.length === limit, changes });
+}
+
+interface MileageTripUpload {
+  id?: string;
+  originatingDeviceID?: string;
+  classification?: string;
+  startedAt?: string;
+  updatedAt?: string;
+  payload?: unknown;
+}
+
+interface MileageTripDeletion {
+  id?: string;
+  deletedAt?: string;
+}
+
+function validMileageTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+async function synchronizeMileageTrips(
+  request: Request,
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  const body = await request.json<{
+    cursor?: number;
+    trips?: MileageTripUpload[];
+    deletions?: MileageTripDeletion[];
+  }>();
+  const cursor = Number.isInteger(body.cursor) && (body.cursor ?? 0) >= 0
+    ? body.cursor ?? 0
+    : 0;
+  const trips = Array.isArray(body.trips) ? body.trips : [];
+  const deletions = Array.isArray(body.deletions) ? body.deletions : [];
+  if (trips.length > 100 || deletions.length > 100) {
+    return json({ error: "mileage_sync_batch_too_large" }, 413);
+  }
+
+  for (const upload of trips) {
+    if (!upload.id || !validUUID(upload.id) ||
+        !upload.originatingDeviceID || !validUUID(upload.originatingDeviceID) ||
+        !["unclassified", "business", "personal"].includes(
+          upload.classification ?? "",
+        ) || !validMileageTimestamp(upload.startedAt) ||
+        !validMileageTimestamp(upload.updatedAt) || upload.payload === undefined) {
+      return json({ error: "invalid_mileage_trip" }, 400);
+    }
+    const payloadJSON = JSON.stringify(upload.payload);
+    if (payloadJSON.length > 1_500_000) {
+      return json({ error: "mileage_trip_too_large" }, 413);
+    }
+    const existing = await env.DB.prepare(
+      `SELECT updated_at AS updatedAt, deleted_at AS deletedAt
+         FROM mileage_trips
+        WHERE tenant_id = ?1 AND member_id = ?2 AND id = ?3`,
+    ).bind(identity.tenantID, identity.memberID, upload.id).first<{
+      updatedAt: string;
+      deletedAt: string | null;
+    }>();
+    const serverChangeAt = existing?.deletedAt ?? existing?.updatedAt;
+    if (serverChangeAt && Date.parse(serverChangeAt) >= Date.parse(upload.updatedAt)) {
+      continue;
+    }
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO mileage_trips
+          (id, tenant_id, member_id, originating_device_id, classification,
+           started_at, updated_at, payload_json, deleted_at, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9)
+         ON CONFLICT(tenant_id, member_id, id) DO UPDATE SET
+           originating_device_id = excluded.originating_device_id,
+           classification = excluded.classification,
+           started_at = excluded.started_at,
+           updated_at = excluded.updated_at,
+           payload_json = excluded.payload_json,
+           deleted_at = NULL`,
+      ).bind(upload.id, identity.tenantID, identity.memberID,
+        upload.originatingDeviceID, upload.classification, upload.startedAt,
+        upload.updatedAt, payloadJSON, now),
+      env.DB.prepare(
+        `INSERT INTO mileage_trip_changes
+          (tenant_id, member_id, trip_id, change_type, payload_json, changed_at)
+         VALUES (?1, ?2, ?3, 'upsert', ?4, ?5)`,
+      ).bind(identity.tenantID, identity.memberID, upload.id, payloadJSON,
+        upload.updatedAt),
+    ]);
+  }
+
+  for (const deletion of deletions) {
+    if (!deletion.id || !validUUID(deletion.id) ||
+        !validMileageTimestamp(deletion.deletedAt)) {
+      return json({ error: "invalid_mileage_trip_deletion" }, 400);
+    }
+    const existing = await env.DB.prepare(
+      `SELECT updated_at AS updatedAt, deleted_at AS deletedAt
+         FROM mileage_trips
+        WHERE tenant_id = ?1 AND member_id = ?2 AND id = ?3`,
+    ).bind(identity.tenantID, identity.memberID, deletion.id).first<{
+      updatedAt: string;
+      deletedAt: string | null;
+    }>();
+    const serverChangeAt = existing?.deletedAt ?? existing?.updatedAt;
+    if (serverChangeAt && Date.parse(serverChangeAt) >= Date.parse(deletion.deletedAt)) {
+      continue;
+    }
+    const placeholderPayload = JSON.stringify({ id: deletion.id });
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO mileage_trips
+          (id, tenant_id, member_id, originating_device_id, classification,
+           started_at, updated_at, payload_json, deleted_at, created_at)
+         VALUES (?1, ?2, ?3, ?4, 'unclassified', ?5, ?5, NULL, ?5, ?5)
+         ON CONFLICT(tenant_id, member_id, id) DO UPDATE SET
+           updated_at = excluded.updated_at, payload_json = NULL,
+           deleted_at = excluded.deleted_at`,
+      ).bind(deletion.id, identity.tenantID, identity.memberID,
+        identity.deviceID, deletion.deletedAt),
+      env.DB.prepare(
+        `INSERT INTO mileage_trip_changes
+          (tenant_id, member_id, trip_id, change_type, payload_json, changed_at)
+         VALUES (?1, ?2, ?3, 'delete', ?4, ?5)`,
+      ).bind(identity.tenantID, identity.memberID, deletion.id,
+        placeholderPayload, deletion.deletedAt),
+    ]);
+  }
+
+  const result = await env.DB.prepare(
+    `SELECT sequence, trip_id AS tripID, change_type AS changeType,
+            payload_json AS payloadJSON, changed_at AS changedAt
+       FROM mileage_trip_changes
+      WHERE tenant_id = ?1 AND member_id = ?2 AND sequence > ?3
+      ORDER BY sequence ASC
+      LIMIT 200`,
+  ).bind(identity.tenantID, identity.memberID, cursor).all<{
+    sequence: number;
+    tripID: string;
+    changeType: "upsert" | "delete";
+    payloadJSON: string | null;
+    changedAt: string;
+  }>();
+  const changes = result.results.map((row) => ({
+    sequence: row.sequence,
+    tripID: row.tripID,
+    type: row.changeType,
+    payload: row.changeType === "upsert" && row.payloadJSON
+      ? JSON.parse(row.payloadJSON)
+      : undefined,
+    changedAt: row.changedAt,
+  }));
+  return json({
+    cursor: changes.at(-1)?.sequence ?? cursor,
+    hasMore: changes.length === 200,
+    changes,
+  });
+}
+
+async function mileageBusinessSummary(
+  url: URL,
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  if (!canManageMembers(identity)) return json({ error: "forbidden" }, 403);
+  const from = url.searchParams.get("from");
+  const through = url.searchParams.get("through");
+  if (!validMileageTimestamp(from) || !validMileageTimestamp(through)) {
+    return json({ error: "invalid_date_range" }, 400);
+  }
+  const rows = await env.DB.prepare(
+    `SELECT member_id AS memberID, payload_json AS payloadJSON
+       FROM mileage_trips
+      WHERE tenant_id = ?1 AND classification = 'business'
+        AND deleted_at IS NULL AND started_at >= ?2 AND started_at <= ?3`,
+  ).bind(identity.tenantID, from, through).all<{
+    memberID: string;
+    payloadJSON: string;
+  }>();
+  const summaries = rows.results.map((row) => {
+    const payload = JSON.parse(row.payloadJSON) as Record<string, unknown>;
+    return {
+      memberID: row.memberID,
+      tripID: payload.id,
+      startedAt: payload.startedAt,
+      distanceMeters: payload.distanceMeters,
+      businessPurpose: payload.businessPurpose,
+    };
+  });
+  return json({ trips: summaries });
+}
+
+type JobDeclineReviewRow = {
+  id: string;
+  assignmentID: string;
+  jobID: string;
+  jobNumber: string;
+  customerNumber: string;
+  technicianMemberID: string;
+  technicianEmployeeID: string;
+  originatingDeviceID: string;
+  reason: string;
+  status: "pending" | "resolved";
+  resolutionAction: string | null;
+  resolutionNote: string | null;
+  resolvedByMemberID: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+};
+
+function jobDeclineReviewJSON(row: JobDeclineReviewRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    assignmentID: row.assignmentID,
+    jobID: row.jobID,
+    jobNumber: row.jobNumber,
+    customerNumber: row.customerNumber,
+    technicianMemberID: row.technicianMemberID,
+    technicianEmployeeID: row.technicianEmployeeID,
+    originatingDeviceID: row.originatingDeviceID,
+    reason: row.reason,
+    status: row.status,
+    resolutionAction: row.resolutionAction,
+    resolutionNote: row.resolutionNote,
+    resolvedByMemberID: row.resolvedByMemberID,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    resolvedAt: row.resolvedAt,
+  };
+}
+
+const jobDeclineReviewSelection =
+  `SELECT id, assignment_id AS assignmentID, job_id AS jobID,
+          job_number AS jobNumber, customer_number AS customerNumber,
+          technician_member_id AS technicianMemberID,
+          technician_employee_id AS technicianEmployeeID,
+          originating_device_id AS originatingDeviceID,
+          reason, status, resolution_action AS resolutionAction,
+          resolution_note AS resolutionNote,
+          resolved_by_member_id AS resolvedByMemberID,
+          created_at AS createdAt, updated_at AS updatedAt,
+          resolved_at AS resolvedAt
+     FROM job_decline_reviews`;
+
+async function synchronizedAssignment(
+  env: Env,
+  tenantID: string,
+  assignmentID: string,
+): Promise<Record<string, unknown> | null> {
+  const row = await env.DB.prepare(
+    `SELECT operation_json AS operationJSON
+       FROM synchronized_records
+      WHERE tenant_id = ?1 AND entity_type = 'assignment'
+        AND entity_id = ?2`,
+  ).bind(tenantID, assignmentID.toLowerCase()).first<{ operationJSON: string }>();
+  if (!row) return null;
+  try {
+    const operation = JSON.parse(row.operationJSON) as {
+      payload?: { body?: string };
+    };
+    const mutation = JSON.parse(atob(operation.payload?.body ?? "")) as {
+      recordData?: string;
+    };
+    return JSON.parse(atob(mutation.recordData ?? "")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+async function submitJobDecline(
+  request: Request,
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  if (!identity.employeeID) return json({ error: "employee_profile_required" }, 403);
+  const body = await request.json<{
+    assignmentID?: string;
+    jobID?: string;
+    reason?: string;
+    idempotencyKey?: string;
+  }>();
+  const assignmentID = body.assignmentID?.trim().toLowerCase() ?? "";
+  const jobID = body.jobID?.trim().toLowerCase() ?? "";
+  const reason = body.reason?.trim() ?? "";
+  const idempotencyKey = body.idempotencyKey?.trim() ?? "";
+  if (!assignmentID || !jobID || !idempotencyKey || reason.length < 3) {
+    return json({ error: "invalid_job_decline" }, 400);
+  }
+  if (reason.length > 1000) return json({ error: "job_decline_reason_too_long" }, 400);
+
+  const existing = await env.DB.prepare(
+    `${jobDeclineReviewSelection}
+      WHERE tenant_id = ?1 AND idempotency_key = ?2`,
+  ).bind(identity.tenantID, idempotencyKey).first<JobDeclineReviewRow>();
+  if (existing) return json({ review: jobDeclineReviewJSON(existing), duplicate: true });
+
+  const assignment = await synchronizedAssignment(env, identity.tenantID, assignmentID);
+  if (!assignment) return json({ error: "assignment_not_found" }, 404);
+  if (String(assignment.jobID ?? "").toLowerCase() !== jobID) {
+    return json({ error: "assignment_job_mismatch" }, 409);
+  }
+  if (!["Scheduled", "Dispatched"].includes(String(assignment.status ?? ""))) {
+    return json({ error: "assignment_already_in_progress" }, 409);
+  }
+  const crew = assignment.crew as { members?: Array<Record<string, unknown>> } | undefined;
+  const isPrimary = (crew?.members ?? []).some((member) =>
+    String(member.employeeID ?? "").toLowerCase() === identity.employeeID!.toLowerCase() &&
+    String(member.role ?? "") === "Primary Technician" &&
+    (member.removedDate == null),
+  );
+  if (!isPrimary) return json({ error: "assignment_not_owned_by_technician" }, 403);
+
+  const pending = await env.DB.prepare(
+    `${jobDeclineReviewSelection}
+      WHERE tenant_id = ?1 AND assignment_id = ?2 AND status = 'pending'`,
+  ).bind(identity.tenantID, assignmentID).first<JobDeclineReviewRow>();
+  if (pending) return json({ review: jobDeclineReviewJSON(pending), duplicate: true });
+
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  const eventPayload = { reason, assignmentID, jobID };
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO job_decline_reviews
+        (id, tenant_id, assignment_id, job_id, job_number, customer_number,
+         technician_member_id, technician_employee_id, originating_device_id,
+         idempotency_key, reason, status, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending', ?12, ?12)`,
+    ).bind(
+      id, identity.tenantID, assignmentID, jobID,
+      String(assignment.jobNumber ?? ""), String(assignment.customerNumber ?? ""),
+      identity.memberID, identity.employeeID, identity.deviceID,
+      idempotencyKey, reason, now,
+    ),
+    env.DB.prepare(
+      `INSERT INTO job_decline_review_events
+        (id, review_id, tenant_id, event_type, actor_member_id,
+         actor_device_id, payload_json, created_at)
+       VALUES (?1, ?2, ?3, 'submitted', ?4, ?5, ?6, ?7)`,
+    ).bind(crypto.randomUUID(), id, identity.tenantID, identity.memberID,
+      identity.deviceID, JSON.stringify(eventPayload), now),
+    accessAuditStatement(env, identity.tenantID, "job.decline_submitted", {
+      actorMemberID: identity.memberID,
+      actorDeviceID: identity.deviceID,
+      metadata: { reviewID: id, assignmentID, jobID },
+      createdAt: now,
+    }),
+  ]);
+  const created = await env.DB.prepare(
+    `${jobDeclineReviewSelection} WHERE tenant_id = ?1 AND id = ?2`,
+  ).bind(identity.tenantID, id).first<JobDeclineReviewRow>();
+  return json({ review: jobDeclineReviewJSON(created!), duplicate: false }, 201);
+}
+
+async function listJobDeclines(
+  url: URL,
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  const requestedStatus = url.searchParams.get("status") ?? "pending";
+  if (requestedStatus !== "pending" && requestedStatus !== "resolved") {
+    return json({ error: "invalid_job_decline_status" }, 400);
+  }
+  const manager = canManageMembers(identity);
+  const result = manager
+    ? await env.DB.prepare(
+        `${jobDeclineReviewSelection}
+          WHERE tenant_id = ?1 AND status = ?2 ORDER BY created_at ASC`,
+      ).bind(identity.tenantID, requestedStatus).all<JobDeclineReviewRow>()
+    : await env.DB.prepare(
+        `${jobDeclineReviewSelection}
+          WHERE tenant_id = ?1 AND technician_member_id = ?2 AND status = ?3
+          ORDER BY created_at ASC`,
+      ).bind(identity.tenantID, identity.memberID, requestedStatus).all<JobDeclineReviewRow>();
+  return json({ reviews: result.results.map(jobDeclineReviewJSON) });
+}
+
+async function resolveJobDecline(
+  request: Request,
+  env: Env,
+  identity: DeviceIdentity,
+  reviewID: string,
+): Promise<Response> {
+  if (!canManageMembers(identity)) return json({ error: "forbidden" }, 403);
+  const body = await request.json<{ action?: string; note?: string }>();
+  const allowed = new Set(["reassigned", "rescheduled", "returned", "cancelled"]);
+  const action = body.action?.trim() ?? "";
+  const note = body.note?.trim().slice(0, 1000) ?? "";
+  if (!allowed.has(action)) return json({ error: "invalid_job_decline_resolution" }, 400);
+  const current = await env.DB.prepare(
+    `${jobDeclineReviewSelection} WHERE tenant_id = ?1 AND id = ?2`,
+  ).bind(identity.tenantID, reviewID).first<JobDeclineReviewRow>();
+  if (!current) return json({ error: "job_decline_not_found" }, 404);
+  if (current.status === "resolved") {
+    return json({ review: jobDeclineReviewJSON(current), duplicate: true });
+  }
+  const now = new Date().toISOString();
+  const update = await env.DB.prepare(
+    `UPDATE job_decline_reviews
+        SET status = 'resolved', resolution_action = ?1, resolution_note = ?2,
+            resolved_by_member_id = ?3, resolved_by_device_id = ?4,
+            resolved_at = ?5, updated_at = ?5
+      WHERE tenant_id = ?6 AND id = ?7 AND status = 'pending'`,
+  ).bind(action, note, identity.memberID, identity.deviceID, now,
+    identity.tenantID, reviewID).run();
+  if (update.meta.changes === 0) {
+    const raced = await env.DB.prepare(
+      `${jobDeclineReviewSelection} WHERE tenant_id = ?1 AND id = ?2`,
+    ).bind(identity.tenantID, reviewID).first<JobDeclineReviewRow>();
+    return json({ review: jobDeclineReviewJSON(raced!), duplicate: true });
+  }
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO job_decline_review_events
+        (id, review_id, tenant_id, event_type, actor_member_id,
+         actor_device_id, payload_json, created_at)
+       VALUES (?1, ?2, ?3, 'resolved', ?4, ?5, ?6, ?7)`,
+    ).bind(crypto.randomUUID(), reviewID, identity.tenantID, identity.memberID,
+      identity.deviceID, JSON.stringify({ action, note }), now),
+    accessAuditStatement(env, identity.tenantID, "job.decline_resolved", {
+      actorMemberID: identity.memberID,
+      actorDeviceID: identity.deviceID,
+      metadata: { reviewID, action },
+      createdAt: now,
+    }),
+  ]);
+  const resolved = await env.DB.prepare(
+    `${jobDeclineReviewSelection} WHERE tenant_id = ?1 AND id = ?2`,
+  ).bind(identity.tenantID, reviewID).first<JobDeclineReviewRow>();
+  return json({ review: jobDeclineReviewJSON(resolved!), duplicate: false });
 }
 
 function tenantBackupPrefix(tenantID: string): string {
@@ -5282,6 +5901,32 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/v1/sync/changes") {
         return synchronizationChanges(url, env, identity);
+      }
+      if (request.method === "POST" && url.pathname === "/v1/mileage/sync") {
+        return synchronizeMileageTrips(request, env, identity);
+      }
+      if (
+        request.method === "GET" &&
+        url.pathname === "/v1/mileage/business-summary"
+      ) {
+        return mileageBusinessSummary(url, env, identity);
+      }
+      if (request.method === "POST" && url.pathname === "/v1/job-declines") {
+        return submitJobDecline(request, env, identity);
+      }
+      if (request.method === "GET" && url.pathname === "/v1/job-declines") {
+        return listJobDeclines(url, env, identity);
+      }
+      const jobDeclineResolutionMatch = url.pathname.match(
+        /^\/v1\/job-declines\/([^/]+)\/resolve$/,
+      );
+      if (request.method === "POST" && jobDeclineResolutionMatch) {
+        return resolveJobDecline(
+          request,
+          env,
+          identity,
+          decodeURIComponent(jobDeclineResolutionMatch[1]),
+        );
       }
       if (request.method === "GET" && url.pathname === "/v1/sync/conflicts") {
         return listSynchronizationConflicts(env, identity);

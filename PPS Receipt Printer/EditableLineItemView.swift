@@ -36,8 +36,8 @@ struct EditableLineItemView: View {
     private var unitPriceValue: Double {
         Double(unitPrice) ?? 0
     }
-    private var estimatedMinutesValue: Int {
-        max(Int(estimatedMinutesPerUnit) ?? 0, 0)
+    private var estimatedMinutesValue: Double {
+        max(Double(estimatedMinutesPerUnit) ?? 0, 0)
     }
 
     private var lineTotal: Double {
@@ -77,7 +77,7 @@ struct EditableLineItemView: View {
                         SelectAllTextField(
                             placeholder: "Minutes",
                             text: $estimatedMinutesPerUnit,
-                            keyboardType: .numberPad
+                            keyboardType: .decimalPad
                         )
                         .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
@@ -132,8 +132,8 @@ struct EditableLineItemView: View {
             itemDescription = existingLineItem.description
             quantity = String(format: "%.2f", existingLineItem.quantity)
             unitPrice = String(format: "%.2f", existingLineItem.unitPrice)
-            estimatedMinutesPerUnit = String(
-                existingLineItem.estimatedMinutesPerUnit
+            estimatedMinutesPerUnit = existingLineItem.estimatedMinutesPerUnit.formatted(
+                .number.precision(.fractionLength(0...1))
             )
             return
         }
@@ -143,8 +143,8 @@ struct EditableLineItemView: View {
             itemDescription = catalogItem.itemDescription
             quantity = String(format: "%.2f", catalogItem.defaultQuantity)
             unitPrice = String(format: "%.2f", catalogItem.defaultPrice)
-            estimatedMinutesPerUnit = String(
-                catalogItem.estimatedMinutesPerUnit
+            estimatedMinutesPerUnit = catalogItem.estimatedMinutesPerUnit.formatted(
+                .number.precision(.fractionLength(0...1))
             )
         }
     }
@@ -153,6 +153,15 @@ struct EditableLineItemView: View {
         let updatedItem = ServiceLineItem(
             id: existingLineItem?.id ?? UUID(),
             catalogItemID: catalogItem?.id ?? existingLineItem?.catalogItemID,
+            catalogItemNameSnapshot: catalogItem?.itemName
+                ?? existingLineItem?.catalogItemNameSnapshot
+                ?? itemName,
+            catalogItemTypeSnapshot: catalogItem?.itemType
+                ?? existingLineItem?.catalogItemTypeSnapshot
+                ?? .service,
+            taxTreatmentSnapshot: catalogItem?.taxTreatment
+                ?? existingLineItem?.taxTreatmentSnapshot
+                ?? .nonTaxable,
             serviceType: .other,
             otherService: itemName,
             description: itemDescription,

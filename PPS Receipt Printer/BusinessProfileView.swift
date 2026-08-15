@@ -74,6 +74,17 @@ struct BusinessProfileView: View {
                 }
 
                 profileSectionLink(
+                    title: "Tax Configuration",
+                    subtitle: taxConfigurationSummary,
+                    symbol: "percent"
+                ) {
+                    BusinessTaxSettingsEditorView(
+                        settings: $profile.taxSettings,
+                        reviewerName: reviewerName
+                    )
+                }
+
+                profileSectionLink(
                     title: "Document Previews",
                     subtitle: "PDF invoice and thermal receipt",
                     symbol: "doc.text.magnifyingglass"
@@ -190,6 +201,25 @@ struct BusinessProfileView: View {
         return "\(Int(operations.averageDrivingSpeedMPH.rounded())) mph · \(operations.dailyRouteBufferMinutes) min daily · \(operations.perStopBufferMinutes) min/stop"
     }
 
+    private var reviewerName: String {
+        store.authenticatedCloudEmployee.map {
+            "\($0.firstName) \($0.lastName)".trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+        }
+            ?? profile.contactName.nonEmpty
+            ?? "Authorized Manager or Owner"
+    }
+
+    private var taxConfigurationSummary: String {
+        guard profile.taxSettings.isConfigured else { return "Not configured" }
+        return String(
+            format: "%.3f%% · %@",
+            profile.taxSettings.standardRatePercent,
+            profile.taxSettings.jurisdictionName
+        )
+    }
+
     private var hasUnsavedChanges: Bool {
         encodedProfile(profile) != encodedProfile(originalProfile)
     }
@@ -211,6 +241,7 @@ struct BusinessProfileView: View {
     private func saveProfile() {
         normalizeProfile()
         store.businessProfile = profile
+        store.applyCompanyStandardTaxToUncalculatedDraftInvoices()
         originalProfile = profile
         dismiss()
     }
@@ -218,6 +249,7 @@ struct BusinessProfileView: View {
     private func normalizeProfile() {
         profile.businessName = profile.businessName.trimmingCharacters(in: .whitespacesAndNewlines)
         profile.contactName = profile.contactName.trimmingCharacters(in: .whitespacesAndNewlines)
+        profile.taxSettings.normalize()
         profile.phone = profile.phone.trimmingCharacters(in: .whitespacesAndNewlines)
         profile.email = profile.email.trimmingCharacters(in: .whitespacesAndNewlines)
         profile.website = profile.website.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -472,6 +504,132 @@ private struct BusinessOperationsEditorView: View {
                 Text("\(value.wrappedValue) \(unit)").foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+private struct BusinessTaxSettingsEditorView: View {
+    @Binding var settings: BusinessTaxSettings
+    let reviewerName: String
+
+    @State private var showingConfirmation = false
+    @FocusState private var isInputFocused: Bool
+
+    private var canEnable: Bool {
+        settings.standardRatePercent >= 0
+            && settings.standardRatePercent <= 100
+            && !settings.jurisdictionName.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).isEmpty
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Use Standard Tax Rate", isOn: $settings.isEnabled)
+
+                LabeledContent("Tax Rate") {
+                    HStack(spacing: 4) {
+                        SelectAllDecimalField(
+                            placeholder: "0.000",
+                            value: $settings.standardRatePercent
+                        )
+                        .focused($isInputFocused)
+                        Text("%")
+                    }
+                    .frame(maxWidth: 150)
+                }
+
+                TextField(
+                    "Jurisdiction name",
+                    text: $settings.jurisdictionName
+                )
+                .focused($isInputFocused)
+
+                DatePicker(
+                    "Effective Date",
+                    selection: $settings.effectiveDate,
+                    displayedComponents: .date
+                )
+
+                TextField(
+                    "Rate source or notes (optional)",
+                    text: $settings.sourceNotes,
+                    axis: .vertical
+                )
+                .lineLimit(2...4)
+                .focused($isInputFocused)
+            } header: {
+                Text("Standard Company Rate")
+            } footer: {
+                Text(
+                    "PFSS applies this company-configured rate only to taxable "
+                    + "invoice lines. It is not a geographically verified rate."
+                )
+            }
+
+            if settings.isConfigured {
+                Section("Verification") {
+                    LabeledContent("Verified By", value: settings.verifiedBy)
+                    if let verifiedAt = settings.verifiedAt {
+                        LabeledContent("Verified") {
+                            Text(verifiedAt.formatted(date: .abbreviated, time: .shortened))
+                        }
+                    }
+                }
+            }
+
+            Section {
+                Button("Review and Verify Tax Configuration") {
+                    isInputFocused = false
+                    showingConfirmation = true
+                }
+                .frame(maxWidth: .infinity)
+                .disabled(!settings.isEnabled || !canEnable)
+            }
+        }
+        .navigationTitle("Tax Configuration")
+        .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: settings.standardRatePercent) { _, _ in
+            invalidateVerification()
+        }
+        .onChange(of: settings.jurisdictionName) { _, _ in
+            invalidateVerification()
+        }
+        .onChange(of: settings.effectiveDate) { _, _ in
+            invalidateVerification()
+        }
+        .onChange(of: settings.sourceNotes) { _, _ in
+            invalidateVerification()
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Dismiss Keyboard") { isInputFocused = false }
+            }
+        }
+        .confirmationDialog(
+            "Verify Company Tax Rate?",
+            isPresented: $showingConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Verify and Use Rate") {
+                settings.normalize()
+                settings.verifiedBy = reviewerName
+                settings.verifiedAt = Date()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text(
+                "This confirms the company is responsible for the configured "
+                + "rate. Existing invoice snapshots will not be recalculated."
+            )
+        }
+    }
+
+    private func invalidateVerification() {
+        guard settings.verifiedAt != nil else { return }
+        settings.verifiedAt = nil
+        settings.verifiedBy = ""
     }
 }
 

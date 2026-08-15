@@ -65,6 +65,17 @@ private struct PFSSAppDataSessionView: View {
     var body: some View {
         PFSSProtectedRootView()
             .environmentObject(store)
+            .task {
+                await MileageLocationCoordinator.shared
+                    .configureFromCurrentSession()
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: .pfssUserDidLogOut
+                )
+            ) { _ in
+                MileageLocationCoordinator.shared.suspendForLogout()
+            }
     }
 }
 

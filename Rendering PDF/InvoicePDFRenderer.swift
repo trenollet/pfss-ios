@@ -481,7 +481,7 @@ struct InvoicePDFRenderer {
             height: 24
         )
 
-        UIColor.systemGray6.setFill()
+        UIColor(white: 0.16, alpha: 1).setFill()
         UIBezierPath(
             roundedRect: headerRect,
             cornerRadius: 4
@@ -496,7 +496,7 @@ struct InvoicePDFRenderer {
                 height: 16
             ),
             font: .boldSystemFont(ofSize: 9),
-            color: .darkGray
+            color: .white
         )
 
         drawText(
@@ -508,7 +508,7 @@ struct InvoicePDFRenderer {
                 height: 16
             ),
             font: .boldSystemFont(ofSize: 9),
-            color: .darkGray,
+            color: .white,
             alignment: .right
         )
 
@@ -521,7 +521,7 @@ struct InvoicePDFRenderer {
                 height: 16
             ),
             font: .boldSystemFont(ofSize: 9),
-            color: .darkGray,
+            color: .white,
             alignment: .right
         )
 
@@ -534,7 +534,7 @@ struct InvoicePDFRenderer {
                 height: 16
             ),
             font: .boldSystemFont(ofSize: 9),
-            color: .darkGray,
+            color: .white,
             alignment: .right
         )
     }
@@ -657,6 +657,22 @@ struct InvoicePDFRenderer {
 
         currentY += 23
 
+        if let tax = invoice.taxSnapshot {
+            drawSummaryRow(
+                label: "Tax",
+                value: currency(
+                    NSDecimalNumber(decimal: tax.addedTax).doubleValue
+                ),
+                labelX: labelX,
+                valueX: valueX,
+                y: currentY,
+                labelWidth: labelWidth,
+                valueWidth: valueWidth
+            )
+
+            currentY += 23
+        }
+
         drawSummaryRow(
             label: "Discount",
             value: currency(invoice.discount),
@@ -701,7 +717,7 @@ struct InvoicePDFRenderer {
             height: 32
         )
 
-        UIColor.systemGray6.setFill()
+        UIColor(white: 0.16, alpha: 1).setFill()
 
         UIBezierPath(
             roundedRect: balanceRect,
@@ -716,7 +732,8 @@ struct InvoicePDFRenderer {
             y: currentY,
             labelWidth: labelWidth,
             valueWidth: valueWidth,
-            bold: true
+            bold: true,
+            color: .white
         )
 
         return currentY + 38
@@ -730,7 +747,8 @@ struct InvoicePDFRenderer {
         y: CGFloat,
         labelWidth: CGFloat,
         valueWidth: CGFloat,
-        bold: Bool = false
+        bold: Bool = false,
+        color: UIColor = .black
     ) {
         let font: UIFont = bold
             ? .boldSystemFont(ofSize: 11)
@@ -745,7 +763,7 @@ struct InvoicePDFRenderer {
                 height: 20
             ),
             font: font,
-            color: .black,
+            color: color,
             alignment: .right
         )
 
@@ -758,7 +776,7 @@ struct InvoicePDFRenderer {
                 height: 20
             ),
             font: font,
-            color: .black,
+            color: color,
             alignment: .right
         )
     }
