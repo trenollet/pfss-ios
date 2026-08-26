@@ -2,8 +2,9 @@
 
 ## Multi-Device Synchronization Architecture
 
-**Closeout candidate:** 20.7.29  
-**Prepared:** 2026-08-26
+**Accepted build:** 20.7.29
+
+**Closed:** 2026-08-26
 
 Phase 20 makes the PFSS server authoritative for shared company data while
 keeping field work usable through temporary loss of connectivity. Routine
@@ -46,9 +47,10 @@ an overpayment remains visible rather than being silently erased.
 - 83 Cloudflare Worker regressions passed.
 - The fresh-D1 migration-safety suite passed.
 - TypeScript validation and the signed iOS build passed.
-- Signed Owner, Manager, and Technician testing passed across the active iPhone
-  and iPad fleet. Final Sales-role signed acceptance remains before the phase
-  is formally marked closed.
+- Signed Owner, Manager, Sales, and Technician testing passed across the active
+  iPhone and iPad fleet. Salesperson-only acceptance proved role propagation,
+  removal of Manager/Admin authority, authenticated Sales Calendar identity,
+  and lead-assignment eligibility without sign-out or re-enrollment.
 
 ### Deployment
 

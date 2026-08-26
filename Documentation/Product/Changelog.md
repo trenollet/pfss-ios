@@ -24,9 +24,9 @@ This file records durable project-level changes. Detailed user-facing notes rema
 - Hardened live field behavior for recurring work, assignment changes, role
   promotion/demotion, map-assisted addresses, job occurrence moves, test-only
   notification leakage, and post-creation invoice correction.
-- Closeout candidate build 20.7.29 passes 291 iOS tests, 83 Worker tests, the
-  fresh-D1 migration suite, and TypeScript validation. Final Sales-role signed
-  acceptance and repository integration remain before formal closure.
+- Phase 20 closed on build 20.7.29 after 291 iOS tests, 83 Worker tests, the
+  fresh-D1 migration suite, TypeScript validation, and signed Owner, Manager,
+  Sales, and Technician acceptance passed.
 
 ### Phase 19 — Field Intelligence, Workforce Response, and Financial Integrity
 

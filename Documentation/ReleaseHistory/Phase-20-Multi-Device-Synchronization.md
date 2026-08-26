@@ -25,7 +25,8 @@ work, role propagation, map selection, single-job moves, notification
 containment, and invoice correction because those workflows depend directly on
 trustworthy multi-device state.
 
-The 20.7.29 closeout candidate passes 291 iOS tests, 83 Worker tests, the
-fresh-D1 migration suite, TypeScript validation, and signed Owner, Manager, and
-Technician acceptance. Formal closure awaits the final Sales-role device check
-and repository integration. App Store deployment remains a Phase 25 activity.
+Phase 20 closed on build 20.7.29 after 291 iOS tests, 83 Worker tests, the
+fresh-D1 migration suite, TypeScript validation, and signed Owner, Manager,
+Sales, and Technician acceptance passed. The final Salesperson-only check
+proved that role and authority changes reached the employee device without
+sign-out or re-enrollment. App Store deployment remains a Phase 25 activity.

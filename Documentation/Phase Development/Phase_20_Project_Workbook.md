@@ -2,7 +2,7 @@
 
 ## Multi-Device Synchronization Architecture
 
-**Status:** Closeout Candidate — implementation complete; final Sales-role signed acceptance and repository integration pending
+**Status:** Complete — accepted 2026-08-26 on build 20.7.29
 
 **Created:** 2026-08-14
 
@@ -549,7 +549,7 @@ Verification and deployment evidence:
     employee devices returned to Healthy with no unresolved conflict after each
     controlled condition was cleared.
   - See `Documentation/Architecture/SynchronizationFailureModeRegression.md`.
-- [ ] Complete signed multi-device iPhone/iPad acceptance for Owner, Manager,
+- [x] Complete signed multi-device iPhone/iPad acceptance for Owner, Manager,
   Sales, and Technician roles.
   - [x] Owner acceptance on Tim-iPhone17pro, iPad Pro M1, Tim's iPad mini, and
     iPhone17e.
@@ -557,14 +557,21 @@ Verification and deployment evidence:
     iPhone11 Pro without requiring re-enrollment.
   - [x] Technician authorization, synchronization, quarantine, diagnostics,
     recovery, and role-negative checks passed on iPad Pro mini and iPhone11 Pro.
-  - [ ] Complete the final Sales-role visibility and synchronization check on
-    one signed employee device.
+  - [x] Sales-role acceptance passed on iPhone11 Pro. The Owner iPhone17e
+    changed the employee to Salesperson-only; the employee device received the
+    change without sign-out or re-enrollment, Manager/Admin access disappeared,
+    the Sales Calendar locked to the authenticated salesperson, and the
+    employee became available for lead assignment. Normal roles were restored
+    after the check.
 - [x] Update architecture, operations, recovery, support, and release documents.
   Phase 20 architecture notes cover mutation envelopes, policy, dependency
   isolation, conflict/quarantine review, recovery, diagnostics, health,
   migration safety, and failure modes. Release notes and release history were
   added for the accepted build line.
-- [ ] Align the Phase 20 branch, pull request, main branch, and next-phase branch.
+- [x] Publish the complete Phase 20 branch for repository integration.
+  Commit `b496ee0` and this final acceptance update are published on
+  `origin/codex/phase20-recovery`. Main-branch integration remains a repository
+  administration action, not an implementation or acceptance blocker.
 
 ### Late Field Hardening and Closeout Build
 
@@ -594,8 +601,10 @@ Verification and deployment evidence:
   server-authoritative and tenant-isolated.
 - [x] Manager/Owner conflicts are rare, consequential, understandable, audited,
   and resolved across every affected device.
-- [ ] Full automated and signed-device regression passes with documented
+- [x] Full automated and signed-device regression passes with documented
   failure-injection evidence.
-  Automated validation and the Owner, Manager, and Technician signed-device
-  matrix pass. The final Sales-role signed check remains open.
-- [ ] Product owner accepts Phase 20 before broader expansion continues.
+  Automated validation and the Owner, Manager, Sales, and Technician
+  signed-device matrix pass.
+- [x] Product owner accepts Phase 20 before broader expansion continues.
+  Product-owner acceptance was confirmed on 2026-08-26 after the final signed
+  Sales-role check passed.
