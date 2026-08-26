@@ -568,10 +568,11 @@ Verification and deployment evidence:
   isolation, conflict/quarantine review, recovery, diagnostics, health,
   migration safety, and failure modes. Release notes and release history were
   added for the accepted build line.
-- [x] Publish the complete Phase 20 branch for repository integration.
-  Commit `b496ee0` and this final acceptance update are published on
-  `origin/codex/phase20-recovery`. Main-branch integration remains a repository
-  administration action, not an implementation or acceptance blocker.
+- [x] Align the Phase 20 branch and main branch.
+  The complete implementation and signed acceptance history were published on
+  `origin/codex/phase20-recovery`, verified as a strict fast-forward of current
+  `origin/main`, and integrated into `main` on 2026-08-26 without rewriting
+  history. The next product phase begins from this accepted baseline.
 
 ### Late Field Hardening and Closeout Build
 
