@@ -191,6 +191,9 @@ struct OfflineSyncDetailsView: View {
     var onSyncNow: (() -> Void)? = nil
     var onResolveConflict: ((UUID, OfflineConflictResolution) throws -> Void)? = nil
 
+    @ObservedObject private var recoveryStatus =
+        PFSSSynchronizationRecoveryStatus.shared
+
     @State private var conflictOperation: PendingOfflineOperation?
     @State private var resolutionError = ""
     @State private var isShowingResolutionError = false
@@ -290,6 +293,31 @@ struct OfflineSyncDetailsView: View {
 
             }
 
+            if let recovery = recoveryStatus.latest {
+                Section {
+                    Label(
+                        "Cloud Changes Reconciled",
+                        systemImage: "arrow.triangle.2.circlepath.circle.fill"
+                    )
+                    .foregroundStyle(.green)
+                    Text(recovery.detail)
+                        .font(.subheadline)
+                    LabeledContent(
+                        "Completed",
+                        value: recovery.completedAt.formatted(
+                            date: .abbreviated,
+                            time: .shortened
+                        )
+                    )
+                } header: {
+                    Text("Latest Device Recovery")
+                } footer: {
+                    Text(
+                        "PFSS downloaded authoritative company changes before releasing this device's queued work."
+                    )
+                }
+            }
+
             if !blockingOperations.isEmpty {
                 Section {
                     ForEach(blockingOperations) { operation in
@@ -383,9 +411,27 @@ struct OfflineSyncDetailsView: View {
                     .textSelection(.enabled)
             }
             if let failure = operation.failure {
-                Text(failure.message)
-                    .font(.caption)
+                let explanation = SynchronizationIssueExplanation.explain(
+                    failure: failure,
+                    entityType: operation.entityType
+                )
+                Text(explanation.title)
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.red)
+                Text(explanation.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let quarantineReason = operation.metadata["quarantineReason"] {
+                Label("Quarantined", systemImage: "shippingbox.and.arrow.backward")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                Text(quarantineReason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Available recovery: repair and retry, supersede, or discard.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             if let conflict = operation.conflict,
                conflict.requiresHumanReview {

@@ -14,6 +14,7 @@ struct PPS_Receipt_PrinterApp: App {
     @UIApplicationDelegateAdaptor(PFSSApplicationDelegate.self)
     private var applicationDelegate
     @StateObject private var printer = BluetoothPrinter()
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         SelectAllTextEntryStandard.install()
@@ -23,6 +24,13 @@ struct PPS_Receipt_PrinterApp: App {
         WindowGroup {
             PFSSAppSessionHost()
                 .environmentObject(printer)
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active else { return }
+            NotificationCenter.default.post(
+                name: .pfssSynchronizationWakeRequested,
+                object: nil
+            )
         }
     }
 }

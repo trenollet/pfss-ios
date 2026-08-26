@@ -190,7 +190,10 @@ struct OperationsView: View {
             operationsSection(
                 title: "Needs Attention",
                 subtitle: "Items that may interrupt today's work",
-                tileIDs: ["conflicts", "sync", "heldJobs", "dispatchQueue"]
+                tileIDs: [
+                    "conflicts", "quarantines", "sync", "heldJobs",
+                    "dispatchQueue"
+                ]
             )
             operationsSection(
                 title: "Run Today",
@@ -263,6 +266,47 @@ struct OperationsView: View {
                                 resolution: resolution,
                                 reason: reason,
                                 affectedFields: affectedFields
+                            )
+                        },
+                        onDiscardRevokedDeviceConflicts: {
+                            sourceDeviceID, expectedCount in
+                            try await store.discardRevokedDeviceConflicts(
+                                sourceDeviceID: sourceDeviceID,
+                                expectedCount: expectedCount
+                            )
+                        }
+                    )
+                }
+            }
+            case "quarantines":
+            if store.canOverrideSynchronizationConflicts {
+                operationsTile(
+                    title: "Quarantine Inbox",
+                    value: "\(unresolvedQuarantineCount)",
+                    icon: unresolvedQuarantineCount == 0
+                        ? "checkmark.circle"
+                        : "shippingbox.fill",
+                    subtitle: unresolvedQuarantineCount == 0
+                        ? "No review needed"
+                        : "Device changes need review",
+                    color: unresolvedQuarantineCount == 0 ? .green : .orange
+                ) {
+                    PFSSQuarantineInboxView(
+                        queue: store.offlineOperationQueue,
+                        employees: store.employees,
+                        onResolve: { operationID, resolution, reason in
+                            try await store.resolveInboxQuarantine(
+                                operationID: operationID,
+                                resolution: resolution,
+                                reason: reason
+                            )
+                        },
+                        onRepairAssignment: {
+                            operationID, assignment, reason in
+                            try await store.repairAssignmentQuarantine(
+                                operationID: operationID,
+                                repairedAssignment: assignment,
+                                reason: reason
                             )
                         }
                     )
@@ -425,6 +469,12 @@ struct OperationsView: View {
 
     private var unresolvedConflictCount: Int {
         PFSSConflictInbox.unresolvedItems(
+            in: store.offlineOperationQueue.orderedOperations
+        ).count
+    }
+
+    private var unresolvedQuarantineCount: Int {
+        PFSSQuarantineInbox.unresolvedItems(
             in: store.offlineOperationQueue.orderedOperations
         ).count
     }

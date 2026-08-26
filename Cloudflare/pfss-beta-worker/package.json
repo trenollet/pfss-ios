@@ -7,6 +7,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test": "vitest run",
+    "test:all": "vitest run && vitest run --config vitest.migration.config.ts",
+    "test:migrations": "vitest run --config vitest.migration.config.ts",
     "types": "wrangler types",
     "tenant:create": "node scripts/provision-beta-tenant.mjs"
   },

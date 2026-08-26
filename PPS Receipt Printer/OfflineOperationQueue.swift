@@ -40,11 +40,33 @@ enum OfflineOperationQueueError: LocalizedError, Equatable {
     }
 }
 
+enum OfflineQuarantineResolution: Equatable {
+    case retry
+    case supersede(replacementOperationID: UUID?)
+    case discard
+}
+
 /// Queue persistence is isolated behind a protocol so tests and future storage
 /// migrations do not change the public queue API.
 protocol OfflineOperationQueuePersistence {
     func load() throws -> Data?
     func save(_ data: Data) throws
+}
+
+/// Process-local queue storage for previews, tests, and other explicitly
+/// non-persistent AppDataStore instances. This prevents those stores from
+/// reading or overwriting the enrolled device's production queue.
+final class TransientOfflineOperationQueuePersistence:
+    OfflineOperationQueuePersistence {
+    private var data: Data?
+
+    func load() throws -> Data? {
+        data
+    }
+
+    func save(_ data: Data) throws {
+        self.data = data
+    }
 }
 
 struct DiskOfflineOperationQueuePersistence: OfflineOperationQueuePersistence {
@@ -377,6 +399,48 @@ final class OfflineOperationQueue: ObservableObject {
             try commit(candidate)
         }
         return requeuedCount
+    }
+
+    /// Applies an explicit support/user decision to one quarantined operation.
+    /// Repair is performed by updating the durable payload first and then
+    /// selecting `.retry`; no history or operation identity is discarded.
+    func resolveQuarantinedOperation(
+        id: UUID,
+        resolution: OfflineQuarantineResolution,
+        reason: String,
+        at timestamp: Date = Date()
+    ) throws {
+        guard var operation = operation(id: id) else {
+            throw OfflineOperationQueueError.operationNotFound(id)
+        }
+        let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        operation.updatedAt = timestamp
+        operation.metadata["quarantineResolutionReason"] = trimmedReason
+        operation.metadata["quarantineResolvedAt"] = ISO8601DateFormatter().string(from: timestamp)
+
+        switch resolution {
+        case .retry:
+            operation.status = .pending
+            operation.failure = nil
+            operation.conflict = nil
+            operation.nextRetryAt = nil
+            operation.metadata["retryCycleBaseline"] = String(operation.retryAttempts.count)
+            operation.metadata["quarantineResolution"] = "retry"
+            operation.metadata.removeValue(forKey: "quarantinedAt")
+            operation.metadata.removeValue(forKey: "quarantineReason")
+        case let .supersede(replacementOperationID):
+            operation.status = .cancelled
+            operation.nextRetryAt = nil
+            operation.metadata["quarantineResolution"] = "superseded"
+            if let replacementOperationID {
+                operation.metadata["supersededByOperationID"] = replacementOperationID.uuidString.lowercased()
+            }
+        case .discard:
+            operation.status = .cancelled
+            operation.nextRetryAt = nil
+            operation.metadata["quarantineResolution"] = "discarded"
+        }
+        try update(operation)
     }
 
     private func commit(

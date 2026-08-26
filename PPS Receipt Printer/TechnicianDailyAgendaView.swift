@@ -31,6 +31,7 @@ struct TechnicianDailyAgendaView: View {
     @State private var showingDatePicker = false
     @ObservedObject private var declineCenter = PFSSJobDeclineReviewCenter.shared
     @State private var declineJob: JobRecord?
+    @State private var moveJob: JobRecord?
     @State private var declineReason = ""
     @State private var declineErrorMessage = ""
     @State private var showingDeclineError = false
@@ -233,6 +234,10 @@ struct TechnicianDailyAgendaView: View {
         }
         .sheet(item: $declineJob) { job in
             declineSheet(for: job)
+        }
+        .sheet(item: $moveJob) { job in
+            JobOccurrenceMoveView(job: job)
+                .environmentObject(store)
         }
         .alert("Unable to Decline Job", isPresented: $showingDeclineError) {
             Button("OK", role: .cancel) { }
@@ -743,23 +748,50 @@ struct TechnicianDailyAgendaView: View {
 
             technicianActionRow(for: job)
 
-            if canDecline(job) {
-                if let assignment = store.assignment(forJobID: job.id),
-                   declineCenter.hasPendingReview(assignmentID: assignment.id) {
-                    Label("Manager Review Requested", systemImage: "flag.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.orange)
+            if let invoice = store.invoice(for: job) {
+                Button {
+                    selectedInvoiceDestination = InvoiceDestination(id: invoice.id)
+                } label: {
+                    Label("View Invoice", systemImage: "doc.text.fill")
+                        .fontWeight(.semibold)
                         .frame(maxWidth: .infinity)
-                } else {
-                    Button(role: .destructive) {
-                        declineReason = ""
-                        declineJob = job
-                    } label: {
-                        Label("Decline Assigned Job", systemImage: "flag.fill")
-                            .fontWeight(.semibold)
-                            .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
+            }
+
+            if canDecline(job) || canMove(job) {
+                HStack(spacing: 12) {
+                    if canDecline(job) {
+                        if let assignment = store.assignment(forJobID: job.id),
+                           declineCenter.hasPendingReview(assignmentID: assignment.id) {
+                            Label("Review Pending", systemImage: "flag.fill")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.orange)
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            Button(role: .destructive) {
+                                declineReason = ""
+                                declineJob = job
+                            } label: {
+                                Label("Decline", systemImage: "flag.fill")
+                                    .fontWeight(.semibold)
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                        }
                     }
-                    .buttonStyle(.bordered)
+
+                    if canMove(job) {
+                        Button {
+                            moveJob = job
+                        } label: {
+                            Label("Move", systemImage: "calendar.badge.clock")
+                                .fontWeight(.semibold)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
                 }
             }
         }
@@ -784,6 +816,16 @@ struct TechnicianDailyAgendaView: View {
             return false
         }
         return assignment.status == .scheduled || assignment.status == .dispatched
+    }
+
+    private func canMove(_ job: JobRecord) -> Bool {
+        guard let assignment = store.assignment(forJobID: job.id),
+              assignment.status == .scheduled || assignment.status == .dispatched else {
+            return false
+        }
+        return store.canManageCompany ||
+            (store.cloudEmployeeID == currentEmployee.id &&
+             assignment.primaryTechnicianID == currentEmployee.id)
     }
 
     private func declineSheet(for job: JobRecord) -> some View {

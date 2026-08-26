@@ -13,6 +13,7 @@ struct AdminView: View {
     @State private var isConfirmingLogout = false
     @State private var logoutError = ""
     @State private var isShowingLogoutError = false
+    @State private var canViewSynchronizationHealth = false
 
     private var appVersion: String {
         Bundle.main.object(
@@ -198,7 +199,7 @@ struct AdminView: View {
                 }
 
                 Section("App Information") {
-                    if store.shouldPresentAuthenticatedUserInfo {
+                    if cloudManager.isEnrolled {
                         NavigationLink {
                             OfflineSyncDetailsView(
                                 queue: store.offlineOperationQueue,
@@ -232,6 +233,24 @@ struct AdminView: View {
                                 "Synchronization status: \(syncPresentationState.title)"
                             )
                             .accessibilityHint(syncPresentationState.detail)
+                        }
+                        NavigationLink {
+                            PFSSSynchronizationDiagnosticsView()
+                        } label: {
+                            Label(
+                                "Send Sync Diagnostics",
+                                systemImage: "wave.3.right.circle"
+                            )
+                        }
+                    }
+                    if canViewSynchronizationHealth || store.canManageCompany {
+                        NavigationLink {
+                            PFSSSynchronizationHealthView()
+                        } label: {
+                            Label(
+                                "Synchronization Health",
+                                systemImage: "heart.text.square"
+                            )
                         }
                     }
                     if cloudManager.currentSession?.member.role == .owner {
@@ -280,6 +299,8 @@ struct AdminView: View {
         .task {
             if cloudManager.isEnrolled {
                 try? await cloudManager.refreshSession()
+                canViewSynchronizationHealth = cloudManager.currentSession?
+                    .member.role.canManageAccess == true
                 if cloudManager.currentSession?.member.role == .owner {
                     try? await cloudManager.refreshAccountEntitlements()
                 }

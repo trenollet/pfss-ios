@@ -8,10 +8,20 @@
 import Combine
 import Foundation
 import Security
+import UIKit
 
 extension Notification.Name {
     static let pfssCompanyAccessWasActivated = Notification.Name(
         "PFSSCompanyAccessWasActivated"
+    )
+    static let pfssSynchronizationWakeRequested = Notification.Name(
+        "PFSSSynchronizationWakeRequested"
+    )
+    static let pfssSynchronizationPushTokenDidChange = Notification.Name(
+        "PFSSSynchronizationPushTokenDidChange"
+    )
+    static let pfssSynchronizationHealthDidRefresh = Notification.Name(
+        "PFSSSynchronizationHealthDidRefresh"
     )
 }
 
@@ -386,6 +396,9 @@ struct PFSSCloudflareSynchronizationConflict: Decodable, Identifiable {
     var cloudOperation: PendingOfflineOperation
     var cloudRevision: String
     var detectedAt: Date
+    var affectedFields: [String]?
+    var operationalImpact: String?
+    var policyVersion: Int?
 }
 
 private struct PFSSCloudflareSynchronizationConflictList: Decodable {
@@ -403,6 +416,22 @@ struct PFSSCloudflareConflictResolutionReceipt: Decodable {
     var resolution: String
     var resolvedAt: Date
     var finalRevision: String
+    var policyVersion: Int?
+    var affectedFields: [String]?
+}
+
+struct PFSSCloudflareRevokedDeviceConflictCleanupReceipt: Decodable {
+    var sourceDeviceID: String
+    var resolvedCount: Int
+    var resolution: String
+    var resolvedAt: Date
+    var batchID: String
+}
+
+private struct PFSSCloudflareRevokedDeviceConflictScope: Decodable {
+    var sourceDeviceID: String
+    var conflictCount: Int
+    var isRevoked: Bool
 }
 
 struct PFSSConflictAuditEvent: Decodable, Identifiable {
@@ -416,6 +445,7 @@ struct PFSSConflictAuditEvent: Decodable, Identifiable {
     var resolverName: String
     var reason: String?
     var affectedFields: [String]
+    var policyVersion: Int?
     var localOperation: PendingOfflineOperation
     var cloudOperation: PendingOfflineOperation
     var originalCloudRevision: String
@@ -446,10 +476,191 @@ private struct PFSSCloudflareConflictResolutionList: Decodable {
     var resolutions: [PFSSCloudflareConflictResolutionReceipt]
 }
 
+struct PFSSCloudflareSynchronizationQuarantine: Decodable, Identifiable {
+    struct Failure: Decodable { var reason: String }
+    var id: String
+    var operationID: UUID
+    var entityType: OfflineEntityType
+    var entityID: UUID?
+    var sourceMemberID: String
+    var sourceDeviceID: String
+    var operation: PendingOfflineOperation
+    var cloudOperation: PendingOfflineOperation?
+    var cloudRevision: String?
+    var failure: Failure
+    var policyVersion: Int
+    var detectedAt: Date
+    var affectedFields: [String]
+    var operationalImpact: String
+
+    var alreadyMatchesCloudRecord: Bool {
+        guard let cloudOperation else { return false }
+        return entityType == cloudOperation.entityType &&
+            entityID == cloudOperation.entityID &&
+            operation.payload == cloudOperation.payload
+    }
+}
+
+private struct PFSSCloudflareSynchronizationQuarantineList: Decodable {
+    var quarantines: [PFSSCloudflareSynchronizationQuarantine]
+}
+
+struct PFSSCloudflareQuarantineResolutionReceipt: Decodable {
+    var id: String
+    var operationID: UUID
+    var action: String
+    var reason: String?
+    var resolvedAt: Date
+}
+
+private struct PFSSCloudflareQuarantineResolutionList: Decodable {
+    var resolutions: [PFSSCloudflareQuarantineResolutionReceipt]
+}
+
+private struct PFSSCloudflareQuarantineReportResponse: Decodable {
+    var quarantineID: String
+}
+
 private struct PFSSCloudflareSynchronizationChanges: Decodable {
     var cursor: Int
+    var serverCursor: Int?
     var hasMore: Bool
     var changes: [PFSSCloudflareSynchronizationChange]
+}
+
+private struct PFSSCloudflareSynchronizationCursorReceipt: Decodable {
+    var cursor: Int
+    var serverCursor: Int
+}
+
+enum PFSSSynchronizationHealthLevel: String, Decodable {
+    case healthy
+    case delayed
+    case actionRequired
+
+    var title: String {
+        switch self {
+        case .healthy: return "Healthy"
+        case .delayed: return "Delayed"
+        case .actionRequired: return "Action Required"
+        }
+    }
+}
+
+struct PFSSSynchronizationHealth: Decodable {
+    struct Summary: Decodable {
+        struct PushSummary: Decodable {
+            var sent: Int
+            var accepted: Int
+            var received: Int
+            var completed: Int
+            var failed: Int
+            var deferred: Int
+        }
+
+        var activeDevices: Int
+        var healthyDevices: Int
+        var delayedDevices: Int
+        var actionRequiredDevices: Int
+        var unresolvedConflicts: Int
+        var quarantinedChanges: Int
+        var oldestConflictAgeSeconds: Int?
+        var oldestQuarantineAgeSeconds: Int?
+        var pushLast24Hours: PushSummary
+        var activeAlerts: Int
+        var criticalAlerts: Int
+    }
+
+    struct Device: Decodable, Identifiable {
+        struct LatestPush: Decodable {
+            var requestedAt: Date
+            var acceptedAt: Date?
+            var receivedAt: Date?
+            var completedAt: Date?
+            var failedAt: Date?
+            var failureCode: String?
+        }
+
+        var deviceID: String
+        var displayName: String
+        var role: PFSSTenantRole
+        var status: PFSSSynchronizationHealthLevel
+        var reasons: [String]
+        var acknowledgedCursor: Int
+        var serverCursor: Int
+        var behindBy: Int
+        var cursorAgeSeconds: Int?
+        var lastSeenAt: Date
+        var cursorUpdatedAt: Date?
+        var appBuild: String?
+        var latestPush: LatestPush?
+
+        var id: String { deviceID }
+    }
+
+    struct CountByEntity: Decodable, Identifiable {
+        var entityType: String
+        var count: Int
+        var id: String { entityType }
+    }
+
+    struct CountByField: Decodable, Identifiable {
+        var field: String
+        var count: Int
+        var id: String { field }
+    }
+
+    struct CountByReason: Decodable, Identifiable {
+        var reason: String
+        var count: Int
+        var id: String { reason }
+    }
+
+    struct Trends: Decodable {
+        var byEntity: [CountByEntity]
+        var byField: [CountByField]
+        var quarantineReasons: [CountByReason]
+    }
+
+    struct Alert: Decodable, Identifiable {
+        var id: String
+        var kind: String
+        var severity: String
+        var title: String
+        var detail: String
+        var recommendation: String
+        var deviceID: String?
+        var observedValue: Int
+        var thresholdValue: Int
+        var openedAt: Date
+        var lastObservedAt: Date
+    }
+
+    var generatedAt: Date
+    var status: PFSSSynchronizationHealthLevel
+    var statusLabel: String
+    var serverCursor: Int
+    var summary: Summary
+    var devices: [Device]
+    var alerts: [Alert]
+    var trendsLast7Days: Trends
+}
+
+struct PFSSSynchronizationDeviceHealthReport: Encodable {
+    var appBuild: String
+    var queueCount: Int
+    var oldestQueuedAt: Date?
+    var failedCount: Int
+    var waitingRetryCount: Int
+    var retryAttempts24h: Int
+    var blockedDependencyCount: Int
+    var conflictedCount: Int
+    var quarantinedCount: Int
+}
+
+private struct PFSSCloudflareSynchronizationBootstrap {
+    var data: Data
+    var cursor: Int
 }
 
 private struct PFSSTenantMemberList: Decodable {
@@ -1027,6 +1238,25 @@ final class PFSSCloudflareBetaManager: ObservableObject {
         }
     }
 
+    func submitSynchronizationDiagnostics(
+        _ bundle: PFSSSynchronizationDiagnosticBundle
+    ) async throws -> PFSSSynchronizationDiagnosticSubmission {
+        var request = try request(
+            path: "/v1/support/sync-diagnostics",
+            method: "POST",
+            authenticated: true
+        )
+        request.httpBody = try Self.encoder.encode(bundle)
+        request.setValue(
+            "application/vnd.pfss.sync-diagnostics+json",
+            forHTTPHeaderField: "Content-Type"
+        )
+        return try Self.decoder.decode(
+            PFSSSynchronizationDiagnosticSubmission.self,
+            from: try await perform(request)
+        )
+    }
+
     func latestData() async throws -> Data {
         guard credentialStore.load() != nil else {
             throw PFSSCloudflareBetaError.notEnrolled
@@ -1053,10 +1283,39 @@ final class PFSSCloudflareBetaManager: ObservableObject {
         _ = try await perform(request)
     }
 
-    func synchronizationBootstrapData() async throws -> Data {
-        try await perform(
+    func synchronizationBootstrap() async throws
+        -> (data: Data, cursor: Int) {
+        let result = try await performWithResponse(
             try request(path: "/v1/sync/bootstrap", authenticated: true)
         )
+        let cursor = Int(
+            result.response.value(forHTTPHeaderField: "x-pfss-change-cursor") ?? "0"
+        ) ?? 0
+        return (result.data, max(cursor, 0))
+    }
+
+    func synchronizationBootstrapData() async throws -> Data {
+        try await synchronizationBootstrap().data
+    }
+
+    /// Returns the current canonical version of every synchronized tenant
+    /// record. Recovery overlays these records on the archive so a stale or
+    /// incomplete archive can never hide newer server-authoritative data.
+    func synchronizationCanonicalBaseline() async throws
+        -> (cursor: Int, operations: [PendingOfflineOperation]) {
+        let data = try await perform(
+            try request(path: "/v1/sync/baseline-records", authenticated: true)
+        )
+        let response = try Self.decoder.decode(
+            PFSSCloudflareCanonicalBaseline.self,
+            from: data
+        )
+        let operations = response.records.map { record in
+            var operation = record.operation
+            operation.metadata["remoteRevision"] = record.revision
+            return operation
+        }
+        return (response.cursor, operations)
     }
 
     func synchronizationChanges(after cursor: Int) async throws
@@ -1077,6 +1336,81 @@ final class PFSSCloudflareBetaManager: ObservableObject {
             return operation
         }
         return (response.cursor, response.hasMore, operations)
+    }
+
+    func acknowledgeSynchronizationCursor(_ cursor: Int) async throws {
+        var cursorRequest = try request(
+            path: "/v1/sync/cursor",
+            method: "POST",
+            authenticated: true
+        )
+        cursorRequest.httpBody = try Self.encoder.encode([
+            "cursor": max(cursor, 0)
+        ])
+        cursorRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        _ = try Self.decoder.decode(
+            PFSSCloudflareSynchronizationCursorReceipt.self,
+            from: try await perform(cursorRequest)
+        )
+    }
+
+    func registerSynchronizationPushToken(_ token: String) async throws {
+        var pushRequest = try request(
+            path: "/v1/sync/push",
+            method: "POST",
+            authenticated: true
+        )
+        let appBuild = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleVersion"
+        ) as? String ?? "unknown"
+        pushRequest.httpBody = try Self.encoder.encode([
+            "token": token,
+            "appBuild": appBuild
+        ])
+        pushRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        _ = try await perform(pushRequest)
+    }
+
+    func synchronizationHealth() async throws -> PFSSSynchronizationHealth {
+        try Self.decoder.decode(
+            PFSSSynchronizationHealth.self,
+            from: try await perform(
+                try request(path: "/v1/sync/health", authenticated: true)
+            )
+        )
+    }
+
+    func reportSynchronizationDeviceHealth(
+        _ report: PFSSSynchronizationDeviceHealthReport
+    ) async throws {
+        var healthRequest = try request(
+            path: "/v1/sync/device-health",
+            method: "POST",
+            authenticated: true
+        )
+        healthRequest.httpBody = try Self.encoder.encode(report)
+        healthRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        _ = try await perform(healthRequest)
+    }
+
+    func reportSynchronizationPushEvent(
+        deliveryID: String,
+        event: String,
+        cursor: Int?
+    ) async throws {
+        var eventRequest = try request(
+            path: "/v1/sync/push-events",
+            method: "POST",
+            authenticated: true
+        )
+        var body: [String: Any] = [
+            "deliveryID": deliveryID,
+            "event": event
+        ]
+        if let cursor { body["cursor"] = max(cursor, 0) }
+        eventRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
+        eventRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        _ = try await perform(eventRequest)
     }
 
     func synchronizeMileageTrips(
@@ -1206,6 +1540,159 @@ final class PFSSCloudflareBetaManager: ObservableObject {
         )
     }
 
+    func discardRevokedDeviceSynchronizationConflicts(
+        sourceDeviceID: String,
+        expectedCount: Int,
+        reason: String
+    ) async throws -> PFSSCloudflareRevokedDeviceConflictCleanupReceipt {
+        var components = URLComponents()
+        components.path = "/v1/sync/conflicts/revoked-device-scope"
+        components.queryItems = [
+            URLQueryItem(name: "sourceDeviceID", value: sourceDeviceID)
+        ]
+        guard let scopePath = components.string else {
+            throw OfflineConflictResolutionError.invalidResolution
+        }
+        let scope = try Self.decoder.decode(
+            PFSSCloudflareRevokedDeviceConflictScope.self,
+            from: try await perform(
+                try request(path: scopePath, authenticated: true)
+            )
+        )
+        guard scope.sourceDeviceID == sourceDeviceID,
+              scope.isRevoked,
+              scope.conflictCount > 0 else {
+            throw OfflineConflictResolutionError.noUnresolvedConflict
+        }
+        var request = try request(
+            path: "/v1/sync/conflicts/discard-revoked-device",
+            method: "POST",
+            authenticated: true
+        )
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "sourceDeviceID": sourceDeviceID,
+            "expectedCount": scope.conflictCount,
+            "reason": reason
+        ])
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        return try Self.decoder.decode(
+            PFSSCloudflareRevokedDeviceConflictCleanupReceipt.self,
+            from: try await perform(request)
+        )
+    }
+
+    func synchronizationQuarantines() async throws
+        -> [PFSSCloudflareSynchronizationQuarantine] {
+        let data = try await perform(
+            try request(path: "/v1/sync/quarantines", authenticated: true)
+        )
+        return try Self.decoder.decode(
+            PFSSCloudflareSynchronizationQuarantineList.self,
+            from: data
+        ).quarantines
+    }
+
+    func reportSynchronizationQuarantine(
+        _ operation: PendingOfflineOperation,
+        reason: String
+    ) async throws -> String {
+        struct Report: Encodable {
+            var operation: PendingOfflineOperation
+            var reason: String
+        }
+        var request = try request(
+            path: "/v1/sync/quarantines/report",
+            method: "POST",
+            authenticated: true
+        )
+        request.httpBody = try Self.encoder.encode(
+            Report(operation: operation, reason: reason)
+        )
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        return try Self.decoder.decode(
+            PFSSCloudflareQuarantineReportResponse.self,
+            from: try await perform(request)
+        ).quarantineID
+    }
+
+    func quarantineResolutionReceipts() async throws
+        -> [PFSSCloudflareQuarantineResolutionReceipt] {
+        let data = try await perform(
+            try request(
+                path: "/v1/sync/quarantine-resolutions",
+                authenticated: true
+            )
+        )
+        return try Self.decoder.decode(
+            PFSSCloudflareQuarantineResolutionList.self,
+            from: data
+        ).resolutions
+    }
+
+    func resolveSynchronizationQuarantine(
+        id: String,
+        action: OfflineQuarantineResolution,
+        reason: String
+    ) async throws -> PFSSCloudflareQuarantineResolutionReceipt {
+        let value: String
+        switch action {
+        case .discard: value = "discard"
+        case .retry: value = "retry"
+        case .supersede: throw OfflineConflictResolutionError.invalidResolution
+        }
+        var request = try request(
+            path: "/v1/sync/quarantines/\(id)/resolve",
+            method: "POST",
+            authenticated: true
+        )
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "action": value,
+            "reason": reason
+        ])
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        return try Self.decoder.decode(
+            PFSSCloudflareQuarantineResolutionReceipt.self,
+            from: try await perform(request)
+        )
+    }
+
+    func submitRepairedQuarantineOperation(
+        quarantineID: String,
+        operation: PendingOfflineOperation,
+        reason: String
+    ) async throws -> String {
+        var operationRequest = try request(
+            path: "/v1/operations",
+            method: "POST",
+            authenticated: true
+        )
+        operationRequest.httpBody = try Self.encoder.encode(operation)
+        operationRequest.setValue(
+            "application/json",
+            forHTTPHeaderField: "Content-Type"
+        )
+        let accepted = try Self.decoder.decode(
+            PFSSCloudflareOperationResponse.self,
+            from: try await perform(operationRequest)
+        )
+        var resolutionRequest = try request(
+            path: "/v1/sync/quarantines/\(quarantineID)/resolve",
+            method: "POST",
+            authenticated: true
+        )
+        resolutionRequest.httpBody = try JSONSerialization.data(withJSONObject: [
+            "action": "repair",
+            "reason": reason,
+            "replacementOperationID": operation.id.uuidString.lowercased()
+        ])
+        resolutionRequest.setValue(
+            "application/json",
+            forHTTPHeaderField: "Content-Type"
+        )
+        _ = try await perform(resolutionRequest)
+        return accepted.revision
+    }
+
     func conflictAuditEvents() async throws -> [PFSSConflictAuditEvent] {
         let data = try await perform(
             try request(path: "/v1/sync/conflict-audit", authenticated: true)
@@ -1292,6 +1779,11 @@ final class PFSSCloudflareBetaManager: ObservableObject {
     }
 
     private func perform(_ request: URLRequest) async throws -> Data {
+        try await performWithResponse(request).data
+    }
+
+    private func performWithResponse(_ request: URLRequest) async throws
+        -> (data: Data, response: HTTPURLResponse) {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw PFSSCloudflareBetaError.invalidResponse
@@ -1328,7 +1820,7 @@ final class PFSSCloudflareBetaManager: ObservableObject {
                     ?? "PFSS beta request failed (\(http.statusCode))."
             )
         }
-        return data
+        return (data, http)
     }
 
     private static let decoder: JSONDecoder = {
@@ -1350,6 +1842,16 @@ struct PFSSMileageSynchronizationResponse: Decodable {
     let changes: [PFSSMileageSynchronizationChange]
 }
 
+private struct PFSSCloudflareCanonicalBaseline: Decodable {
+    let cursor: Int
+    let records: [PFSSCloudflareCanonicalRecord]
+}
+
+private struct PFSSCloudflareCanonicalRecord: Decodable {
+    let revision: String
+    let operation: PendingOfflineOperation
+}
+
 struct PFSSMileageSynchronizationChange: Decodable {
     enum ChangeType: String, Decodable {
         case upsert
@@ -1368,6 +1870,21 @@ enum PFSSCloudSynchronizationStateKeys {
     private static let cursorPrefix = "PFSSCloudSynchronizationCursor."
     private static let bootstrapPrefix =
         "PFSSCloudSynchronizationBootstrap."
+    private static let legacyBaselineV3Prefix =
+        "PFSSCloudSynchronizationBaselineV3."
+    private static let legacyBaselineV4Prefix =
+        "PFSSCloudSynchronizationBaselineV4."
+    private static let legacyBaselineV5Prefix =
+        "PFSSCloudSynchronizationBaselineV5."
+    private static let legacyBaselineV6Prefix =
+        "PFSSCloudSynchronizationBaselineV6."
+    private static let legacyBaselineV7Prefix =
+        "PFSSCloudSynchronizationBaselineV7."
+    private static let baselineV3Prefix =
+        // Generation 8 reruns canonical replacement after recovery learned to
+        // isolate duplicate historical assignment numbers instead of allowing
+        // one invalid pair to empty the entire assignment store.
+        "PFSSCloudSynchronizationBaselineV8."
 
     static func cursor(deviceID: String) -> String {
         "\(cursorPrefix)\(normalized(deviceID))"
@@ -1375,6 +1892,10 @@ enum PFSSCloudSynchronizationStateKeys {
 
     static func bootstrap(deviceID: String) -> String {
         "\(bootstrapPrefix)\(normalized(deviceID))"
+    }
+
+    static func baselineV3(deviceID: String) -> String {
+        "\(baselineV3Prefix)\(normalized(deviceID))"
     }
 
     static func migrateLegacyCursorIfNeeded(
@@ -1392,7 +1913,13 @@ enum PFSSCloudSynchronizationStateKeys {
         for key in defaults.dictionaryRepresentation().keys where
             key == legacyCursor ||
             key.hasPrefix(cursorPrefix) ||
-            key.hasPrefix(bootstrapPrefix) {
+            key.hasPrefix(bootstrapPrefix) ||
+            key.hasPrefix(legacyBaselineV3Prefix) ||
+            key.hasPrefix(legacyBaselineV4Prefix) ||
+            key.hasPrefix(legacyBaselineV5Prefix) ||
+            key.hasPrefix(legacyBaselineV6Prefix) ||
+            key.hasPrefix(legacyBaselineV7Prefix) ||
+            key.hasPrefix(baselineV3Prefix) {
             defaults.removeObject(forKey: key)
         }
     }
@@ -1408,6 +1935,8 @@ private final class PFSSCloudSnapshotPublisher {
     private let manager: PFSSCloudflareBetaManager
     private var scheduledTask: Task<Void, Never>?
     private var pollingTask: Task<Void, Never>?
+    private var wakeObserver: NSObjectProtocol?
+    private var pushTokenObserver: NSObjectProtocol?
     private let defaults: UserDefaults
     private var cursorKey: String?
     private var isBootstrapReady = false
@@ -1425,19 +1954,140 @@ private final class PFSSCloudSnapshotPublisher {
 
     func start() {
         store?.startOfflineServices()
+        if wakeObserver == nil {
+            wakeObserver = NotificationCenter.default.addObserver(
+                forName: .pfssSynchronizationWakeRequested,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                let wakeRequest = notification.object
+                    as? PFSSSynchronizationWakeRequest
+                Task { @MainActor [weak self] in
+                    self?.requestImmediateSynchronization(
+                        wakeRequest: wakeRequest
+                    )
+                }
+            }
+        }
+        if pushTokenObserver == nil {
+            pushTokenObserver = NotificationCenter.default.addObserver(
+                forName: .pfssSynchronizationPushTokenDidChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let token = notification.object as? String else { return }
+                Task { @MainActor [weak self] in
+                    try? await self?.manager.registerSynchronizationPushToken(token)
+                }
+            }
+        }
+        if let token = PFSSSynchronizationPushBridge.currentToken {
+            Task { [manager] in
+                try? await manager.registerSynchronizationPushToken(token)
+            }
+        }
         startPolling()
+        if let wakeRequest = PFSSSynchronizationPushBridge.consumePendingWake() {
+            requestImmediateSynchronization(wakeRequest: wakeRequest)
+        }
     }
 
-    private func startPolling() {
+    deinit {
+        if let wakeObserver {
+            NotificationCenter.default.removeObserver(wakeObserver)
+        }
+        if let pushTokenObserver {
+            NotificationCenter.default.removeObserver(pushTokenObserver)
+        }
+        scheduledTask?.cancel()
+        pollingTask?.cancel()
+    }
+
+    /// Invalidates both persisted and in-memory delivery checkpoints before
+    /// the Owner's intentionally empty store can pull or publish anything.
+    func beginOwnerLocalRecovery() {
+        scheduledTask?.cancel()
+        store?.requireAuthoritativePullBeforeUpload()
+        isBootstrapReady = false
+        didScheduleInitialSnapshot = false
+        cursorKey = nil
+        PFSSCloudSynchronizationStateKeys.clearAll(defaults: defaults)
+    }
+
+    private func startPolling(
+        wakeRequest: PFSSSynchronizationWakeRequest? = nil
+    ) {
         pollingTask?.cancel()
         pollingTask = Task { [weak self] in
+            var pendingWakeRequest = wakeRequest
             while !Task.isCancelled {
+                if let deliveryID = pendingWakeRequest?.deliveryID {
+                    try? await self?.manager.reportSynchronizationPushEvent(
+                        deliveryID: deliveryID,
+                        event: "received",
+                        cursor: self?.cursorKey.map {
+                            self?.defaults.integer(forKey: $0) ?? 0
+                        }
+                    )
+                    try? await self?.manager.reportSynchronizationPushEvent(
+                        deliveryID: deliveryID,
+                        event: "syncStarted",
+                        cursor: self?.cursorKey.map {
+                            self?.defaults.integer(forKey: $0) ?? 0
+                        }
+                    )
+                }
                 if await self?.prepareBootstrapIfNeeded() == true {
                     await self?.synchronizeNow()
+                    if let wake = pendingWakeRequest {
+                        let endingCursor = self?.cursorKey.map {
+                            self?.defaults.integer(forKey: $0) ?? 0
+                        } ?? 0
+                        let completed = wake.expectedCursor.map {
+                            endingCursor >= $0
+                        } ?? true
+                        if let deliveryID = wake.deliveryID {
+                            try? await self?.manager
+                                .reportSynchronizationPushEvent(
+                                    deliveryID: deliveryID,
+                                    event: completed
+                                        ? "syncCompleted"
+                                        : "syncFailed",
+                                    cursor: endingCursor
+                                )
+                        }
+                        PFSSSynchronizationPushBridge.completeWake(
+                            wake.wakeID,
+                            result: completed ? .newData : .failed
+                        )
+                        pendingWakeRequest = nil
+                    }
+                } else if let wake = pendingWakeRequest {
+                    if let deliveryID = wake.deliveryID {
+                        try? await self?.manager.reportSynchronizationPushEvent(
+                            deliveryID: deliveryID,
+                            event: "syncFailed",
+                            cursor: nil
+                        )
+                    }
+                    PFSSSynchronizationPushBridge.completeWake(
+                        wake.wakeID,
+                        result: .failed
+                    )
+                    pendingWakeRequest = nil
                 }
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
         }
+    }
+
+    /// Launch, foreground, and future silent-push signals all converge on the
+    /// same pull-before-upload path. Restarting the single polling task
+    /// coalesces repeated signals and performs the first pass immediately.
+    private func requestImmediateSynchronization(
+        wakeRequest: PFSSSynchronizationWakeRequest? = nil
+    ) {
+        startPolling(wakeRequest: wakeRequest)
     }
 
     /// Establishes a complete local company snapshot before incremental
@@ -1465,25 +2115,35 @@ private final class PFSSCloudSnapshotPublisher {
             let scopedBootstrapKey = PFSSCloudSynchronizationStateKeys.bootstrap(
                 deviceID: deviceID
             )
+            let scopedBaselineKey = PFSSCloudSynchronizationStateKeys.baselineV3(
+                deviceID: deviceID
+            )
             PFSSCloudSynchronizationStateKeys.migrateLegacyCursorIfNeeded(
                 deviceID: deviceID,
                 defaults: defaults
             )
             cursorKey = scopedCursorKey
 
-            if defaults.bool(forKey: scopedBootstrapKey) == false {
-                if store.hasLocalCompanyData {
-                    // Existing installations already hold the authoritative
-                    // local workspace. The marker prevents future launches
-                    // from treating them as newly enrolled devices.
-                    defaults.set(true, forKey: scopedBootstrapKey)
-                } else {
-                    let data = try await manager.synchronizationBootstrapData()
-                    guard try store.applySynchronizationBootstrap(data) else {
-                        return false
-                    }
-                    defaults.set(true, forKey: scopedBootstrapKey)
-                }
+            if defaults.bool(forKey: scopedBaselineKey) == false {
+                // Local content is not evidence of a complete tenant baseline.
+                // Upgrade and newly enrolled devices both hydrate from the
+                // cursor-stamped cloud snapshot while retaining durable local
+                // intent for reconciliation after the baseline is installed.
+                let bootstrap = try await manager.synchronizationBootstrap()
+                try store.applySynchronizationBaseline(bootstrap.data)
+                let canonical = try await manager.synchronizationCanonicalBaseline()
+                store.applyAuthoritativeCanonicalBaseline(canonical.operations)
+                let recoveredCursor = max(bootstrap.cursor, canonical.cursor)
+                defaults.set(recoveredCursor, forKey: scopedCursorKey)
+                // The local cursor is the delivery checkpoint. Server-side
+                // acknowledgement is retention/diagnostic bookkeeping and
+                // must not invalidate an otherwise complete bootstrap. A
+                // later synchronization cycle retries it automatically.
+                try? await manager.acknowledgeSynchronizationCursor(
+                    recoveredCursor
+                )
+                defaults.set(true, forKey: scopedBootstrapKey)
+                defaults.set(true, forKey: scopedBaselineKey)
             }
 
             isBootstrapReady = true
@@ -1523,7 +2183,39 @@ private final class PFSSCloudSnapshotPublisher {
                 try await manager.conflictResolutionReceipts()
             )
         } catch {
-            // A later poll reconciles any missed Manager decision.
+            // A later poll reconciles any missed Manager conflict decision.
+        }
+        do {
+            store.applyServerQuarantineResolutionReceipts(
+                try await manager.quarantineResolutionReceipts()
+            )
+        } catch {
+            // A later poll reconciles any missed Manager quarantine decision.
+        }
+
+        guard isBootstrapReady, let cursorKey else { return }
+        let recoveryStartedAt = Date()
+        let startingCursor = defaults.integer(forKey: cursorKey)
+        var pulledChanges = 0
+        var alreadyReflected = 0
+        var superseded = 0
+
+        // Pull is an upload gate. A stale or uncertain device must first see
+        // every authoritative tenant change; failure leaves local intent in
+        // the durable queue and does not submit it against an unknown base.
+        do {
+            let result = try await pullAuthoritativeChanges(
+                store: store,
+                cursorKey: cursorKey
+            )
+            pulledChanges += result.pulled
+            alreadyReflected += result.alreadyReflected
+            superseded += result.superseded
+            store.completeAuthoritativePullBeforeUpload()
+            store.updateCloudSynchronizationAccessStatus(.available)
+        } catch {
+            updateAccessStatus(for: error, store: store)
+            return
         }
 
         await store.offlineSynchronizationService?
@@ -1549,30 +2241,63 @@ private final class PFSSCloudSnapshotPublisher {
             }
         }
 
-        do {
-            guard isBootstrapReady, let cursorKey else { return }
-            var cursor = defaults.integer(forKey: cursorKey)
-            var hasMore = true
-            while hasMore {
-                let page = try await manager.synchronizationChanges(after: cursor)
-                store.applyRemoteRecordOperations(page.operations)
-                cursor = page.cursor
-                hasMore = page.hasMore
-                defaults.set(cursor, forKey: cursorKey)
+        for operation in store.offlineOperationQueue.operations where
+            operation.metadata["quarantinedAt"] != nil &&
+            operation.metadata["serverQuarantineID"] == nil &&
+            operation.metadata["serverConflictID"] == nil {
+            do {
+                let quarantineID = try await manager
+                    .reportSynchronizationQuarantine(
+                        operation,
+                        reason: operation.metadata["quarantineReason"]
+                            ?? operation.failure?.message
+                            ?? "This operation requires authorized review."
+                    )
+                try store.offlineOperationQueue.mutate(id: operation.id) {
+                    $0.metadata["serverQuarantineID"] = quarantineID
+                    $0.metadata["quarantineDeliveryStatus"] = "sentForReview"
+                }
+            } catch {
+                try? store.offlineOperationQueue.mutate(id: operation.id) {
+                    $0.metadata["quarantineDeliveryStatus"] = "deliveryFailed"
+                    $0.metadata["quarantineDeliveryError"] =
+                        error.localizedDescription
+                }
             }
+        }
+
+        // Pull once more to consume operations accepted during this cycle and
+        // leave the local store on the exact server revision represented by
+        // its acknowledged cursor.
+        do {
+            let result = try await pullAuthoritativeChanges(
+                store: store,
+                cursorKey: cursorKey
+            )
+            pulledChanges += result.pulled
+            alreadyReflected += result.alreadyReflected
+            superseded += result.superseded
             store.updateCloudSynchronizationAccessStatus(.available)
         } catch {
-            if case let PFSSCloudflareBetaError.accountHold(hold) = error {
-                store.updateCloudSynchronizationAccessStatus(.accountHold(hold))
-            } else if case let PFSSCloudflareBetaError.server(message) = error,
-                      message == "access_suspended" {
-                store.updateCloudSynchronizationAccessStatus(.suspended)
-            } else {
-                store.updateCloudSynchronizationAccessStatus(
-                    .unavailable(error.localizedDescription)
+            updateAccessStatus(for: error, store: store)
+        }
+
+        let requiringReview = store.offlineOperationQueue.operations.filter {
+            $0.status == .conflicted && $0.conflict?.requiresHumanReview == true
+        }.count
+        if pulledChanges > 0 || alreadyReflected > 0 || superseded > 0 {
+            PFSSSynchronizationRecoveryStatus.shared.record(
+                SynchronizationRecoverySummary(
+                    startedAt: recoveryStartedAt,
+                    completedAt: Date(),
+                    startingCursor: startingCursor,
+                    endingCursor: defaults.integer(forKey: cursorKey),
+                    pulledChanges: pulledChanges,
+                    alreadyReflected: alreadyReflected,
+                    supersededDeviceChanges: superseded,
+                    requiringReview: requiringReview
                 )
-            }
-            // The durable local queue and cursor remain unchanged for retry.
+            )
         }
 
         if manager.currentSession?.member.role.canManageAccess == true {
@@ -1581,8 +2306,126 @@ private final class PFSSCloudSnapshotPublisher {
                     try await manager.synchronizationConflicts()
                 )
             } catch {
-                // Retain the last durable Manager inbox until the next poll.
+                // Retain the last durable Manager conflict inbox until the next poll.
             }
+            do {
+                let quarantines = try await manager.synchronizationQuarantines()
+                var requiringReview: [PFSSCloudflareSynchronizationQuarantine] = []
+                for item in quarantines {
+                    guard item.alreadyMatchesCloudRecord else {
+                        requiringReview.append(item)
+                        continue
+                    }
+                    do {
+                        _ = try await manager.resolveSynchronizationQuarantine(
+                            id: item.id,
+                            action: .discard,
+                            reason: "Automatically cleared because the requested record already matches the company record."
+                        )
+                    } catch {
+                        requiringReview.append(item)
+                    }
+                }
+                try store.reconcileServerQuarantineInbox(
+                    requiringReview
+                )
+            } catch {
+                // Retain the last durable Manager quarantine inbox until the next poll.
+            }
+        }
+        try? await manager.reportSynchronizationDeviceHealth(
+            deviceHealthReport(store: store)
+        )
+    }
+
+    private func deviceHealthReport(
+        store: AppDataStore,
+        now: Date = Date()
+    ) -> PFSSSynchronizationDeviceHealthReport {
+        let operations = store.offlineOperationQueue.orderedOperations.filter {
+            !$0.status.isTerminal
+        }
+        let retryCutoff = now.addingTimeInterval(-86_400)
+        var blockingKeys: Set<String> = []
+        var blockedDependencies = 0
+        for operation in operations {
+            let keys = operation.synchronizationDependencyKeys
+            if !keys.isDisjoint(with: blockingKeys) {
+                blockedDependencies += 1
+            }
+            if operation.status == .failed ||
+                operation.status == .conflicted ||
+                operation.status == .waitingForRetry {
+                blockingKeys.formUnion(keys)
+            }
+        }
+        let appBuild = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleVersion"
+        ) as? String ?? "unknown"
+        return PFSSSynchronizationDeviceHealthReport(
+            appBuild: appBuild,
+            queueCount: operations.count,
+            oldestQueuedAt: operations.map(\.createdAt).min(),
+            failedCount: operations.filter { $0.status == .failed }.count,
+            waitingRetryCount: operations.filter {
+                $0.status == .waitingForRetry
+            }.count,
+            retryAttempts24h: operations.reduce(0) { total, operation in
+                total + operation.retryAttempts.filter {
+                    $0.startedAt >= retryCutoff
+                }.count
+            },
+            blockedDependencyCount: blockedDependencies,
+            conflictedCount: operations.filter {
+                $0.status == .conflicted
+            }.count,
+            quarantinedCount: operations.filter {
+                $0.metadata["quarantinedAt"] != nil
+            }.count
+        )
+    }
+
+    private func pullAuthoritativeChanges(
+        store: AppDataStore,
+        cursorKey: String
+    ) async throws -> (pulled: Int, alreadyReflected: Int, superseded: Int) {
+        var cursor = defaults.integer(forKey: cursorKey)
+        var hasMore = true
+        var pulled = 0
+        var alreadyReflected = 0
+        var superseded = 0
+        while hasMore {
+            let page = try await manager.synchronizationChanges(after: cursor)
+            let recovery = store.reconcilePendingOperationsBeforeUpload(
+                with: page.operations
+            )
+            store.applyRemoteRecordOperations(page.operations)
+            pulled += page.operations.count
+            alreadyReflected += recovery.alreadyReflected
+            superseded += recovery.superseded
+            cursor = page.cursor
+            hasMore = page.hasMore
+            defaults.set(cursor, forKey: cursorKey)
+        }
+        // Changes have already been decoded, applied, and durably checkpointed
+        // locally. Do not report cloud synchronization as unavailable merely
+        // because the server could not record its advisory acknowledgement.
+        // This method runs every polling cycle, so the acknowledgement is
+        // naturally retried without blocking uploads or misleading the user.
+        try? await manager.acknowledgeSynchronizationCursor(cursor)
+        return (pulled, alreadyReflected, superseded)
+    }
+
+    private func updateAccessStatus(for error: Error, store: AppDataStore) {
+        if case let PFSSCloudflareBetaError.accountHold(hold) = error {
+            store.updateCloudSynchronizationAccessStatus(.accountHold(hold))
+        } else if case let PFSSCloudflareBetaError.server(message) = error,
+                  message == "access_suspended" {
+            store.updateCloudSynchronizationAccessStatus(.suspended)
+        } else {
+            store.updateCloudSynchronizationAccessStatus(
+                .unavailable(error.localizedDescription)
+            )
         }
     }
 
@@ -1691,9 +2534,19 @@ final class PFSSCloudflareSynchronizationAdapter: OfflineSynchronizationAdapter 
                         )
                     ))
                 }
-                throw PFSSCloudflareBetaError.server(
-                    "Operation synchronization failed (\(http.statusCode))."
-                )
+                let object = (try? JSONSerialization.jsonObject(with: data))
+                    as? [String: Any]
+                let serverCode = object?["error"] as? String
+                let message = serverCode.map {
+                    "PFSS rejected this change: \($0)."
+                } ?? "Operation synchronization failed (\(http.statusCode))."
+                return .failed(OfflineFailureDetails(
+                    category: http.statusCode == 400 ? .validation : .server,
+                    code: serverCode ?? String(http.statusCode),
+                    message: message,
+                    isRetryable: http.statusCode >= 500,
+                    metadata: ["httpStatus": String(http.statusCode)]
+                ))
             }
             let result = try Self.decoder.decode(
                 PFSSCloudflareOperationResponse.self,
@@ -1727,12 +2580,12 @@ final class PFSSCloudflareSynchronizationAdapter: OfflineSynchronizationAdapter 
         conflictID: String
     ) async -> String? {
         guard localOperation.entityType == .catalog,
-              let localMutation = try? localOperation.payload.decode(
-                OfflineRecordMutationPayload.self,
+              let localMutation = try? OfflineRecordMutationCodec.decode(
+                localOperation.payload,
                 decoder: Self.decoder
               ),
-              let remoteMutation = try? remoteOperation.payload.decode(
-                OfflineRecordMutationPayload.self,
+              let remoteMutation = try? OfflineRecordMutationCodec.decode(
+                remoteOperation.payload,
                 decoder: Self.decoder
               ),
               let localItem = try? Self.decoder.decode(
@@ -1750,7 +2603,12 @@ final class PFSSCloudflareSynchronizationAdapter: OfflineSynchronizationAdapter 
 
         do {
             var rebased = localOperation
-            rebased.baseRevision = revision
+            try OfflineRecordMutationCodec.rebase(
+                &rebased,
+                to: revision,
+                decoder: Self.decoder,
+                encoder: Self.encoder
+            )
             rebased.metadata["automaticallyResolvedConflictID"] = conflictID
             var request = URLRequest(
                 url: configuration.endpoint.appendingPathComponent("v1/operations")
@@ -1825,6 +2683,7 @@ enum PFSSCloudflareAppDataStoreFactory {
             offlineSynchronizationMode: .queueRemoteOperations,
             offlineSynchronizationAdapter: adapter
         )
+        store.requireAuthoritativePullBeforeUpload()
         PFSSCompanyDataRemovalCoordinator.shared.attach(store: store)
         let snapshotPublisher = PFSSCloudSnapshotPublisher(
             store: store,
@@ -1833,6 +2692,9 @@ enum PFSSCloudflareAppDataStoreFactory {
         store.onPersistentDataSaved = {
             snapshotPublisher.schedule()
         }
+        store.onOwnerLocalDataCleared = {
+            snapshotPublisher.beginOwnerLocalRecovery()
+        }
         store.onServerConflictResolutionRequested = {
             conflictID, resolution, reason, affectedFields in
             try await manager.resolveSynchronizationConflict(
@@ -1840,6 +2702,30 @@ enum PFSSCloudflareAppDataStoreFactory {
                 resolution: resolution,
                 reason: reason,
                 affectedFields: affectedFields
+            )
+        }
+        store.onRevokedDeviceConflictCleanupRequested = {
+            sourceDeviceID, expectedCount, reason in
+            try await manager.discardRevokedDeviceSynchronizationConflicts(
+                sourceDeviceID: sourceDeviceID,
+                expectedCount: expectedCount,
+                reason: reason
+            )
+        }
+        store.onServerQuarantineResolutionRequested = {
+            quarantineID, resolution, reason in
+            try await manager.resolveSynchronizationQuarantine(
+                id: quarantineID,
+                action: resolution,
+                reason: reason
+            )
+        }
+        store.onServerQuarantineRepairRequested = {
+            quarantineID, operation, reason in
+            try await manager.submitRepairedQuarantineOperation(
+                quarantineID: quarantineID,
+                operation: operation,
+                reason: reason
             )
         }
         Task {

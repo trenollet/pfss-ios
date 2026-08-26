@@ -53,8 +53,8 @@ enum OfflineSynchronizationProcessorState: Equatable {
     case conflict
 }
 
-/// Processes durable operations one at a time in their original queue order.
-/// A failed earlier operation blocks later work, preserving causal ordering.
+/// Processes durable operations one at a time while preserving order inside
+/// each real dependency group. A blocked record never stalls unrelated work.
 @MainActor
 final class OfflineSynchronizationService: ObservableObject {
     @Published private(set) var state: OfflineSynchronizationProcessorState = .idle
@@ -73,6 +73,7 @@ final class OfflineSynchronizationService: ObservableObject {
     private var processingTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
     private var pendingProcessingRequest = false
+    private var requiresAuthoritativePullBeforeUpload = false
 
     init(
         queue: OfflineOperationQueue,
@@ -108,6 +109,23 @@ final class OfflineSynchronizationService: ObservableObject {
         state = .idle
     }
 
+    /// Cloud-backed sessions close this gate before connectivity starts. It
+    /// prevents retained work from a prior enrollment from racing ahead of the
+    /// first authoritative tenant pull.
+    func requireAuthoritativePull() {
+        requiresAuthoritativePullBeforeUpload = true
+        processingTask?.cancel()
+        processingTask = nil
+        pendingProcessingRequest = false
+        state = .idle
+    }
+
+    /// Opens the upload path only after the current session has established a
+    /// complete baseline and successfully pulled through its server cursor.
+    func completeAuthoritativePull() {
+        requiresAuthoritativePullBeforeUpload = false
+    }
+
     /// User-initiated synchronization ignores scheduled backoff but still
     /// requires connectivity and never submits an operation concurrently.
     func syncNow() {
@@ -120,6 +138,10 @@ final class OfflineSynchronizationService: ObservableObject {
         forceRetry: Bool = false,
         now: Date = Date()
     ) async {
+        guard !requiresAuthoritativePullBeforeUpload else {
+            state = .idle
+            return
+        }
         guard connectivity.isConnected else {
             state = .offline
             return
@@ -133,43 +155,98 @@ final class OfflineSynchronizationService: ObservableObject {
         retryTask = nil
         state = .synchronizing
 
+        var blockedDependencyKeys: Set<String> = []
+        var blockedOperationIDs: Set<UUID> = []
+        var earliestRetryDate: Date?
+        var encounteredFailure = false
+        var encounteredConflict = false
+
         for candidate in queue.orderedOperations where !candidate.status.isTerminal {
             guard !Task.isCancelled else {
                 state = connectivity.isConnected ? .idle : .offline
                 return
             }
 
+            let dependencyKeys = candidate.synchronizationDependencyKeys
+            let hasBlockedDependency = !dependencyKeys.isDisjoint(with: blockedDependencyKeys)
+            let hasBlockedPrerequisite = !candidate.prerequisiteOperationIDs
+                .isDisjoint(with: blockedOperationIDs)
+            if hasBlockedDependency || hasBlockedPrerequisite {
+                blockedDependencyKeys.formUnion(dependencyKeys)
+                blockedOperationIDs.insert(candidate.id)
+                continue
+            }
+
             if candidate.status == .conflicted {
-                state = .conflict
-                return
+                encounteredConflict = true
+                blockedDependencyKeys.formUnion(dependencyKeys)
+                blockedOperationIDs.insert(candidate.id)
+                continue
             }
             if candidate.status == .failed,
                candidate.failure?.isRetryable == false {
-                state = .failed
-                return
+                encounteredFailure = true
+                blockedDependencyKeys.formUnion(dependencyKeys)
+                blockedOperationIDs.insert(candidate.id)
+                continue
             }
             guard forceRetry || candidate.isReadyToSynchronize(at: now) else {
                 let retryDate = candidate.nextRetryAt ?? now
-                state = .waitingForRetry(retryDate)
-                scheduleRetry(at: retryDate)
-                return
+                earliestRetryDate = min(earliestRetryDate ?? retryDate, retryDate)
+                blockedDependencyKeys.formUnion(dependencyKeys)
+                blockedOperationIDs.insert(candidate.id)
+                continue
             }
             guard connectivity.isConnected else {
                 state = .offline
                 return
             }
 
-            let shouldContinue = await process(candidate, now: now)
-            guard shouldContinue else { return }
+            switch await process(candidate, now: now) {
+            case .completed:
+                continue
+            case .blockedForRetry(let retryDate):
+                earliestRetryDate = min(earliestRetryDate ?? retryDate, retryDate)
+                blockedDependencyKeys.formUnion(dependencyKeys)
+                blockedOperationIDs.insert(candidate.id)
+            case .blockedByFailure:
+                encounteredFailure = true
+                blockedDependencyKeys.formUnion(dependencyKeys)
+                blockedOperationIDs.insert(candidate.id)
+            case .blockedByConflict:
+                encounteredConflict = true
+                blockedDependencyKeys.formUnion(dependencyKeys)
+                blockedOperationIDs.insert(candidate.id)
+            case .fatalProcessorFailure:
+                state = .failed
+                return
+            }
         }
 
-        state = queue.hasPendingChanges ? .failed : .idle
+        if encounteredConflict {
+            state = .conflict
+        } else if encounteredFailure {
+            state = .failed
+        } else if let earliestRetryDate {
+            state = .waitingForRetry(earliestRetryDate)
+            scheduleRetry(at: earliestRetryDate)
+        } else {
+            state = queue.hasPendingChanges ? .failed : .idle
+        }
+    }
+
+    private enum ProcessingOutcome {
+        case completed
+        case blockedForRetry(Date)
+        case blockedByFailure
+        case blockedByConflict
+        case fatalProcessorFailure
     }
 
     private func process(
         _ candidate: PendingOfflineOperation,
         now: Date
-    ) async -> Bool {
+    ) async -> ProcessingOutcome {
         var operation = candidate
         if operation.type == .recordMutation,
            let entityID = operation.entityID,
@@ -186,6 +263,31 @@ final class OfflineSynchronizationService: ObservableObject {
             // server. Preserve their causal order by building each later save
             // on the revision returned for the preceding save.
             operation.baseRevision = remoteRevision
+            do {
+                operation.payload = try OfflineRecordMutationCodec.rebasingBaseRevision(
+                    operation.payload,
+                    to: remoteRevision,
+                    decoder: Self.recordMutationDecoder,
+                    encoder: Self.recordMutationEncoder
+                )
+            } catch {
+                operation.status = .failed
+                operation.failure = OfflineFailureDetails(
+                    category: .validation,
+                    code: "mutation_rebase_failed",
+                    message: "PFSS could not safely prepare this queued change.",
+                    isRetryable: false,
+                    underlyingDescription: error.localizedDescription
+                )
+                operation.metadata["quarantinedAt"] = ISO8601DateFormatter()
+                    .string(from: now)
+                operation.metadata["quarantineReason"] =
+                    "The mutation envelope could not be rebased."
+                operation.metadata["quarantineActions"] =
+                    "repair,retry,supersede,discard"
+                try? queue.update(operation)
+                return .blockedByFailure
+            }
         }
         let attemptNumber = operation.attemptCount + 1
         let retryCycleBaseline = Int(
@@ -211,8 +313,7 @@ final class OfflineSynchronizationService: ObservableObject {
         do {
             try queue.update(operation)
         } catch {
-            state = .failed
-            return false
+            return .fatalProcessorFailure
         }
 
         let result = await adapter.synchronize(operation: operation)
@@ -233,10 +334,9 @@ final class OfflineSynchronizationService: ObservableObject {
             do {
                 try queue.update(operation)
                 lastProcessedOperationID = operation.id
-                return true
+                return .completed
             } catch {
-                state = .failed
-                return false
+                return .fatalProcessorFailure
             }
 
         case let .supersededByCloud(remoteRevision, cloudOperation):
@@ -252,10 +352,9 @@ final class OfflineSynchronizationService: ObservableObject {
             do {
                 try queue.update(operation)
                 lastProcessedOperationID = operation.id
-                return true
+                return .completed
             } catch {
-                state = .failed
-                return false
+                return .fatalProcessorFailure
             }
 
         case let .failed(failure):
@@ -279,21 +378,23 @@ final class OfflineSynchronizationService: ObservableObject {
             operation.retryAttempts[operation.retryAttempts.count - 1].outcome = .failed
             operation.retryAttempts[operation.retryAttempts.count - 1].failure = durableFailure
             operation.retryAttempts[operation.retryAttempts.count - 1].scheduledDelaySeconds = delay
+            if !canRetry {
+                operation.metadata["quarantinedAt"] = ISO8601DateFormatter().string(from: completedAt)
+                operation.metadata["quarantineReason"] = durableFailure.message
+                operation.metadata["quarantineActions"] = "repair,retry,supersede,discard"
+            }
 
             do {
                 try queue.update(operation)
             } catch {
-                state = .failed
-                return false
+                return .fatalProcessorFailure
             }
 
             if let retryDate = operation.nextRetryAt {
-                state = .waitingForRetry(retryDate)
-                scheduleRetry(at: retryDate)
+                return .blockedForRetry(retryDate)
             } else {
-                state = .failed
+                return .blockedByFailure
             }
-            return false
 
         case let .conflicted(conflict):
             let automaticMergeCount = Int(
@@ -304,7 +405,25 @@ final class OfflineSynchronizationService: ObservableObject {
                let mergedVersion = resolvedConflict.mergedVersion,
                automaticMergeCount == 0 {
                 operation.payload = mergedVersion.payload
-                operation.baseRevision = resolvedConflict.remoteVersion?.revision
+                do {
+                    try OfflineRecordMutationCodec.rebase(
+                        &operation,
+                        to: resolvedConflict.remoteVersion?.revision,
+                        decoder: Self.recordMutationDecoder,
+                        encoder: Self.recordMutationEncoder
+                    )
+                } catch {
+                    operation.status = .failed
+                    operation.failure = OfflineFailureDetails(
+                        category: .validation,
+                        code: "mutation_rebase_failed",
+                        message: "PFSS could not safely prepare the merged change.",
+                        isRetryable: false,
+                        underlyingDescription: error.localizedDescription
+                    )
+                    try? queue.update(operation)
+                    return .blockedByFailure
+                }
                 operation.conflict = resolvedConflict
                 operation.status = .pending
                 operation.failure = nil
@@ -315,8 +434,7 @@ final class OfflineSynchronizationService: ObservableObject {
                 do {
                     try queue.update(operation)
                 } catch {
-                    state = .failed
-                    return false
+                    return .fatalProcessorFailure
                 }
                 return await process(operation, now: completedAt)
             }
@@ -335,16 +453,30 @@ final class OfflineSynchronizationService: ObservableObject {
             )
             operation.retryAttempts[operation.retryAttempts.count - 1].outcome = .failed
             operation.retryAttempts[operation.retryAttempts.count - 1].failure = operation.failure
+            operation.metadata["quarantinedAt"] = ISO8601DateFormatter().string(from: completedAt)
+            operation.metadata["quarantineReason"] = "Synchronization conflict requires review."
+            operation.metadata["quarantineActions"] = "repair,retry,supersede,discard"
             do {
                 try queue.update(operation)
             } catch {
-                state = .failed
-                return false
+                return .fatalProcessorFailure
             }
-            state = .conflict
-            return false
+            return .blockedByConflict
         }
     }
+
+    private static let recordMutationEncoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }()
+
+    private static let recordMutationDecoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
 
     private func connectivityChanged(to status: OfflineConnectivityStatus) {
         switch status {

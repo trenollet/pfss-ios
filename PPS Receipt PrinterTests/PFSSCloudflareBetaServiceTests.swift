@@ -435,6 +435,312 @@ final class PFSSCloudflareBetaServiceTests: XCTestCase {
         )
     }
 
+    func testSynchronizationBaselineReplacesLocalDataAndPreservesOnlyRetryableIntent() throws {
+        let source = AppDataStore(persistenceEnabled: false)
+        source.businessProfile.businessName = "Cloud Company"
+        source.customers = [makeSynchronizationCustomer(
+            number: "PPS-000777",
+            name: "Cloud"
+        )]
+        let archive = try source.createPortableArchive()
+
+        let target = AppDataStore(persistenceEnabled: false)
+        target.businessProfile.businessName = "Stale Company"
+        target.customers = [makeSynchronizationCustomer(
+            number: "PPS-000001",
+            name: "Stale"
+        )]
+        let pending = PendingOfflineOperation(
+            type: .recordMutation,
+            entityType: .customer,
+            entityID: UUID(),
+            actionName: "upsertCustomer",
+            payload: OfflineOperationPayload(
+                contentType: "phase20.baseline-test",
+                body: Data("pending".utf8)
+            )
+        )
+        try target.offlineOperationQueue.enqueue(pending)
+        for status in [
+            OfflineOperationStatus.failed,
+            .conflicted,
+            .synchronized,
+            .cancelled
+        ] {
+            var historical = PendingOfflineOperation(
+                type: .recordMutation,
+                entityType: .catalog,
+                entityID: UUID(),
+                actionName: "historicalCatalogMutation",
+                payload: OfflineOperationPayload(
+                    contentType: "phase20.baseline-history-test",
+                    body: Data("historical".utf8)
+                )
+            )
+            historical.status = status
+            try target.offlineOperationQueue.enqueue(historical)
+        }
+        var quarantined = PendingOfflineOperation(
+            type: .recordMutation,
+            entityType: .site,
+            entityID: UUID(),
+            actionName: "quarantinedSiteMutation",
+            payload: OfflineOperationPayload(
+                contentType: "phase20.baseline-quarantine-test",
+                body: Data("quarantined".utf8)
+            )
+        )
+        quarantined.status = .waitingForRetry
+        quarantined.metadata["quarantinedAt"] = "2030-01-01T00:00:00Z"
+        try target.offlineOperationQueue.enqueue(quarantined)
+
+        try target.applySynchronizationBaseline(archive)
+
+        XCTAssertEqual(target.businessProfile.businessName, "Cloud Company")
+        XCTAssertEqual(target.customers.map(\.customerNumber), ["PPS-000777"])
+        XCTAssertEqual(target.offlineOperationQueue.operations.map(\.id), [pending.id])
+    }
+
+    func testSynchronizationBaselineDoesNotRepublishDownloadedRecords() throws {
+        let source = AppDataStore(persistenceEnabled: false)
+        source.businessProfile.businessName = "Authoritative Company"
+        source.customers = [makeSynchronizationCustomer(
+            number: "PPS-000888",
+            name: "Authoritative"
+        )]
+        let archive = try source.createPortableArchive()
+        let target = AppDataStore(
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
+        )
+
+        try target.applySynchronizationBaseline(archive)
+        target.synchronizeChangedRecordsIfNeeded()
+
+        XCTAssertTrue(target.offlineOperationQueue.operations.isEmpty)
+        XCTAssertEqual(target.customers.map(\.customerNumber), ["PPS-000888"])
+    }
+
+    func testCanonicalBaselineRemovesArchiveOnlySynchronizedRecords() throws {
+        let target = AppDataStore(
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
+        )
+        let stale = makeSynchronizationCustomer(
+            number: "PPS-STALE",
+            name: "Must Be Removed"
+        )
+        let canonical = makeSynchronizationCustomer(
+            number: "PPS-CANONICAL",
+            name: "Server Record"
+        )
+        target.customers = [stale]
+
+        let operationID = UUID()
+        let recordData = try AppDataStore.recordSynchronizationEncoder.encode(
+            canonical
+        )
+        let payload = try OfflineRecordMutationCodec.envelopePayload(
+            operationID: operationID,
+            entityType: .customer,
+            entityID: canonical.id,
+            recordData: recordData,
+            modifiedAt: Date(timeIntervalSince1970: 1_786_000_000),
+            baseRevision: "canonical-r1",
+            encoder: AppDataStore.recordSynchronizationEncoder
+        )
+        let operation = PendingOfflineOperation(
+            id: operationID,
+            type: .recordMutation,
+            entityType: .customer,
+            entityID: canonical.id,
+            actionName: "upsertRecord",
+            payload: payload,
+            metadata: ["remoteRevision": "canonical-r1"]
+        )
+
+        target.applyAuthoritativeCanonicalBaseline([operation])
+        target.synchronizeChangedRecordsIfNeeded()
+
+        XCTAssertEqual(target.customers.map(\.id), [canonical.id])
+        XCTAssertFalse(target.customers.contains(where: { $0.id == stale.id }))
+        XCTAssertTrue(target.offlineOperationQueue.operations.isEmpty)
+    }
+
+    func testCanonicalBaselineKeepsMatchingArchiveRecordWhenOlderPayloadCannotDecode() throws {
+        let target = AppDataStore(
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
+        )
+        let compatibleArchiveRecord = makeSynchronizationCustomer(
+            number: "PPS-LEGACY",
+            name: "Protected Snapshot Record"
+        )
+        let stale = makeSynchronizationCustomer(
+            number: "PPS-STALE",
+            name: "Must Still Be Removed"
+        )
+        target.customers = [compatibleArchiveRecord, stale]
+
+        let operationID = UUID()
+        let payload = try OfflineRecordMutationCodec.envelopePayload(
+            operationID: operationID,
+            entityType: .customer,
+            entityID: compatibleArchiveRecord.id,
+            recordData: Data("{older-schema".utf8),
+            modifiedAt: Date(timeIntervalSince1970: 1_786_000_000),
+            baseRevision: "legacy-r1",
+            encoder: AppDataStore.recordSynchronizationEncoder
+        )
+        let operation = PendingOfflineOperation(
+            id: operationID,
+            type: .recordMutation,
+            entityType: .customer,
+            entityID: compatibleArchiveRecord.id,
+            actionName: "upsertRecord",
+            payload: payload,
+            metadata: ["remoteRevision": "legacy-r1"]
+        )
+
+        target.applyAuthoritativeCanonicalBaseline([operation])
+        target.synchronizeChangedRecordsIfNeeded()
+
+        XCTAssertEqual(target.customers.map(\.id), [compatibleArchiveRecord.id])
+        XCTAssertTrue(target.offlineOperationQueue.operations.isEmpty)
+    }
+
+    func testCanonicalBaselineRecoversLegacyMutationWithMissingInnerRecordID() throws {
+        let target = AppDataStore(
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
+        )
+        let canonical = makeSynchronizationCustomer(
+            number: "PPS-LEGACY-ID",
+            name: "Recovered From Outer ID"
+        )
+        let recordData = try AppDataStore.recordSynchronizationEncoder.encode(canonical)
+        let legacyBody = try JSONSerialization.data(withJSONObject: [
+            "entityType": OfflineEntityType.customer.rawValue,
+            "entityID": NSNull(),
+            "recordData": recordData.base64EncodedString(),
+            "modifiedAt": "2026-08-22T23:00:00Z",
+        ])
+        let operation = PendingOfflineOperation(
+            type: .recordMutation,
+            entityType: .customer,
+            entityID: canonical.id,
+            actionName: "upsertRecord",
+            payload: OfflineOperationPayload(
+                contentType: "application/vnd.pfss.record-mutation+json",
+                body: legacyBody
+            ),
+            metadata: ["remoteRevision": "legacy-id-r1"]
+        )
+
+        target.applyAuthoritativeCanonicalBaseline([operation])
+        target.synchronizeChangedRecordsIfNeeded()
+
+        XCTAssertEqual(target.customers.map(\.id), [canonical.id])
+        XCTAssertTrue(target.offlineOperationQueue.operations.isEmpty)
+    }
+
+    func testCanonicalBaselineKeepsNewestAssignmentWhenHistoricalNumbersDuplicate() throws {
+        let target = AppDataStore(
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
+        )
+        let older = makeSynchronizationAssignment(
+            number: "ASN-DUPLICATE",
+            updatedAt: Date(timeIntervalSince1970: 1_786_000_000)
+        )
+        let newer = makeSynchronizationAssignment(
+            number: "asn-duplicate",
+            updatedAt: Date(timeIntervalSince1970: 1_786_000_100)
+        )
+        let unaffected = makeSynchronizationAssignment(
+            number: "ASN-UNIQUE",
+            updatedAt: Date(timeIntervalSince1970: 1_786_000_050)
+        )
+
+        let operations = try [older, newer, unaffected].map { assignment in
+            let operationID = UUID()
+            return PendingOfflineOperation(
+                id: operationID,
+                type: .recordMutation,
+                entityType: .assignment,
+                entityID: assignment.id,
+                actionName: "upsertRecord",
+                payload: try OfflineRecordMutationCodec.envelopePayload(
+                    operationID: operationID,
+                    entityType: .assignment,
+                    entityID: assignment.id,
+                    recordData: AppDataStore.recordSynchronizationEncoder.encode(assignment),
+                    modifiedAt: assignment.updatedDate,
+                    baseRevision: "assignment-r1",
+                    encoder: AppDataStore.recordSynchronizationEncoder
+                ),
+                metadata: ["remoteRevision": "assignment-r1"]
+            )
+        }
+
+        target.applyAuthoritativeCanonicalBaseline(operations)
+
+        XCTAssertEqual(
+            Set(target.assignmentStore.assignments.map(\.id)),
+            Set([newer.id, unaffected.id])
+        )
+    }
+
+    func testClearLocalDataDoesNotPublishAnEmptyBusinessProfile() throws {
+        let target = AppDataStore(
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
+        )
+        target.businessProfile.businessName = "Before Clear"
+
+        try target.clearAllLocalData()
+        target.synchronizeChangedRecordsIfNeeded()
+
+        XCTAssertFalse(target.hasLocalCompanyData)
+        XCTAssertTrue(target.offlineOperationQueue.operations.isEmpty)
+    }
+
+    private func makeSynchronizationCustomer(
+        number: String,
+        name: String
+    ) -> Customer {
+        Customer(
+            customerNumber: number,
+            businessName: name,
+            contactName: "",
+            phone: "",
+            email: "",
+            leadSource: .referral,
+            estimateStatus: .newLead,
+            assignedEmployee: "",
+            followUpDate: Date()
+        )
+    }
+
+    private func makeSynchronizationAssignment(
+        number: String,
+        updatedAt: Date
+    ) -> Assignment {
+        Assignment(
+            assignmentNumber: number,
+            jobID: UUID(),
+            jobNumber: "JOB-TEST",
+            customerNumber: "CUST-TEST",
+            scheduling: AssignmentScheduling(
+                mode: .flexibleDay,
+                serviceDate: updatedAt,
+                estimatedDurationMinutes: 60
+            ),
+            createdDate: updatedAt,
+            updatedDate: updatedAt
+        )
+    }
+
     func testSynchronizationStateKeysAreScopedToTheEnrolledDevice() {
         XCTAssertEqual(
             PFSSCloudSynchronizationStateKeys.cursor(deviceID: " Device-A "),

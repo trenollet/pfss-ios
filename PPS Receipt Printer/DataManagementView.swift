@@ -497,8 +497,8 @@ struct DataManagementView: View {
                 try store.clearOwnerLocalData()
                 try await recordRecoveryAudit(.localDataCleared)
                 showMessage(
-                    "Local Database Cleared",
-                    "All local business and operational data was removed. Existing backup files were preserved."
+                    "Local Recovery Started",
+                    "Local business and operational data was removed. PFSS will now rebuild this device from the protected company data before synchronization resumes. Existing backup files were preserved."
                 )
             } catch {
                 showMessage(

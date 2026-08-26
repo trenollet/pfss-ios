@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "commandsByEntity": {
+    "*": {
+      "record.lifecycle": ["lifecycleStatus"]
+    },
+    "job": {
+      "job.assign": ["primaryTechnicianID", "secondaryTechnicianID"],
+      "job.reschedule": [
+        "scheduledDate",
+        "scheduledDurationOverrideMinutes",
+        "assignmentSchedulingMode",
+        "arrivalWindowEnd",
+        "completionDeadline",
+        "assignmentPriority"
+      ],
+      "job.transition": [
+        "status",
+        "workflowState",
+        "setupStartDate",
+        "workStartDate",
+        "completedDate",
+        "timelineEvents"
+      ],
+      "recurringWork.update": [
+        "recurringWorkID",
+        "isRecurring",
+        "recurrenceFrequency",
+        "recurrenceInterval",
+        "recurrenceStartDate",
+        "recurrenceEndDate",
+        "recurrenceEndMode",
+        "recurrenceOccurrenceCount",
+        "recurrenceSeriesID",
+        "recurrenceSequence",
+        "recurringWorkTemplateID",
+        "recurringWorkOccurrenceKey",
+        "lifecycleStatus"
+      ]
+    },
+    "recurringWork": {
+      "recurringWork.update": [
+        "revision",
+        "status",
+        "rule",
+        "endCondition",
+        "anchorDate",
+        "generationHorizonDays",
+        "prototype",
+        "exceptions",
+        "scheduleStartIndex",
+        "heldOccurrenceIndex",
+        "heldScheduledDate",
+        "holdStartedAt",
+        "updatedAt"
+      ]
+    },
+    "assignment": {
+      "assignment.assign": ["crew", "history", "updatedDate"],
+      "assignment.reschedule": [
+        "scheduling",
+        "priority",
+        "routeSequence",
+        "history",
+        "updatedDate"
+      ],
+      "assignment.transition": [
+        "status",
+        "dispatchedDate",
+        "enRouteDate",
+        "onSiteDate",
+        "workCompletedDate",
+        "invoiceReadyDate",
+        "closedDate",
+        "cancelledDate",
+        "history",
+        "updatedDate"
+      ],
+      "assignment.updateNotes": [
+        "dispatchNotes",
+        "fieldNotes",
+        "history",
+        "updatedDate"
+      ]
+    },
+    "invoice": {
+      "invoice.edit": [
+        "lineItems",
+        "subtotal",
+        "discount",
+        "total",
+        "taxSnapshot",
+        "issueDate",
+        "dueDate",
+        "notes",
+        "amountPaid",
+        "balanceDue",
+        "paidDate",
+        "receipts",
+        "status"
+      ],
+      "invoice.recordPayment": [
+        "amountPaid",
+        "balanceDue",
+        "paidDate",
+        "receipts",
+        "status"
+      ],
+      "invoice.transition": ["status"]
+    }
+  }
+}

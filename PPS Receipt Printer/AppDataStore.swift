@@ -42,9 +42,20 @@ final class AppDataStore: ObservableObject {
     @Published private(set) var cloudSynchronizationAccessStatus:
         PFSSCloudSynchronizationAccessStatus = .checking
     var onPersistentDataSaved: (() -> Void)?
+    /// Called only for the Owner recovery tool's intentional local reset.
+    /// Company-removal and logout use a different, fail-closed lifecycle.
+    var onOwnerLocalDataCleared: (() -> Void)?
     var onServerConflictResolutionRequested:
         ((String, OfflineConflictResolution, String, [String]) async throws
             -> PFSSCloudflareConflictResolutionReceipt)?
+    var onRevokedDeviceConflictCleanupRequested:
+        ((String, Int, String) async throws
+            -> PFSSCloudflareRevokedDeviceConflictCleanupReceipt)?
+    var onServerQuarantineResolutionRequested:
+        ((String, OfflineQuarantineResolution, String) async throws
+            -> PFSSCloudflareQuarantineResolutionReceipt)?
+    var onServerQuarantineRepairRequested:
+        ((String, PendingOfflineOperation, String) async throws -> String)?
     @Published var customers: [Customer] = [] {
         didSet { saveData() }
     }
@@ -167,7 +178,7 @@ final class AppDataStore: ObservableObject {
     private static let cloudEmployeeIDCacheKey =
         "PFSSAuthenticatedCloudEmployeeID"
     private static let cloudAccountHoldCacheKey = "PFSSCloudAccountHold"
-    private var isApplyingRestoredSnapshot = false
+    var isApplyingRestoredSnapshot = false
     var isApplyingRemoteSynchronization = false
     var synchronizedRecordState: [String: Data] = [:]
     var synchronizedRecordRevisions: [String: String] = [:]
@@ -183,7 +194,16 @@ final class AppDataStore: ObservableObject {
     ) {
         let assignmentStore = AssignmentStore()
         let assignmentEngine = AssignmentEngine(store: assignmentStore)
-        let operationQueue = offlineOperationQueue ?? OfflineOperationQueue()
+        let operationQueue: OfflineOperationQueue
+        if let offlineOperationQueue {
+            operationQueue = offlineOperationQueue
+        } else if persistenceEnabled {
+            operationQueue = OfflineOperationQueue()
+        } else {
+            operationQueue = OfflineOperationQueue(
+                persistence: TransientOfflineOperationQueuePersistence()
+            )
+        }
         let connectivityMonitor = offlineConnectivityMonitor
             ?? OfflineConnectivityMonitor()
         self.assignmentStore = assignmentStore
@@ -261,6 +281,14 @@ final class AppDataStore: ObservableObject {
     func startOfflineServices() {
         offlineConnectivityMonitor.start()
         offlineSynchronizationService?.start()
+    }
+
+    func requireAuthoritativePullBeforeUpload() {
+        offlineSynchronizationService?.requireAuthoritativePull()
+    }
+
+    func completeAuthoritativePullBeforeUpload() {
+        offlineSynchronizationService?.completeAuthoritativePull()
     }
 
     var canOverrideSynchronizationConflicts: Bool {
@@ -650,6 +678,22 @@ final class AppDataStore: ObservableObject {
             materializeRecurringWorkHorizon()
             synchronizeAssignmentsFromJobs()
         }
+    }
+
+    /// Moves one materialized job occurrence without changing its recurring
+    /// template or regenerating any later occurrences in the series.
+    @discardableResult
+    func updateSingleJobOccurrenceSchedule(_ updatedJob: JobRecord) -> Bool {
+        guard let index = jobs.firstIndex(where: { $0.id == updatedJob.id }) else {
+            return false
+        }
+
+        jobs[index].assignmentSchedulingMode = updatedJob.assignmentSchedulingMode
+        jobs[index].scheduledDate = updatedJob.scheduledDate
+        jobs[index].arrivalWindowEnd = updatedJob.arrivalWindowEnd
+        jobs[index].completionDeadline = updatedJob.completionDeadline
+        synchronizeAssignmentsFromJobs()
+        return true
     }
 
     private func recurringSeriesSettingsChanged(
@@ -1553,9 +1597,12 @@ final class AppDataStore: ObservableObject {
         let previousStatus = previousInvoice.status
         // A status or payment update must not silently reprice a historical
         // invoice. Explicit editor/tax actions recalculate before this call.
-        var normalizedInvoice = InvoiceEngine.normalizedPaymentState(
-            for: invoice
+        var normalizedInvoice = invoiceChargesChanged(
+            from: previousInvoice,
+            to: invoice
         )
+            ? InvoiceEngine.normalizedAfterInvoiceEdit(invoice)
+            : InvoiceEngine.normalizedPaymentState(for: invoice)
         if ReceiptEngine.requiresReceipt(
             previous: previousInvoice,
             proposed: normalizedInvoice
@@ -1579,6 +1626,22 @@ final class AppDataStore: ObservableObject {
             normalizedInvoice,
             previousStatus: previousStatus
         )
+    }
+
+    private func invoiceChargesChanged(
+        from previous: InvoiceRecord,
+        to proposed: InvoiceRecord
+    ) -> Bool {
+        guard previous.subtotal == proposed.subtotal,
+              previous.discount == proposed.discount,
+              previous.total == proposed.total,
+              previous.taxSnapshot == proposed.taxSnapshot else {
+            return true
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return (try? encoder.encode(previous.lineItems))
+            != (try? encoder.encode(proposed.lineItems))
     }
 
     private func synchronizeCompletedJobFromInvoice(
@@ -2029,7 +2092,16 @@ final class AppDataStore: ObservableObject {
         }
     }
 
-    private func synchronizeChangedRecordsIfNeeded() {
+    /// Persists an imported or authoritative snapshot without interpreting its
+    /// contents as local user edits. The synchronized comparison baseline must
+    /// be replaced before normal save observation resumes.
+    func persistAppliedSnapshotWithoutEnqueuingChanges() {
+        synchronizedRecordState = makeSynchronizedRecordState()
+        isApplyingRestoredSnapshot = false
+        saveData()
+    }
+
+    func synchronizeChangedRecordsIfNeeded() {
         let current = makeSynchronizedRecordState()
         defer { synchronizedRecordState = current }
         guard offlineSynchronizationMode.requiresRemoteQueue,
@@ -2071,7 +2143,12 @@ final class AppDataStore: ObservableObject {
         for value in values {
             let key = synchronizationKey(type: type, id: value.id)
             guard current[key] != synchronizedRecordState[key] else { continue }
-            enqueueRecordMutation(entityType: type, entityID: value.id, value: value)
+            enqueueRecordMutation(
+                entityType: type,
+                entityID: value.id,
+                value: value,
+                baseRecordData: synchronizedRecordState[key]
+            )
         }
     }
 
@@ -2229,6 +2306,7 @@ final class AppDataStore: ObservableObject {
     func clearOwnerLocalData() throws {
         try requireOwnerRecoveryAuthorization()
         try clearAllLocalData()
+        onOwnerLocalDataCleared?()
     }
 
     func requireOwnerRecoveryAuthorization() throws {
@@ -2276,14 +2354,64 @@ final class AppDataStore: ObservableObject {
         isApplyingRestoredSnapshot = true
         do {
             try applyPortableArchivePayload(bootstrapPayload)
-            isApplyingRestoredSnapshot = false
-            saveData()
+            persistAppliedSnapshotWithoutEnqueuingChanges()
             return true
         } catch {
             do {
                 try applyPortableArchivePayload(currentPayload)
+                persistAppliedSnapshotWithoutEnqueuingChanges()
+            } catch {
                 isApplyingRestoredSnapshot = false
-                saveData()
+                throw PFSSRestoreError.rollbackFailed(
+                    error.localizedDescription
+                )
+            }
+            throw PFSSRestoreError.restoreFailed(
+                error.localizedDescription
+            )
+        }
+    }
+
+    /// Replaces an unverified local company baseline with the authoritative
+    /// cursor-stamped cloud snapshot while preserving only retryable, unsent
+    /// device intent. Historical terminal, failed, conflicted, and quarantined
+    /// operations must not be resurrected by a baseline repair.
+    func applySynchronizationBaseline(
+        _ archiveData: Data,
+        archiveService: PFSSArchiveService? = nil
+    ) throws {
+        let archiveService = archiveService ?? PFSSArchiveService()
+        let validated = try archiveService.validateAndDecode(archiveData)
+        let currentPayload = portableArchivePayload()
+        let preservedOperations = currentPayload.pendingOperations.compactMap {
+            operation -> PendingOfflineOperation? in
+            guard operation.metadata["quarantinedAt"] == nil else { return nil }
+            switch operation.status {
+            case .pending, .waitingForRetry:
+                return operation
+            case .synchronizing:
+                var recovered = operation
+                recovered.status = .pending
+                recovered.nextRetryAt = nil
+                recovered.metadata["baselineRecoveredInterruptedUpload"] = "true"
+                return recovered
+            case .failed, .conflicted, .synchronized, .cancelled:
+                return nil
+            }
+        }
+        let baselinePayload = PFSSArchivePayload(
+            appData: validated.payload.appData,
+            pendingOperations: preservedOperations
+        )
+
+        isApplyingRestoredSnapshot = true
+        do {
+            try applyPortableArchivePayload(baselinePayload)
+            persistAppliedSnapshotWithoutEnqueuingChanges()
+        } catch {
+            do {
+                try applyPortableArchivePayload(currentPayload)
+                persistAppliedSnapshotWithoutEnqueuingChanges()
             } catch {
                 isApplyingRestoredSnapshot = false
                 throw PFSSRestoreError.rollbackFailed(
@@ -2323,13 +2451,11 @@ final class AppDataStore: ObservableObject {
         isApplyingRestoredSnapshot = true
         do {
             try applyPortableArchivePayload(validated.payload)
-            isApplyingRestoredSnapshot = false
-            saveData()
+            persistAppliedSnapshotWithoutEnqueuingChanges()
         } catch {
             do {
                 try applyPortableArchivePayload(currentPayload)
-                isApplyingRestoredSnapshot = false
-                saveData()
+                persistAppliedSnapshotWithoutEnqueuingChanges()
             } catch {
                 isApplyingRestoredSnapshot = false
                 throw PFSSRestoreError.rollbackFailed(
@@ -2377,13 +2503,11 @@ final class AppDataStore: ObservableObject {
         do {
             try applyPortableArchivePayload(emptyPayload)
             acceptedRoutePlans = [:]
-            isApplyingRestoredSnapshot = false
-            saveData()
+            persistAppliedSnapshotWithoutEnqueuingChanges()
         } catch {
             do {
                 try applyPortableArchivePayload(currentPayload)
-                isApplyingRestoredSnapshot = false
-                saveData()
+                persistAppliedSnapshotWithoutEnqueuingChanges()
             } catch {
                 isApplyingRestoredSnapshot = false
                 throw PFSSRestoreError.rollbackFailed(

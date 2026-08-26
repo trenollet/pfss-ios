@@ -179,6 +179,19 @@ struct OfflineConflictResolver {
 final class OfflineConflictResolutionService {
     private let queue: OfflineOperationQueue
 
+    private static let recordMutationEncoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }()
+
+    private static let recordMutationDecoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
+
     init(queue: OfflineOperationQueue) {
         self.queue = queue
     }
@@ -210,7 +223,16 @@ final class OfflineConflictResolutionService {
         switch resolution {
         case .keptLocal:
             operation.payload = conflict.localVersion.payload
-            operation.baseRevision = conflict.remoteVersion?.revision
+            do {
+                try OfflineRecordMutationCodec.rebase(
+                    &operation,
+                    to: conflict.remoteVersion?.revision,
+                    decoder: Self.recordMutationDecoder,
+                    encoder: Self.recordMutationEncoder
+                )
+            } catch {
+                throw OfflineConflictResolutionError.unableToMergePayload
+            }
             operation.status = resubmitLocal ? .pending : .synchronized
             operation.synchronizedAt = resubmitLocal ? nil : timestamp
             operation.failure = nil

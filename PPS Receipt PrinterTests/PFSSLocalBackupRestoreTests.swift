@@ -44,6 +44,21 @@ final class PFSSLocalBackupRestoreTests: XCTestCase {
         }
     }
 
+    func testOwnerLocalClearNotifiesRecoveryLifecycleAfterDataIsEmpty() throws {
+        let owner = AppDataStore(persistenceEnabled: false)
+        owner.updateCloudRole(.owner)
+        owner.businessProfile.businessName = "Protected Company"
+        var callbackObservedEmptyStore = false
+        owner.onOwnerLocalDataCleared = {
+            callbackObservedEmptyStore = owner.hasLocalCompanyData == false
+        }
+
+        try owner.clearOwnerLocalData()
+
+        XCTAssertTrue(callbackObservedEmptyStore)
+        XCTAssertFalse(owner.hasLocalCompanyData)
+    }
+
     func testManualBackupIsSavedListedAndReadable() throws {
         let directory = temporaryBackupDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

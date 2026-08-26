@@ -390,8 +390,15 @@ private struct SalesFollowUpDayView: View {
 
 private struct TechnicianJobsDayView: View {
     @EnvironmentObject private var store: AppDataStore
+    @ObservedObject private var declineCenter = PFSSJobDeclineReviewCenter.shared
     let date: Date
     let employeeID: UUID
+    @State private var declineJob: JobRecord?
+    @State private var moveJob: JobRecord?
+    @State private var declineReason = ""
+    @State private var declineErrorMessage = ""
+    @State private var showingDeclineError = false
+    @State private var isSubmittingDecline = false
 
     private var employee: EmployeeRecord? {
         store.activeEmployees.first { $0.id == employeeID }
@@ -417,11 +424,12 @@ private struct TechnicianJobsDayView: View {
                     )
                 } else {
                     ForEach(jobs) { job in
-                        NavigationLink {
-                            JobDetailView(job: job)
-                                .environmentObject(store)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 5) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            NavigationLink {
+                                JobDetailView(job: job)
+                                    .environmentObject(store)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 5) {
                                 HStack {
                                     Text(jobTitle(job))
                                         .font(.headline)
@@ -439,15 +447,65 @@ private struct TechnicianJobsDayView: View {
                                 )
                                 .font(.caption)
                                 .foregroundStyle(presentation.accent.color)
+                                }
                             }
-                            .padding(.vertical, 4)
+
+                            if canDecline(job) || canMove(job) {
+                                HStack(spacing: 12) {
+                                    if canDecline(job) {
+                                        if let assignment = store.assignment(forJobID: job.id),
+                                           declineCenter.hasPendingReview(assignmentID: assignment.id) {
+                                            Label("Review Pending", systemImage: "flag.fill")
+                                                .font(.subheadline.weight(.semibold))
+                                                .foregroundStyle(.orange)
+                                                .frame(maxWidth: .infinity)
+                                        } else {
+                                            Button(role: .destructive) {
+                                                declineReason = ""
+                                                declineJob = job
+                                            } label: {
+                                                Label("Decline", systemImage: "flag.fill")
+                                                    .frame(maxWidth: .infinity)
+                                            }
+                                            .buttonStyle(.bordered)
+                                        }
+                                    }
+
+                                    if canMove(job) {
+                                        Button {
+                                            moveJob = job
+                                        } label: {
+                                            Label("Move", systemImage: "calendar.badge.clock")
+                                                .frame(maxWidth: .infinity)
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                    }
+                                }
+                            }
                         }
+                        .padding(.vertical, 4)
                     }
                 }
             }
         }
         .navigationTitle(date.formatted(date: .abbreviated, time: .omitted))
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            declineCenter.start()
+            await declineCenter.refresh()
+        }
+        .sheet(item: $declineJob) { job in
+            declineSheet(for: job)
+        }
+        .sheet(item: $moveJob) { job in
+            JobOccurrenceMoveView(job: job)
+                .environmentObject(store)
+        }
+        .alert("Unable to Decline Job", isPresented: $showingDeclineError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(declineErrorMessage)
+        }
     }
 
     private func jobTitle(_ job: JobRecord) -> String {
@@ -470,6 +528,77 @@ private struct TechnicianJobsDayView: View {
             invoice: store.invoice(for: job),
             assignment: store.assignment(forJobID: job.id)
         ).presentation
+    }
+
+    private func canDecline(_ job: JobRecord) -> Bool {
+        guard store.cloudEmployeeID == employeeID,
+              let assignment = store.assignment(forJobID: job.id),
+              assignment.primaryTechnicianID == employeeID else { return false }
+        return assignment.status == .scheduled || assignment.status == .dispatched
+    }
+
+    private func canMove(_ job: JobRecord) -> Bool {
+        guard let assignment = store.assignment(forJobID: job.id),
+              assignment.status == .scheduled || assignment.status == .dispatched else {
+            return false
+        }
+        return store.canManageCompany ||
+            (store.cloudEmployeeID == employeeID && assignment.primaryTechnicianID == employeeID)
+    }
+
+    private func declineSheet(for job: JobRecord) -> some View {
+        NavigationStack {
+            Form {
+                Section("Assigned Job") {
+                    LabeledContent("Customer", value: jobTitle(job))
+                    LabeledContent("Job", value: job.jobNumber)
+                }
+                Section("Reason Required") {
+                    TextEditor(text: $declineReason)
+                        .frame(minHeight: 120)
+                    Text("This sends a shared Job Review Required alert to every active Manager and Owner device.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Decline Job")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { declineJob = nil }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Submit") { submitDecline(job) }
+                        .disabled(
+                            declineReason.trimmingCharacters(in: .whitespacesAndNewlines).count < 3 ||
+                            isSubmittingDecline
+                        )
+                }
+            }
+        }
+    }
+
+    private func submitDecline(_ job: JobRecord) {
+        guard let assignment = store.assignment(forJobID: job.id) else {
+            declineErrorMessage = "This assignment is no longer available."
+            showingDeclineError = true
+            return
+        }
+        isSubmittingDecline = true
+        Task {
+            do {
+                try await declineCenter.submit(
+                    assignmentID: assignment.id,
+                    jobID: job.id,
+                    reason: declineReason
+                )
+                declineJob = nil
+            } catch {
+                declineErrorMessage = error.localizedDescription
+                showingDeclineError = true
+            }
+            isSubmittingDecline = false
+        }
     }
 }
 
@@ -563,6 +692,158 @@ private struct PFSSCalendarDayCard: View {
         .overlay {
             RoundedRectangle(cornerRadius: 18)
                 .strokeBorder(accentColor.opacity(0.18))
+        }
+    }
+}
+
+struct JobOccurrenceMoveView: View {
+    @EnvironmentObject private var store: AppDataStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var job: JobRecord
+
+    init(job: JobRecord) {
+        _job = State(initialValue: job)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Move This Job") {
+                    Picker("Schedule Mode", selection: $job.assignmentSchedulingMode) {
+                        ForEach(AssignmentSchedulingMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    schedulingControls
+                }
+
+                Section {
+                    Label(
+                        "Only this visit will move. Future jobs in the series will keep their current schedule.",
+                        systemImage: "repeat"
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Move Job")
+            .navigationBarTitleDisplayMode(.inline)
+            .onChange(of: job.assignmentSchedulingMode) {
+                prepareFields(for: job.assignmentSchedulingMode)
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Move") {
+                        normalizeForSave()
+                        if store.updateSingleJobOccurrenceSchedule(job) {
+                            dismiss()
+                        }
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var schedulingControls: some View {
+        switch job.assignmentSchedulingMode {
+        case .fixedTime:
+            QuarterHourDatePicker(
+                selection: $job.scheduledDate,
+                dateLabel: "Service Date",
+                timeLabel: "Scheduled Time"
+            )
+        case .arrivalWindow:
+            QuarterHourDatePicker(
+                selection: $job.scheduledDate,
+                dateLabel: "Service Date",
+                timeLabel: "Earliest Arrival"
+            )
+            QuarterHourDatePicker(
+                selection: arrivalWindowEndBinding,
+                dateLabel: "Window End Date",
+                timeLabel: "Latest Arrival"
+            )
+        case .flexibleDay:
+            DatePicker(
+                "Service Date",
+                selection: $job.scheduledDate,
+                displayedComponents: .date
+            )
+        case .deadline:
+            QuarterHourDatePicker(
+                selection: completionDeadlineBinding,
+                dateLabel: "Service Date",
+                timeLabel: "Complete By"
+            )
+        }
+    }
+
+    private var arrivalWindowEndBinding: Binding<Date> {
+        Binding(
+            get: {
+                job.arrivalWindowEnd ?? Calendar.current.date(
+                    byAdding: .hour,
+                    value: 2,
+                    to: job.scheduledDate
+                ) ?? job.scheduledDate
+            },
+            set: { job.arrivalWindowEnd = $0 }
+        )
+    }
+
+    private var completionDeadlineBinding: Binding<Date> {
+        Binding(
+            get: { job.completionDeadline ?? job.scheduledDate },
+            set: { job.completionDeadline = $0 }
+        )
+    }
+
+    private func prepareFields(for mode: AssignmentSchedulingMode) {
+        switch mode {
+        case .fixedTime:
+            job.arrivalWindowEnd = nil
+            job.completionDeadline = nil
+        case .arrivalWindow:
+            if job.arrivalWindowEnd == nil || job.arrivalWindowEnd! <= job.scheduledDate {
+                job.arrivalWindowEnd = Calendar.current.date(
+                    byAdding: .hour,
+                    value: 2,
+                    to: job.scheduledDate
+                )
+            }
+            job.completionDeadline = nil
+        case .flexibleDay:
+            job.arrivalWindowEnd = nil
+            job.completionDeadline = nil
+        case .deadline:
+            job.completionDeadline = job.completionDeadline ?? job.scheduledDate
+            job.arrivalWindowEnd = nil
+        }
+    }
+
+    private func normalizeForSave() {
+        switch job.assignmentSchedulingMode {
+        case .fixedTime:
+            job.scheduledDate = QuarterHourDatePicker.normalized(job.scheduledDate)
+            job.arrivalWindowEnd = nil
+            job.completionDeadline = nil
+        case .arrivalWindow:
+            job.scheduledDate = QuarterHourDatePicker.normalized(job.scheduledDate)
+            job.arrivalWindowEnd = QuarterHourDatePicker.normalized(arrivalWindowEndBinding.wrappedValue)
+            job.completionDeadline = nil
+        case .flexibleDay:
+            job.scheduledDate = Calendar.current.startOfDay(for: job.scheduledDate)
+            job.arrivalWindowEnd = nil
+            job.completionDeadline = nil
+        case .deadline:
+            job.completionDeadline = QuarterHourDatePicker.normalized(completionDeadlineBinding.wrappedValue)
+            job.scheduledDate = Calendar.current.startOfDay(for: job.completionDeadline ?? job.scheduledDate)
+            job.arrivalWindowEnd = nil
         }
     }
 }

@@ -9,8 +9,11 @@ import SwiftUI
 
 struct DashboardView: View {
     @EnvironmentObject private var store: AppDataStore
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var mileageRepository = MileageTripRepository.shared
     @ObservedObject private var declineCenter = PFSSJobDeclineReviewCenter.shared
+    @StateObject private var cloudManager = PFSSCloudflareBetaManager()
+    @State private var synchronizationHealth: PFSSSynchronizationHealth?
     @Binding var selectedSection: AppSection
 
     private var todaysJobCount: Int {
@@ -44,6 +47,10 @@ struct DashboardView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
+                    if let health = synchronizationHealth,
+                       health.summary.activeAlerts > 0 {
+                        synchronizationHealthBanner(health)
+                    }
                     if store.canManageCompany && !declineCenter.pendingReviews.isEmpty {
                         NavigationLink {
                             PFSSJobDeclineReviewListView()
@@ -168,6 +175,92 @@ struct DashboardView: View {
         .task {
             declineCenter.start()
             await declineCenter.refresh()
+        }
+        .task(id: selectedSection) {
+            guard selectedSection == .dashboard else { return }
+            await refreshSynchronizationHealthBanner()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active, selectedSection == .dashboard else { return }
+            Task { await refreshSynchronizationHealthBanner() }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: .pfssSynchronizationHealthDidRefresh
+            )
+        ) { notification in
+            guard cloudManager.currentSession?.member.role.canManageAccess == true,
+                  let health = notification.object as? PFSSSynchronizationHealth
+            else { return }
+            synchronizationHealth = health.summary.activeAlerts > 0 ? health : nil
+        }
+    }
+
+    private func synchronizationHealthBanner(
+        _ health: PFSSSynchronizationHealth
+    ) -> some View {
+        let isCritical = health.summary.criticalAlerts > 0
+        let alertCount = health.summary.activeAlerts
+        let color: Color = isCritical ? .red : .orange
+        return NavigationLink {
+            PFSSSynchronizationHealthView()
+        } label: {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: isCritical
+                    ? "exclamationmark.octagon.fill"
+                    : "exclamationmark.triangle.fill")
+                    .font(.title2)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(isCritical
+                        ? "Synchronization Action Required"
+                        : "Synchronization Needs Attention")
+                        .font(.headline)
+                    Text(
+                        "\(alertCount) \(alertCount == 1 ? "issue needs" : "issues need") review. Tap to see what happened and how to correct it."
+                    )
+                    .font(.subheadline)
+                }
+
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.top, 4)
+            }
+            .foregroundStyle(color)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .background(color.opacity(0.12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(color.opacity(0.45), lineWidth: 1)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "Synchronization needs attention. \(alertCount) active \(alertCount == 1 ? "issue" : "issues")."
+        )
+        .accessibilityHint("Opens Synchronization Health to review and correct the issue")
+    }
+
+    private func refreshSynchronizationHealthBanner() async {
+        guard cloudManager.isEnrolled else {
+            synchronizationHealth = nil
+            return
+        }
+        do {
+            try await cloudManager.refreshSession()
+            guard cloudManager.currentSession?.member.role.canManageAccess == true else {
+                synchronizationHealth = nil
+                return
+            }
+            let health = try await cloudManager.synchronizationHealth()
+            synchronizationHealth = health.summary.activeAlerts > 0 ? health : nil
+        } catch {
+            // A dashboard monitoring failure must not interrupt normal field work.
+            synchronizationHealth = nil
         }
     }
 

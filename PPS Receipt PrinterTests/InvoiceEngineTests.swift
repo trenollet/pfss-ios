@@ -87,6 +87,39 @@ final class InvoiceEngineTests: XCTestCase {
         )
     }
 
+    func testRepricingPaidInvoicePreservesRecordedPayment() {
+        var invoice = draft(total: 100)
+        invoice.status = .paid
+        invoice.amountPaid = 100
+        invoice.paidDate = Date(timeIntervalSince1970: 10)
+        invoice.lineItems = [line(quantity: 1, unitPrice: 125, treatment: .nonTaxable)]
+
+        let corrected = InvoiceEngine.recalculated(
+            invoice,
+            at: Date(timeIntervalSince1970: 20)
+        )
+
+        XCTAssertEqual(corrected.total, 125)
+        XCTAssertEqual(corrected.amountPaid, 100)
+        XCTAssertEqual(corrected.balanceDue, 25)
+        XCTAssertEqual(corrected.status, .partiallyPaid)
+        XCTAssertNil(corrected.paidDate)
+    }
+
+    func testLowerCorrectedTotalDoesNotEraseOverpaymentEvidence() {
+        var invoice = draft(total: 100)
+        invoice.status = .paid
+        invoice.amountPaid = 100
+        invoice.lineItems = [line(quantity: 1, unitPrice: 80, treatment: .nonTaxable)]
+
+        let corrected = InvoiceEngine.recalculated(invoice)
+
+        XCTAssertEqual(corrected.total, 80)
+        XCTAssertEqual(corrected.amountPaid, 100)
+        XCTAssertEqual(corrected.balanceDue, 0)
+        XCTAssertEqual(corrected.status, .paid)
+    }
+
     private func line(
         quantity: Double,
         unitPrice: Double,

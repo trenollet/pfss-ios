@@ -2,11 +2,31 @@
 
 - Status: Active
 - Owner: PFSS Project
-- Last Updated: 2026-08-14
+- Last Updated: 2026-08-26
 
 This file records durable project-level changes. Detailed user-facing notes remain in `../ReleaseNotes/`, and milestone narratives remain in `../ReleaseHistory/`.
 
 ## Unreleased
+
+### Phase 20 — Multi-Device Synchronization Architecture
+
+- Replaced broad conflict handling with versioned mutations, field-aware
+  merges, domain commands, server revisions, and a shared client/server policy
+  contract.
+- Added dependency-isolated queues, focused Manager/Owner conflict review,
+  centralized quarantine repair/discard, audit evidence, and automatic
+  originating-device cleanup.
+- Added authoritative local-database recovery, fresh-device bootstrap,
+  tenant-scoped change cursors, signal-only push synchronization, and migration
+  safety coverage.
+- Added consent-based redacted support diagnostics, synchronization health,
+  durable operational alerts, and an Owner/Manager Dashboard warning path.
+- Hardened live field behavior for recurring work, assignment changes, role
+  promotion/demotion, map-assisted addresses, job occurrence moves, test-only
+  notification leakage, and post-creation invoice correction.
+- Closeout candidate build 20.7.29 passes 291 iOS tests, 83 Worker tests, the
+  fresh-D1 migration suite, and TypeScript validation. Final Sales-role signed
+  acceptance and repository integration remain before formal closure.
 
 ### Phase 19 — Field Intelligence, Workforce Response, and Financial Integrity
 

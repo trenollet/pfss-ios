@@ -7,6 +7,8 @@ import {
   managedIdentityConfigurationFromBindings,
 } from "./account-identity-provider";
 import { resolveAccountEntitlements } from "./account-entitlements";
+import synchronizationPolicyContract from
+  "../../../PPS Receipt Printer/SynchronizationPolicyContract.json";
 
 interface Env extends ManagedIdentityConfigurationBindings {
   DB: D1Database;
@@ -21,6 +23,11 @@ interface Env extends ManagedIdentityConfigurationBindings {
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_D1_DATABASE_ID?: string;
   CLOUDFLARE_WORKER_SCRIPT_NAME?: string;
+  APNS_KEY_ID?: string;
+  APNS_TEAM_ID?: string;
+  APNS_PRIVATE_KEY?: string;
+  APNS_TOPIC?: string;
+  APNS_ENVIRONMENT?: string;
 }
 
 type TenantRole = "owner" | "manager" | "member";
@@ -3135,6 +3142,76 @@ function canResolveConflicts(identity: DeviceIdentity): boolean {
   return identity.role === "owner" || identity.role === "manager";
 }
 
+const SYNCHRONIZATION_CONFLICT_POLICY_VERSION = 1;
+const SYNCHRONIZATION_QUARANTINE_POLICY_VERSION = 1;
+
+function conflictOperationalImpact(entityType: string, fields: string[]): string {
+  const names = new Set(fields.map((field) => field.split(".")[0]));
+  if ([...names].some((field) => [
+    "roles", "role", "isActive", "accessRole", "lifecycleStatus",
+  ].includes(field)) && entityType === "employee") {
+    return "This decision can change employee access or active workforce status.";
+  }
+  if ([...names].some((field) => [
+    "amountPaid", "balanceDue", "paidDate", "receipts", "total", "tax",
+  ].includes(field))) {
+    return "This decision can change billing, payment, or receipt records.";
+  }
+  if ([...names].some((field) => [
+    "scheduledDate", "scheduledStart", "scheduledEnd", "scheduling",
+    "arrivalWindowEnd", "completionDeadline", "routeSequence",
+  ].includes(field))) {
+    return "This decision can change when work is scheduled or routed.";
+  }
+  if ([...names].some((field) => [
+    "primaryTechnicianID", "secondaryTechnicianID", "crew", "assignmentPriority",
+  ].includes(field))) {
+    return "This decision can change who is responsible for the work.";
+  }
+  if ([...names].some((field) => [
+    "status", "workflowState", "lifecycleStatus", "completedDate",
+  ].includes(field))) {
+    return "This decision can change the record's workflow or lifecycle state.";
+  }
+  return "This decision changes shared company information on every synchronized device.";
+}
+
+function conflictReviewDetails(
+  localOperation: Record<string, unknown>,
+  cloudOperation: Record<string, unknown>,
+  requestedFallback: string[] = [],
+): { affectedFields: string[]; operationalImpact: string; policyVersion: number } {
+  const envelope = versionedMutationEnvelope(localOperation);
+  const base = decodedRecordData(envelope?.baseRecordData);
+  const device = recordPayloadFromOperation(localOperation);
+  const cloud = recordPayloadFromOperation(cloudOperation);
+  let affectedFields: string[] = [];
+  if (base && device && cloud) {
+    const candidates = envelope?.changedFields?.length
+      ? envelope.changedFields
+      : topLevelChangedFields(base, device);
+    affectedFields = [...new Set(candidates)].filter((field) =>
+      !fieldStateEqual(device, base, field) &&
+      !fieldStateEqual(cloud, base, field) &&
+      !fieldStateEqual(device, cloud, field)
+    ).sort();
+  } else if (device && cloud) {
+    affectedFields = topLevelChangedFields(device, cloud);
+  }
+  if (affectedFields.length === 0) {
+    affectedFields = [...new Set(requestedFallback
+      .filter((field) => typeof field === "string" && field.trim())
+      .map((field) => field.trim()))].slice(0, 100);
+  }
+  if (affectedFields.length === 0) affectedFields = ["record"];
+  const entityType = String(localOperation.entityType ?? "custom");
+  return {
+    affectedFields,
+    operationalImpact: conflictOperationalImpact(entityType, affectedFields),
+    policyVersion: SYNCHRONIZATION_CONFLICT_POLICY_VERSION,
+  };
+}
+
 const STALE_DEVICE_CONFLICT_WINDOW_MS = 8 * 60 * 60 * 1000;
 
 function cloudRecordClearlyNewer(
@@ -3235,6 +3312,7 @@ async function listSynchronizationConflicts(
   identity: DeviceIdentity,
 ): Promise<Response> {
   if (!canResolveConflicts(identity)) return json({ error: "forbidden" }, 403);
+  await retireProvablyObsoleteLegacyConflicts(env, identity);
   const result = await env.DB.prepare(
     `SELECT id, entity_type AS entityType, entity_id AS entityID,
             source_member_id AS sourceMemberID,
@@ -3256,17 +3334,82 @@ async function listSynchronizationConflicts(
     cloudRevision: string;
     detectedAt: string;
   }>();
-  return json({ conflicts: result.results.map((row) => ({
-    id: row.id,
-    entityType: row.entityType,
-    entityID: row.entityID,
-    sourceMemberID: row.sourceMemberID,
-    sourceDeviceID: row.sourceDeviceID,
-    localOperation: JSON.parse(row.localOperationJSON),
-    cloudOperation: JSON.parse(row.cloudOperationJSON),
-    cloudRevision: row.cloudRevision,
-    detectedAt: row.detectedAt,
-  })) });
+  return json({ conflicts: result.results.map((row) => {
+    const localOperation = JSON.parse(row.localOperationJSON) as Record<string, unknown>;
+    const cloudOperation = JSON.parse(row.cloudOperationJSON) as Record<string, unknown>;
+    return {
+      id: row.id,
+      entityType: row.entityType,
+      entityID: row.entityID,
+      sourceMemberID: row.sourceMemberID,
+      sourceDeviceID: row.sourceDeviceID,
+      localOperation,
+      cloudOperation,
+      cloudRevision: row.cloudRevision,
+      detectedAt: row.detectedAt,
+      ...conflictReviewDetails(localOperation, cloudOperation),
+    };
+  }) });
+}
+
+async function retireProvablyObsoleteLegacyConflicts(
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<void> {
+  const candidates = await env.DB.prepare(
+    `SELECT synchronization_conflicts.id,
+            synchronization_conflicts.local_operation_json AS localOperationJSON,
+            synchronized_records.operation_json AS currentOperationJSON,
+            synchronized_records.revision AS currentRevision
+       FROM synchronization_conflicts
+       JOIN synchronized_records
+         ON synchronized_records.tenant_id = synchronization_conflicts.tenant_id
+        AND synchronized_records.entity_type = synchronization_conflicts.entity_type
+        AND synchronized_records.entity_id = synchronization_conflicts.entity_id
+      WHERE synchronization_conflicts.tenant_id = ?1
+        AND synchronization_conflicts.status = 'unresolved'`,
+  ).bind(identity.tenantID).all<{
+    id: string;
+    localOperationJSON: string;
+    currentOperationJSON: string;
+    currentRevision: string;
+  }>();
+
+  for (const candidate of candidates.results) {
+    let localOperation: Record<string, unknown>;
+    let currentOperation: Record<string, unknown>;
+    try {
+      localOperation = JSON.parse(candidate.localOperationJSON);
+      currentOperation = JSON.parse(candidate.currentOperationJSON);
+    } catch {
+      continue;
+    }
+    const envelope = versionedMutationEnvelope(localOperation);
+    if ((envelope?.schemaVersion ?? 1) >= 2) continue;
+
+    const localRecord = recordPayloadFromOperation(localOperation);
+    const currentRecord = recordPayloadFromOperation(currentOperation);
+    const sameOperation = String(localOperation.id ?? "") !== ""
+      && String(localOperation.id) === String(currentOperation.id ?? "");
+    const sameRecord = localRecord != null && currentRecord != null
+      && canonicalJSON(localRecord) === canonicalJSON(currentRecord);
+    if (!sameOperation && !sameRecord) continue;
+
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      `UPDATE synchronization_conflicts
+          SET status = 'keptCloud', resolved_at = ?1,
+              resolved_by_member_id = ?2, resolved_by_device_id = ?3,
+              resolver_role = ?4,
+              resolution_reason = ?5,
+              affected_fields_json = '[]', final_revision = ?6
+        WHERE tenant_id = ?7 AND id = ?8 AND status = 'unresolved'`,
+    ).bind(
+      now, identity.memberID, identity.deviceID, identity.role,
+      "Automatically retired: cloud already contains the identical legacy mutation.",
+      candidate.currentRevision, identity.tenantID, candidate.id,
+    ).run();
+  }
 }
 
 async function listSourceConflictResolutions(
@@ -3307,6 +3450,7 @@ async function listConflictAudit(
             synchronization_conflicts.resolver_role AS resolverRole,
             synchronization_conflicts.resolution_reason AS reason,
             synchronization_conflicts.affected_fields_json AS fieldsJSON,
+            synchronization_conflicts.policy_version AS policyVersion,
             synchronization_conflicts.local_operation_json AS localOperationJSON,
             synchronization_conflicts.cloud_operation_json AS cloudOperationJSON,
             synchronization_conflicts.cloud_revision AS originalCloudRevision,
@@ -3330,6 +3474,7 @@ async function listConflictAudit(
     resolverRole: string | null;
     reason: string | null;
     fieldsJSON: string;
+    policyVersion: number;
     localOperationJSON: string;
     cloudOperationJSON: string;
     originalCloudRevision: string;
@@ -3347,6 +3492,7 @@ async function listConflictAudit(
     resolverName: row.resolverName ?? "Unknown authorized user",
     reason: row.reason,
     affectedFields: JSON.parse(row.fieldsJSON),
+    policyVersion: row.policyVersion,
     localOperation: JSON.parse(row.localOperationJSON),
     cloudOperation: JSON.parse(row.cloudOperationJSON),
     originalCloudRevision: row.originalCloudRevision,
@@ -3410,36 +3556,86 @@ async function resolveSynchronizationConflict(
   if (body.resolution !== "keptCloud" && body.resolution !== "keptDevice") {
     return json({ error: "invalid_conflict_resolution" }, 400);
   }
+  const providedReason = body.reason?.trim().slice(0, 500) ?? "";
+  const reason = providedReason || (
+    body.resolution === "keptDevice"
+      ? "Manager or Owner chose the device version without an additional note."
+      : "Manager or Owner chose the cloud version without an additional note."
+  );
   const conflict = await env.DB.prepare(
     `SELECT entity_type AS entityType, entity_id AS entityID,
             local_operation_json AS localOperationJSON,
             cloud_operation_json AS cloudOperationJSON,
-            cloud_revision AS cloudRevision
+            cloud_revision AS cloudRevision, status,
+            resolved_at AS resolvedAt, final_revision AS finalRevision
        FROM synchronization_conflicts
-      WHERE tenant_id = ?1 AND id = ?2 AND status = 'unresolved'`,
+      WHERE tenant_id = ?1 AND id = ?2`,
   ).bind(identity.tenantID, conflictID).first<{
     entityType: string;
     entityID: string;
     localOperationJSON: string;
     cloudOperationJSON: string;
     cloudRevision: string;
+    status: string;
+    resolvedAt: string | null;
+    finalRevision: string | null;
   }>();
   if (!conflict) return json({ error: "conflict_not_found" }, 404);
 
-  let finalRevision = conflict.cloudRevision;
-  if (body.resolution === "keptDevice") {
-    const operation = JSON.parse(conflict.localOperationJSON) as
-      Record<string, unknown>;
-    const current = await env.DB.prepare(
-      `SELECT revision
-         FROM synchronized_records
-        WHERE tenant_id = ?1 AND entity_type = ?2 AND entity_id = ?3`,
+  if (conflict.status !== "unresolved") {
+    return json({
+      id: conflictID,
+      entityType: conflict.entityType,
+      entityID: conflict.entityID,
+      resolution: conflict.status,
+      resolvedAt: conflict.resolvedAt,
+      finalRevision: conflict.finalRevision ?? conflict.cloudRevision,
+      duplicate: true,
+    });
+  }
+
+  const localOperation = JSON.parse(conflict.localOperationJSON) as
+    Record<string, unknown>;
+  const cloudOperation = JSON.parse(conflict.cloudOperationJSON) as
+    Record<string, unknown>;
+  const review = conflictReviewDetails(
+    localOperation,
+    cloudOperation,
+    body.affectedFields ?? [],
+  );
+  const current = await env.DB.prepare(
+    `SELECT revision, operation_json AS operationJSON
+       FROM synchronized_records
+      WHERE tenant_id = ?1 AND entity_type = ?2 AND entity_id = ?3`,
+  ).bind(
+    identity.tenantID, conflict.entityType, conflict.entityID,
+  ).first<{ revision: string; operationJSON: string }>();
+  if (!current) return json({ error: "conflict_record_not_found" }, 404);
+  if (current.revision !== conflict.cloudRevision) {
+    await env.DB.prepare(
+      `UPDATE synchronization_conflicts
+          SET cloud_operation_json = ?1, cloud_revision = ?2
+        WHERE tenant_id = ?3 AND id = ?4 AND status = 'unresolved'
+          AND cloud_revision = ?5`,
     ).bind(
-      identity.tenantID, conflict.entityType, conflict.entityID,
-    ).first<{ revision: string }>();
-    if (!current) return json({ error: "conflict_record_not_found" }, 404);
-    operation.id = crypto.randomUUID();
-    operation.idempotencyKey = `conflict-resolution-${conflictID}`;
+      current.operationJSON, current.revision, identity.tenantID, conflictID,
+      conflict.cloudRevision,
+    ).run();
+    return json({
+      error: "conflict_changed_since_review",
+      currentRevision: current.revision,
+    }, 409);
+  }
+
+  let finalRevision = conflict.cloudRevision;
+  const resolutionOperationID = crypto.randomUUID();
+  const resolutionKey = `conflict-resolution-${conflictID}`;
+  const now = new Date().toISOString();
+  let acceptedOperation: Record<string, unknown>;
+  if (body.resolution === "keptDevice") {
+    let operation = structuredClone(localOperation);
+    operation.id = resolutionOperationID;
+    operation.idempotencyKey = resolutionKey;
     operation.baseRevision = current.revision;
     operation.metadata = {
       ...(operation.metadata && typeof operation.metadata === "object"
@@ -3447,79 +3643,216 @@ async function resolveSynchronizationConflict(
         : {}),
       conflictResolution: "keptLocal",
       serverConflictID: conflictID,
+      conflictPolicyVersion: String(review.policyVersion),
     };
-    const accepted = await acceptOperation(
-      new Request("https://pfss.internal/v1/operations", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(operation),
-      }),
-      env,
-      identity,
-    );
-    if (!accepted.ok) return accepted;
-    finalRevision = (await accepted.json<{ revision: string }>()).revision;
-  } else {
-    const receipt = JSON.parse(conflict.cloudOperationJSON) as
+    const localRecord = recordPayloadFromOperation(operation);
+    const currentOperation = JSON.parse(current.operationJSON) as
       Record<string, unknown>;
-    const receiptID = crypto.randomUUID();
-    const receiptKey = `conflict-resolution-${conflictID}`;
-    receipt.id = receiptID;
-    receipt.idempotencyKey = receiptKey;
+    const appendOnlyResolution = automaticallyMergeAppendOnlyRecord(
+      operation,
+      currentOperation,
+      current.revision,
+    );
+    if (appendOnlyResolution) {
+      operation = appendOnlyResolution;
+    } else if (localRecord) {
+      const rebasedOperation = rewriteRecordMutation(
+        operation,
+        localRecord,
+        current.revision,
+        {},
+      );
+      if (!rebasedOperation) {
+        return json({ error: "invalid_conflict_operation" }, 400);
+      }
+      operation = rebasedOperation;
+    } else {
+      // Legacy schema-1 conflict payloads have no embedded mutation revision.
+      // Their single outer revision remains the authoritative rebase target.
+      operation.baseRevision = current.revision;
+    }
+    const envelopeError = validateVersionedMutationEnvelope(operation, identity);
+    if (envelopeError) return json({ error: envelopeError }, 400);
+    finalRevision = crypto.randomUUID();
+    acceptedOperation = operation;
+  } else {
+    const receipt = structuredClone(cloudOperation);
+    receipt.id = resolutionOperationID;
+    receipt.idempotencyKey = resolutionKey;
     receipt.metadata = {
       ...(receipt.metadata && typeof receipt.metadata === "object"
         ? receipt.metadata as Record<string, unknown>
         : {}),
       conflictResolution: "keptRemote",
       serverConflictID: conflictID,
+      conflictPolicyVersion: String(review.policyVersion),
     };
-    await env.DB.prepare(
+    acceptedOperation = receipt;
+  }
+
+  const acceptedOperationJSON = JSON.stringify(acceptedOperation);
+  const statements = [
+    env.DB.prepare(
+      `UPDATE synchronization_conflicts
+          SET status = ?1, resolved_at = ?2,
+              resolved_by_member_id = ?3, resolved_by_device_id = ?4,
+              resolver_role = ?5, resolution_reason = ?6,
+              affected_fields_json = ?7, final_revision = ?8,
+              policy_version = ?9
+        WHERE tenant_id = ?10 AND id = ?11 AND status = 'unresolved'
+          AND cloud_revision = ?12
+          AND EXISTS (
+            SELECT 1 FROM synchronized_records
+             WHERE tenant_id = ?10 AND entity_type = ?13 AND entity_id = ?14
+               AND revision = ?12
+          )`,
+    ).bind(
+      body.resolution, now, identity.memberID, identity.deviceID,
+      identity.role, reason, JSON.stringify(review.affectedFields),
+      finalRevision, review.policyVersion, identity.tenantID, conflictID,
+      conflict.cloudRevision, conflict.entityType, conflict.entityID,
+    ),
+  ];
+  if (body.resolution === "keptDevice") {
+    statements.push(env.DB.prepare(
+      `UPDATE synchronized_records
+          SET revision = ?1, operation_json = ?2,
+              updated_by_member_id = ?3, updated_by_device_id = ?4,
+              updated_at = ?5
+        WHERE tenant_id = ?6 AND entity_type = ?7 AND entity_id = ?8
+          AND revision = ?9
+          AND EXISTS (
+            SELECT 1 FROM synchronization_conflicts
+             WHERE tenant_id = ?6 AND id = ?10 AND status = 'keptDevice'
+               AND final_revision = ?1 AND resolved_at = ?5
+          )`,
+    ).bind(
+      finalRevision, acceptedOperationJSON, identity.memberID,
+      identity.deviceID, now, identity.tenantID, conflict.entityType,
+      conflict.entityID, conflict.cloudRevision, conflictID,
+    ));
+    if (conflict.entityType === "employee") {
+      statements.push(env.DB.prepare(
+        `DELETE FROM operations_account_email_index
+          WHERE tenant_id = ?1 AND source_kind = 'employeeRecord'
+            AND source_id = ?2
+            AND EXISTS (
+              SELECT 1 FROM synchronization_conflicts
+               WHERE tenant_id = ?1 AND id = ?3 AND status = 'keptDevice'
+                 AND final_revision = ?4 AND resolved_at = ?5
+            )`,
+      ).bind(
+        identity.tenantID, conflict.entityID, conflictID, finalRevision, now,
+      ));
+      const contact = employeeSearchContactFromOperation(acceptedOperation);
+      if (contact) {
+        statements.push(env.DB.prepare(
+          `INSERT INTO operations_account_email_index
+            (tenant_id, source_kind, source_id, normalized_email,
+             display_name, role_hint, updated_at)
+           SELECT ?1, 'employeeRecord', ?2, ?3, ?4, ?5, ?6
+            WHERE EXISTS (
+              SELECT 1 FROM synchronization_conflicts
+               WHERE tenant_id = ?1 AND id = ?7 AND status = 'keptDevice'
+                 AND final_revision = ?8 AND resolved_at = ?6
+            )`,
+        ).bind(
+          identity.tenantID, conflict.entityID, contact.normalizedEmail,
+          contact.displayName || null, contact.roleHint, now, conflictID,
+          finalRevision,
+        ));
+      }
+    }
+  }
+  statements.push(
+    env.DB.prepare(
       `INSERT INTO synchronized_operations
         (id, tenant_id, device_id, idempotency_key, operation_type,
          entity_type, entity_id, action_name, payload_json, created_at,
          accepted_at, revision)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11)`,
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11
+        WHERE EXISTS (
+          SELECT 1 FROM synchronization_conflicts
+           WHERE tenant_id = ?2 AND id = ?12 AND status = ?13
+             AND final_revision = ?11 AND resolved_at = ?10
+        )`,
     ).bind(
-      receiptID, identity.tenantID, identity.deviceID, receiptKey,
-      String(receipt.type ?? "recordMutation"),
-      String(receipt.entityType ?? "custom"),
-      receipt.entityID ? String(receipt.entityID) : null,
-      String(receipt.actionName ?? "upsertRecord"),
-      JSON.stringify(receipt), new Date().toISOString(),
-      conflict.cloudRevision,
-    ).run();
+      resolutionOperationID, identity.tenantID, identity.deviceID,
+      resolutionKey, String(acceptedOperation.type ?? "recordMutation"),
+      conflict.entityType, conflict.entityID,
+      String(acceptedOperation.actionName ?? "upsertRecord"),
+      acceptedOperationJSON, now, finalRevision, conflictID, body.resolution,
+    ),
+    env.DB.prepare(
+      `INSERT INTO synchronization_change_log
+        (tenant_id, tenant_sequence, operation_id, device_id, revision,
+         payload_json, accepted_at)
+       SELECT ?1, COALESCE(MAX(tenant_sequence), 0) + 1, ?2, ?3, ?4, ?5, ?6
+         FROM synchronization_change_log
+        WHERE tenant_id = ?1
+          AND EXISTS (
+            SELECT 1 FROM synchronization_conflicts
+             WHERE tenant_id = ?1 AND id = ?7 AND status = ?8
+               AND final_revision = ?4 AND resolved_at = ?6
+          )`,
+    ).bind(
+      identity.tenantID, resolutionOperationID, identity.deviceID,
+      finalRevision, acceptedOperationJSON, now, conflictID, body.resolution,
+    ),
+    env.DB.prepare(
+      `INSERT INTO access_audit_events
+        (id, tenant_id, actor_member_id, actor_device_id, event_type,
+         metadata_json, created_at)
+       SELECT ?1, ?2, ?3, ?4, 'sync.conflict_resolved', ?5, ?6
+        WHERE EXISTS (
+          SELECT 1 FROM synchronization_conflicts
+           WHERE tenant_id = ?2 AND id = ?7 AND status = ?8
+             AND final_revision = ?9 AND resolved_at = ?6
+        )`,
+    ).bind(
+      crypto.randomUUID(), identity.tenantID, identity.memberID,
+      identity.deviceID, JSON.stringify({
+        conflictID,
+        resolution: body.resolution,
+        resolverRole: identity.role,
+        affectedFields: JSON.stringify(review.affectedFields),
+        finalRevision,
+        reason,
+        policyVersion: String(review.policyVersion),
+      }), now, conflictID, body.resolution, finalRevision,
+    ),
+  );
+  let results: D1Result<unknown>[];
+  try {
+    results = await env.DB.batch(statements);
+  } catch {
+    const existing = await env.DB.prepare(
+      `SELECT status, resolved_at AS resolvedAt, final_revision AS finalRevision
+         FROM synchronization_conflicts
+        WHERE tenant_id = ?1 AND id = ?2`,
+    ).bind(identity.tenantID, conflictID).first<{
+      status: string;
+      resolvedAt: string | null;
+      finalRevision: string | null;
+    }>();
+    if (existing && existing.status !== "unresolved") {
+      return json({
+        id: conflictID,
+        entityType: conflict.entityType,
+        entityID: conflict.entityID,
+        resolution: existing.status,
+        resolvedAt: existing.resolvedAt,
+        finalRevision: existing.finalRevision ?? conflict.cloudRevision,
+        duplicate: true,
+      });
+    }
+    return json({ error: "conflict_resolution_failed" }, 409);
   }
-
-  const now = new Date().toISOString();
-  const result = await env.DB.prepare(
-    `UPDATE synchronization_conflicts
-        SET status = ?1, resolved_at = ?2,
-            resolved_by_member_id = ?3, resolved_by_device_id = ?4,
-            resolver_role = ?5, resolution_reason = ?6,
-            affected_fields_json = ?7, final_revision = ?8
-      WHERE tenant_id = ?9 AND id = ?10 AND status = 'unresolved'`,
-  ).bind(
-    body.resolution, now, identity.memberID, identity.deviceID,
-    identity.role, body.reason?.trim().slice(0, 500) || null,
-    JSON.stringify((body.affectedFields ?? []).slice(0, 100)),
-    finalRevision, identity.tenantID, conflictID,
-  ).run();
-  if (result.meta.changes !== 1) {
-    return json({ error: "conflict_not_found" }, 404);
+  const recordResultIndex = body.resolution === "keptDevice" ? 1 : null;
+  if (results[0].meta.changes !== 1 ||
+      (recordResultIndex !== null && results[recordResultIndex].meta.changes !== 1)) {
+    return json({ error: "conflict_changed_since_review" }, 409);
   }
-  await accessAuditStatement(env, identity.tenantID, "sync.conflict_resolved", {
-    actorMemberID: identity.memberID,
-    actorDeviceID: identity.deviceID,
-    metadata: {
-      conflictID,
-      resolution: body.resolution,
-      resolverRole: identity.role,
-      affectedFields: JSON.stringify(body.affectedFields ?? []),
-      finalRevision,
-      reason: body.reason?.trim().slice(0, 500) ?? "",
-    },
-    createdAt: now,
-  }).run();
   return json({
     id: conflictID,
     entityType: conflict.entityType,
@@ -3527,6 +3860,200 @@ async function resolveSynchronizationConflict(
     resolution: body.resolution,
     resolvedAt: now,
     finalRevision,
+    policyVersion: review.policyVersion,
+    affectedFields: review.affectedFields,
+  });
+}
+
+async function discardRevokedDeviceSynchronizationConflicts(
+  request: Request,
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  if (!canResolveConflicts(identity)) return json({ error: "forbidden" }, 403);
+  const body = await request.json<{
+    sourceDeviceID?: string;
+    expectedCount?: number;
+    reason?: string;
+  }>();
+  const sourceDeviceID = body.sourceDeviceID?.trim() ?? "";
+  const expectedCount = Number.isInteger(body.expectedCount)
+    ? Number(body.expectedCount)
+    : 0;
+  const reason = body.reason?.trim().slice(0, 500) ?? "";
+  if (!sourceDeviceID || expectedCount < 1 || expectedCount > 1_000) {
+    return json({ error: "invalid_revoked_device_conflict_scope" }, 400);
+  }
+  if (reason.length < 10) {
+    return json({ error: "conflict_resolution_reason_required" }, 400);
+  }
+  const sourceDevice = await env.DB.prepare(
+    `SELECT revoked_at AS revokedAt FROM devices
+      WHERE tenant_id = ?1 AND id = ?2`,
+  ).bind(identity.tenantID, sourceDeviceID).first<{ revokedAt: string | null }>();
+  if (!sourceDevice) return json({ error: "source_device_not_found" }, 404);
+  if (!sourceDevice.revokedAt) {
+    return json({ error: "source_device_must_be_revoked" }, 409);
+  }
+  const scope = await env.DB.prepare(
+    `SELECT COUNT(*) AS count,
+            SUM(CASE WHEN synchronized_records.revision IS NULL THEN 1 ELSE 0 END)
+              AS missingRecords
+       FROM synchronization_conflicts
+       LEFT JOIN synchronized_records
+         ON synchronized_records.tenant_id = synchronization_conflicts.tenant_id
+        AND synchronized_records.entity_type = synchronization_conflicts.entity_type
+        AND synchronized_records.entity_id = synchronization_conflicts.entity_id
+      WHERE synchronization_conflicts.tenant_id = ?1
+        AND synchronization_conflicts.source_device_id = ?2
+        AND synchronization_conflicts.status = 'unresolved'`,
+  ).bind(identity.tenantID, sourceDeviceID).first<{
+    count: number;
+    missingRecords: number;
+  }>();
+  if (Number(scope?.count ?? 0) !== expectedCount) {
+    return json({
+      error: "revoked_device_conflict_count_changed",
+      currentCount: Number(scope?.count ?? 0),
+    }, 409);
+  }
+  if (Number(scope?.missingRecords ?? 0) !== 0) {
+    return json({ error: "conflict_record_not_found" }, 409);
+  }
+
+  const now = new Date().toISOString();
+  const batchID = crypto.randomUUID();
+  const exactScope = `tenant_id = ?1 AND source_device_id = ?2
+    AND status = 'unresolved'
+    AND (SELECT COUNT(*) FROM synchronization_conflicts
+          WHERE tenant_id = ?1 AND source_device_id = ?2
+            AND status = 'unresolved') = ?3`;
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE synchronization_conflicts
+          SET status = 'keptCloud', resolved_at = ?4,
+              resolved_by_member_id = ?5, resolved_by_device_id = ?6,
+              resolver_role = ?7, resolution_reason = ?8,
+              affected_fields_json = '[]',
+              final_revision = (
+                SELECT revision FROM synchronized_records
+                 WHERE synchronized_records.tenant_id = synchronization_conflicts.tenant_id
+                   AND synchronized_records.entity_type = synchronization_conflicts.entity_type
+                   AND synchronized_records.entity_id = synchronization_conflicts.entity_id
+              ), policy_version = 1
+        WHERE ${exactScope}`,
+    ).bind(
+      identity.tenantID, sourceDeviceID, expectedCount, now,
+      identity.memberID, identity.deviceID, identity.role, reason,
+    ),
+    env.DB.prepare(
+      `INSERT INTO synchronized_operations
+        (id, tenant_id, device_id, idempotency_key, operation_type,
+         entity_type, entity_id, action_name, payload_json, created_at,
+         accepted_at, revision)
+       SELECT 'conflict-resolution-' || id, tenant_id, ?1,
+              'conflict-resolution-' || id,
+              COALESCE(json_extract(cloud_operation_json, '$.type'), 'recordMutation'),
+              entity_type, entity_id,
+              COALESCE(json_extract(cloud_operation_json, '$.actionName'), 'upsertRecord'),
+              json_set(cloud_operation_json,
+                '$.id', id,
+                '$.idempotencyKey', 'conflict-resolution-' || id,
+                '$.metadata.conflictResolution', 'keptRemote',
+                '$.metadata.serverConflictID', id),
+              ?2, ?2, final_revision
+         FROM synchronization_conflicts
+        WHERE tenant_id = ?3 AND source_device_id = ?4
+          AND status = 'keptCloud' AND resolved_at = ?2`,
+    ).bind(identity.deviceID, now, identity.tenantID, sourceDeviceID),
+    env.DB.prepare(
+      `INSERT INTO synchronization_change_log
+        (tenant_id, tenant_sequence, operation_id, device_id, revision,
+         payload_json, accepted_at)
+       SELECT ?1, base.maximumSequence + ranked.position,
+              'conflict-resolution-' || ranked.id, ?2,
+              ranked.finalRevision, ranked.payloadJSON, ?3
+         FROM (
+           SELECT id, final_revision AS finalRevision,
+                  json_set(cloud_operation_json,
+                    '$.id', id,
+                    '$.idempotencyKey', 'conflict-resolution-' || id,
+                    '$.metadata.conflictResolution', 'keptRemote',
+                    '$.metadata.serverConflictID', id) AS payloadJSON,
+                  ROW_NUMBER() OVER (ORDER BY detected_at, id) AS position
+             FROM synchronization_conflicts
+            WHERE tenant_id = ?1 AND source_device_id = ?4
+              AND status = 'keptCloud' AND resolved_at = ?3
+         ) AS ranked
+         CROSS JOIN (
+           SELECT COALESCE(MAX(tenant_sequence), 0) AS maximumSequence
+             FROM synchronization_change_log WHERE tenant_id = ?1
+         ) AS base`,
+    ).bind(identity.tenantID, identity.deviceID, now, sourceDeviceID),
+    env.DB.prepare(
+      `INSERT INTO access_audit_events
+        (id, tenant_id, actor_member_id, actor_device_id, event_type,
+         metadata_json, created_at)
+       SELECT 'conflict-audit-' || id, tenant_id, ?1, ?2,
+              'sync.conflict_resolved',
+              json_object(
+                'conflictID', id, 'resolution', 'keptCloud',
+                'resolverRole', ?3, 'affectedFields', '[]',
+                'finalRevision', final_revision, 'reason', ?4,
+                'policyVersion', '1', 'batchID', ?5,
+                'sourceDeviceID', source_device_id), ?6
+         FROM synchronization_conflicts
+        WHERE tenant_id = ?7 AND source_device_id = ?8
+          AND status = 'keptCloud' AND resolved_at = ?6`,
+    ).bind(
+      identity.memberID, identity.deviceID, identity.role, reason,
+      batchID, now, identity.tenantID, sourceDeviceID,
+    ),
+  ]);
+  if (results[0].meta.changes !== expectedCount ||
+      results[1].meta.changes !== expectedCount ||
+      results[2].meta.changes !== expectedCount ||
+      results[3].meta.changes !== expectedCount) {
+    return json({ error: "revoked_device_conflict_cleanup_failed" }, 409);
+  }
+  return json({
+    sourceDeviceID,
+    resolvedCount: expectedCount,
+    resolution: "keptCloud",
+    resolvedAt: now,
+    batchID,
+  });
+}
+
+async function revokedDeviceSynchronizationConflictScope(
+  url: URL,
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  if (!canResolveConflicts(identity)) return json({ error: "forbidden" }, 403);
+  const sourceDeviceID = url.searchParams.get("sourceDeviceID")?.trim() ?? "";
+  if (!sourceDeviceID) {
+    return json({ error: "invalid_revoked_device_conflict_scope" }, 400);
+  }
+  const scope = await env.DB.prepare(
+    `SELECT devices.revoked_at AS revokedAt,
+            COUNT(synchronization_conflicts.id) AS conflictCount
+       FROM devices
+       LEFT JOIN synchronization_conflicts
+         ON synchronization_conflicts.tenant_id = devices.tenant_id
+        AND synchronization_conflicts.source_device_id = devices.id
+        AND synchronization_conflicts.status = 'unresolved'
+      WHERE devices.tenant_id = ?1 AND devices.id = ?2
+      GROUP BY devices.id, devices.revoked_at`,
+  ).bind(identity.tenantID, sourceDeviceID).first<{
+    revokedAt: string | null;
+    conflictCount: number;
+  }>();
+  if (!scope) return json({ error: "source_device_not_found" }, 404);
+  return json({
+    sourceDeviceID,
+    conflictCount: Number(scope.conflictCount),
+    isRevoked: scope.revokedAt != null,
   });
 }
 
@@ -4081,6 +4608,14 @@ function employeeRolesFromOperation(
   }
 }
 
+function accessRoleFromEmployeeOperation(
+  operation: Record<string, unknown>,
+): "manager" | "member" | null {
+  const roles = employeeRolesFromOperation(operation);
+  if (!roles) return null;
+  return roles.includes("Manager") ? "manager" : "member";
+}
+
 function recordPayloadFromOperation(
   operation: Record<string, unknown>,
 ): Record<string, unknown> | null {
@@ -4092,6 +4627,179 @@ function recordPayloadFromOperation(
     return JSON.parse(atob(mutation.recordData ?? "")) as Record<string, unknown>;
   } catch {
     return null;
+  }
+}
+
+type VersionedMutationEnvelope = {
+  schemaVersion?: number;
+  operationID?: string;
+  tenantID?: string | null;
+  deviceID?: string | null;
+  entityType?: string;
+  recordID?: string;
+  baseRevision?: string | null;
+  mutationKind?: string;
+  changedFields?: string[];
+  commandName?: string | null;
+  baseRecordData?: string | null;
+  recordData?: string | null;
+};
+
+function versionedMutationEnvelope(
+  operation: Record<string, unknown>,
+): VersionedMutationEnvelope | null {
+  try {
+    const payload = operation.payload as { body?: string } | undefined;
+    if (!payload?.body) return null;
+    return JSON.parse(atob(payload.body)) as VersionedMutationEnvelope;
+  } catch {
+    return null;
+  }
+}
+
+function decodedRecordData(value: string | null | undefined): Record<string, unknown> | null {
+  if (!value) return null;
+  try {
+    const decoded = JSON.parse(atob(value));
+    return decoded !== null && typeof decoded === "object" && !Array.isArray(decoded)
+      ? decoded as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+const appendOnlyFieldsByEntity: Record<string, Set<string>> = {
+  job: new Set(["timelineEvents"]),
+  assignment: new Set(["history"]),
+  invoice: new Set(["receipts"]),
+};
+
+const commandFieldsByEntity: Record<string, Record<string, Set<string>>> =
+  Object.fromEntries(
+    Object.entries(synchronizationPolicyContract.commandsByEntity).map(
+      ([entityType, commands]) => [
+        entityType,
+        Object.fromEntries(Object.entries(commands).map(
+          ([command, fields]) => [command, new Set(fields)],
+        )),
+      ]),
+  );
+
+function fieldsForDomainCommand(
+  entityType: string,
+  commandName: string,
+): Set<string> | undefined {
+  return commandFieldsByEntity[entityType]?.[commandName]
+    ?? commandFieldsByEntity["*"]?.[commandName];
+}
+
+function topLevelChangedFields(
+  base: Record<string, unknown>,
+  changed: Record<string, unknown>,
+): string[] {
+  return [...new Set([...Object.keys(base), ...Object.keys(changed)])]
+    .filter((field) => canonicalJSON(base[field]) !== canonicalJSON(changed[field]))
+    .sort();
+}
+
+function validateVersionedMutationEnvelope(
+  operation: Record<string, unknown>,
+  identity: DeviceIdentity,
+): string | null {
+  const payload = operation.payload as {
+    body?: string;
+    contentType?: string;
+  } | undefined;
+  // Legacy operations either have no encoded mutation body or use a
+  // non-JSON transport contract. They remain supported and continue through
+  // the existing authorization/conflict rules below.
+  if (!payload?.body) return null;
+  try {
+    const mutation = JSON.parse(atob(payload?.body ?? "")) as VersionedMutationEnvelope;
+    // Schema 1 is the supported legacy whole-record payload.
+    if ((mutation.schemaVersion ?? 1) < 2) return null;
+    if (mutation.schemaVersion !== 2) return "unsupported_mutation_schema";
+    if (mutation.operationID?.toLowerCase() !== String(operation.id ?? "").toLowerCase()) {
+      return "mutation_operation_mismatch";
+    }
+    if (mutation.entityType !== String(operation.entityType ?? "")) {
+      return "mutation_entity_mismatch";
+    }
+    if (mutation.recordID?.toLowerCase() !== String(operation.entityID ?? "").toLowerCase()) {
+      return "mutation_record_mismatch";
+    }
+    const outerBase = operation.baseRevision == null
+      ? null : String(operation.baseRevision);
+    if ((mutation.baseRevision ?? null) !== outerBase) {
+      return "mutation_base_revision_mismatch";
+    }
+    if (mutation.tenantID != null && mutation.tenantID !== identity.tenantID) {
+      return "mutation_tenant_mismatch";
+    }
+    if (
+      mutation.deviceID != null &&
+      mutation.deviceID.toLowerCase() !== identity.deviceID.toLowerCase()
+    ) {
+      return "mutation_device_mismatch";
+    }
+    const allowedKinds = new Set(["wholeRecord", "fieldPatch", "appendFact", "domainCommand"]);
+    if (!allowedKinds.has(mutation.mutationKind ?? "")) {
+      return "unsupported_mutation_kind";
+    }
+    if (!mutation.recordData) {
+      return "mutation_record_data_required";
+    }
+    const record = decodedRecordData(mutation.recordData);
+    if (!record) return "invalid_mutation_record_data";
+    if (mutation.mutationKind !== "wholeRecord") {
+      const fields = mutation.changedFields;
+      if (!Array.isArray(fields) || fields.length === 0 ||
+          fields.some((field) => typeof field !== "string" || !field) ||
+          new Set(fields).size !== fields.length) {
+        return "mutation_changed_fields_required";
+      }
+      if (mutation.baseRevision && !decodedRecordData(mutation.baseRecordData)) {
+        return "mutation_base_record_required";
+      }
+      if (mutation.mutationKind === "appendFact") {
+        const allowed = appendOnlyFieldsByEntity[mutation.entityType ?? ""] ?? new Set<string>();
+        if (fields.some((field) => !allowed.has(field))) {
+          return "invalid_append_only_field";
+        }
+      }
+if (mutation.mutationKind === "domainCommand") {
+  const commandName = mutation.commandName ?? "";
+  const allowed = fieldsForDomainCommand(mutation.entityType ?? "", commandName);
+  const assignmentCommandNames = [
+    "assignment.assign",
+    "assignment.reschedule",
+    "assignment.transition",
+    "assignment.updateNotes",
+  ];
+  const assignmentCompatibleFields = new Set<string>(
+    assignmentCommandNames.flatMap((name) =>
+      Array.from(fieldsForDomainCommand("assignment", name) ?? [])
+    )
+  );
+  const isCompatibleCompositeAssignment =
+    assignmentCommandNames.includes(commandName) &&
+    fields.every((field) => assignmentCompatibleFields.has(field));
+
+  if (
+    !allowed ||
+    (fields.some((field) => !allowed.has(field)) &&
+      !isCompatibleCompositeAssignment)
+  ) {
+    return "invalid_domain_command";
+  }
+}
+    }
+    return null;
+  } catch {
+    return payload.contentType === "application/json"
+      ? "invalid_mutation_envelope"
+      : null;
   }
 }
 
@@ -4160,6 +4868,296 @@ function preserveCloudAssignmentAuthority(
   } catch {
     return submittedOperation;
   }
+}
+
+const jobWorkflowMergeFields = new Set([
+  "status", "workflowState", "timelineEvents", "setupStartDate",
+  "workStartDate", "completedDate",
+]);
+
+function canonicalJSON(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJSON).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalJSON(record[key])}`
+    ).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+function fieldStateEqual(
+  lhs: Record<string, unknown>,
+  rhs: Record<string, unknown>,
+  field: string,
+): boolean {
+  const lhsHas = Object.prototype.hasOwnProperty.call(lhs, field);
+  const rhsHas = Object.prototype.hasOwnProperty.call(rhs, field);
+  return lhsHas === rhsHas && (!lhsHas || canonicalJSON(lhs[field]) === canonicalJSON(rhs[field]));
+}
+
+function appendFactArray(value: unknown): Array<Record<string, unknown>> | null {
+  const candidates = Array.isArray(value)
+    ? value
+    : value !== null && typeof value === "object" && !Array.isArray(value) &&
+        Array.isArray((value as Record<string, unknown>).events)
+      ? (value as Record<string, unknown>).events as unknown[]
+      : null;
+  if (!candidates) return null;
+  const facts: Array<Record<string, unknown>> = [];
+  for (const candidate of candidates) {
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+    facts.push(candidate as Record<string, unknown>);
+  }
+  return facts;
+}
+
+function appendFactsByID(value: unknown): Map<string, Record<string, unknown>> | null {
+  const facts = appendFactArray(value);
+  if (!facts) return null;
+  const result = new Map<string, Record<string, unknown>>();
+  for (const fact of facts) {
+    const id = String(fact.id ?? "").toLowerCase();
+    if (!id) return null;
+    const existing = result.get(id);
+    if (existing && canonicalJSON(existing) !== canonicalJSON(fact)) return null;
+    result.set(id, fact);
+  }
+  return result;
+}
+
+function mergeAppendOnlyFacts(
+  baseValue: unknown,
+  deviceValue: unknown,
+  cloudValue: unknown,
+): unknown | null {
+  const base = appendFactsByID(baseValue ?? []);
+  const device = appendFactsByID(deviceValue ?? []);
+  const cloud = appendFactsByID(cloudValue ?? []);
+  if (!base || !device || !cloud) return null;
+  for (const [id, fact] of base) {
+    if (canonicalJSON(device.get(id)) !== canonicalJSON(fact) ||
+        canonicalJSON(cloud.get(id)) !== canonicalJSON(fact)) return null;
+  }
+  const merged = new Map(cloud);
+  for (const [id, fact] of device) {
+    const existing = merged.get(id);
+    if (existing && canonicalJSON(existing) !== canonicalJSON(fact)) return null;
+    merged.set(id, fact);
+  }
+  const mergedFacts = [...merged.values()];
+  const template = cloudValue ?? deviceValue ?? baseValue;
+  if (template !== null && typeof template === "object" && !Array.isArray(template) &&
+      Array.isArray((template as Record<string, unknown>).events)) {
+    return {
+      ...(template as Record<string, unknown>),
+      events: mergedFacts,
+    };
+  }
+  return mergedFacts;
+}
+
+function withoutJobWorkflowFields(record: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(record).filter(([key]) => !jobWorkflowMergeFields.has(key)),
+  );
+}
+
+function jobStatusRank(value: unknown): number {
+  return ["To Be Scheduled", "Scheduled", "Assigned", "In Progress", "Completed"]
+    .indexOf(String(value));
+}
+
+function eventTimestamp(event: Record<string, unknown>): number {
+  const parsed = Date.parse(String(event.timestamp ?? ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function mergeTimelineEvents(cloudValue: unknown, deviceValue: unknown): Array<Record<string, unknown>> | null {
+  if (!Array.isArray(cloudValue) || !Array.isArray(deviceValue)) return null;
+  const merged = new Map<string, Record<string, unknown>>();
+  for (const candidate of [...cloudValue, ...deviceValue]) {
+    if (candidate === null || typeof candidate !== "object") return null;
+    const event = candidate as Record<string, unknown>;
+    const id = String(event.id ?? "").toLowerCase();
+    if (!id) return null;
+    const existing = merged.get(id);
+    if (existing && canonicalJSON(existing) !== canonicalJSON(event)) return null;
+    merged.set(id, event);
+  }
+  return [...merged.values()].sort((lhs, rhs) => eventTimestamp(lhs) - eventTimestamp(rhs));
+}
+
+function rewriteRecordMutation(
+  operation: Record<string, unknown>,
+  record: Record<string, unknown>,
+  baseRevision: string,
+  metadata: Record<string, unknown>,
+  baseRecord?: Record<string, unknown>,
+): Record<string, unknown> | null {
+  try {
+    const rewritten = structuredClone(operation);
+    const payload = rewritten.payload as { body?: string } | undefined;
+    if (!payload) return null;
+    const mutation = JSON.parse(atob(payload.body ?? "")) as {
+      operationID?: string;
+      baseRevision?: string | null;
+      recordData?: string;
+      baseRecordData?: string | null;
+    };
+    mutation.operationID = String(rewritten.id ?? mutation.operationID ?? "");
+    mutation.baseRevision = baseRevision;
+    mutation.recordData = utf8Base64(record);
+    mutation.baseRecordData = utf8Base64(baseRecord ?? record);
+    payload.body = utf8Base64(mutation);
+    rewritten.baseRevision = baseRevision;
+    rewritten.metadata = {
+      ...((rewritten.metadata as Record<string, unknown> | undefined) ?? {}),
+      ...metadata,
+    };
+    return rewritten;
+  } catch {
+    return null;
+  }
+}
+
+function verifiedThreeWayMerge(
+  submittedOperation: Record<string, unknown>,
+  acceptedOperation: Record<string, unknown>,
+  currentRevision: string,
+): Record<string, unknown> | null {
+  const envelope = versionedMutationEnvelope(submittedOperation);
+  if (!envelope || (envelope.schemaVersion ?? 1) < 2 ||
+      envelope.mutationKind === "wholeRecord") return null;
+  const base = decodedRecordData(envelope.baseRecordData);
+  const device = decodedRecordData(envelope.recordData);
+  const cloud = recordPayloadFromOperation(acceptedOperation);
+  const declared = [...new Set(envelope.changedFields ?? [])].sort();
+  if (!base || !device || !cloud || declared.length === 0 ||
+      canonicalJSON(topLevelChangedFields(base, device)) !== canonicalJSON(declared)) return null;
+
+  const merged = structuredClone(cloud);
+  for (const field of declared) {
+    if (appendOnlyFieldsByEntity[envelope.entityType ?? ""]?.has(field)) {
+      const facts = mergeAppendOnlyFacts(base[field], device[field], cloud[field]);
+      if (!facts) return null;
+      merged[field] = facts;
+      continue;
+    }
+    if (fieldStateEqual(cloud, base, field)) {
+      if (Object.prototype.hasOwnProperty.call(device, field)) merged[field] = device[field];
+      else delete merged[field];
+    } else if (!fieldStateEqual(cloud, device, field)) {
+      return null;
+    }
+  }
+  return rewriteRecordMutation(submittedOperation, merged, currentRevision, {
+    verifiedThreeWayMerge: true,
+    mergedFields: declared,
+  }, cloud);
+}
+
+// Compatibility bridge for records written by clients that still submit a
+// complete record after appending an immutable fact. Only append-only fields
+// may differ, and facts are unioned by their stable IDs. Any simultaneous
+// status, scheduling, assignment, archive, or other mutable-field change is
+// deliberately left for the normal conflict workflow.
+function automaticallyMergeAppendOnlyRecord(
+  submittedOperation: Record<string, unknown>,
+  acceptedOperation: Record<string, unknown>,
+  currentRevision: string,
+): Record<string, unknown> | null {
+  const entityType = String(submittedOperation.entityType ?? "");
+  const appendOnlyFields = appendOnlyFieldsByEntity[entityType];
+  if (!appendOnlyFields?.size) return null;
+
+  const device = recordPayloadFromOperation(submittedOperation);
+  const cloud = recordPayloadFromOperation(acceptedOperation);
+  if (!device || !cloud) return null;
+
+  const differences = topLevelChangedFields(cloud, device);
+  if (differences.length === 0 || differences.some((field) => !appendOnlyFields.has(field))) {
+    return null;
+  }
+
+  const merged = structuredClone(cloud);
+  for (const field of differences) {
+    const facts = entityType === "job" && field === "timelineEvents"
+      ? mergeTimelineEvents(cloud[field] ?? [], device[field] ?? [])
+      : mergeAppendOnlyFacts([], device[field], cloud[field]);
+    if (!facts) return null;
+    merged[field] = facts;
+  }
+
+  return rewriteRecordMutation(submittedOperation, merged, currentRevision, {
+    serverMergePolicy: "appendOnlyUnionV1",
+    serverMergedFields: differences.join(","),
+  }, cloud);
+}
+
+function automaticallyRebaseSameDeviceSuccessor(
+  submittedOperation: Record<string, unknown>,
+  acceptedOperation: Record<string, unknown>,
+  currentRevision: string,
+): Record<string, unknown> | null {
+  const submittedSequence = Number(submittedOperation.sequenceNumber);
+  const acceptedSequence = Number(acceptedOperation.sequenceNumber);
+  if (
+    !Number.isSafeInteger(submittedSequence) ||
+    !Number.isSafeInteger(acceptedSequence) ||
+    submittedSequence <= acceptedSequence
+  ) return null;
+
+  const submittedRecord = recordPayloadFromOperation(submittedOperation);
+  if (!submittedRecord) return null;
+  return rewriteRecordMutation(
+    submittedOperation,
+    submittedRecord,
+    currentRevision,
+    {
+      serverMergePolicy: "sameDeviceCausalSuccessorV1",
+      serverRebasedFromSequence: String(acceptedSequence),
+      serverRebasedToSequence: String(submittedSequence),
+    },
+  );
+}
+
+function automaticallyMergeJobWorkflow(
+  submittedOperation: Record<string, unknown>,
+  acceptedOperation: Record<string, unknown>,
+  currentRevision: string,
+): Record<string, unknown> | null {
+  const device = recordPayloadFromOperation(submittedOperation);
+  const cloud = recordPayloadFromOperation(acceptedOperation);
+  if (!device || !cloud) return null;
+  if (
+    canonicalJSON(withoutJobWorkflowFields(device)) !==
+      canonicalJSON(withoutJobWorkflowFields(cloud))
+  ) return null;
+  const timelineEvents = mergeTimelineEvents(cloud.timelineEvents ?? [], device.timelineEvents ?? []);
+  if (!timelineEvents) return null;
+  const latest = (value: unknown): number => Math.max(
+    0,
+    ...(Array.isArray(value)
+      ? value.map((event) => eventTimestamp(event as Record<string, unknown>))
+      : []),
+  );
+  const merged = structuredClone(cloud);
+  merged.timelineEvents = timelineEvents;
+  if (jobStatusRank(device.status) > jobStatusRank(cloud.status)) merged.status = device.status;
+  if (latest(device.timelineEvents) >= latest(cloud.timelineEvents)) {
+    merged.workflowState = device.workflowState;
+  }
+  for (const field of ["setupStartDate", "workStartDate", "completedDate"]) {
+    if (merged[field] == null && device[field] != null) merged[field] = device[field];
+  }
+  return rewriteRecordMutation(submittedOperation, merged, currentRevision, {
+    serverMergePolicy: "jobWorkflowTimelineV1",
+    // iOS intentionally models operation metadata as [String: String]. Keep
+    // server annotations inside that wire contract so an accepted merge can
+    // always be read back through the tenant change feed.
+    serverMergedFields: [...jobWorkflowMergeFields].join(","),
+  });
 }
 
 type CatalogRecordPayload = {
@@ -4594,6 +5592,8 @@ async function acceptOperation(
     return json({ error: "conflict_override_requires_manager" }, 403);
   }
   if (isRecordMutation) {
+    const envelopeError = validateVersionedMutationEnvelope(operation, identity);
+    if (envelopeError) return json({ error: envelopeError }, 400);
     const allowed = new Set([
       "customer", "site", "lead", "estimate", "job", "assignment",
       "invoice", "employee", "catalog", "recurringWork", "custom",
@@ -4641,6 +5641,23 @@ async function acceptOperation(
         acceptedRoles.join("|") !== submittedRoles.join("|")
       ) {
         return json({ error: "employee_role_change_requires_manager" }, 403);
+      }
+    }
+    if (entityType === "employee") {
+      const linkedMember = await env.DB.prepare(
+        `SELECT id, role FROM tenant_members
+          WHERE tenant_id = ?1 AND employee_id = ?2 AND status != 'revoked'
+          ORDER BY created_at DESC LIMIT 1`,
+      ).bind(identity.tenantID, entityID).first<{
+        id: string;
+        role: TenantRole;
+      }>();
+      const requestedAccessRole = accessRoleFromEmployeeOperation(operation);
+      if (
+        linkedMember && linkedMember.role !== "owner" && requestedAccessRole &&
+        requestedAccessRole !== linkedMember.role && identity.role !== "owner"
+      ) {
+        return json({ error: "employee_access_role_change_requires_owner" }, 403);
       }
     }
     if (
@@ -4692,7 +5709,14 @@ async function acceptOperation(
 
   const revision = crypto.randomUUID();
   const acceptedAt = new Date().toISOString();
-  if (isRecordMutation) {
+  // Legacy command-shaped mutations remain valid history/feed events, but
+  // only a mutation carrying a complete record body may replace canonical
+  // recovery authority.
+  const isCanonicalRecordMutation = isRecordMutation && (
+    String(operation.actionName ?? "") === "upsertRecord" ||
+    recordPayloadFromOperation(operation) !== null
+  );
+  if (isCanonicalRecordMutation) {
     const current = await env.DB.prepare(
       `SELECT revision, operation_json AS operationJSON,
               updated_by_device_id AS updatedByDeviceID,
@@ -4713,24 +5737,63 @@ async function acceptOperation(
         !(baseRevision === null && current.updatedByDeviceID === identity.deviceID)) ||
       (!current && baseRevision !== null)
     ) {
-      if (current && cloudRecordClearlyNewer(current.updatedAt, operation)) {
-        return staleDeviceCloudReceipt(
-          env, identity, entityType, entityID, current.revision,
-          JSON.parse(current.operationJSON),
-        );
-      }
-      const conflictID = await recordSynchronizationConflict(
-        env, identity, operation, entityType, entityID,
-        current?.revision ?? "", JSON.parse(current?.operationJSON ?? "{}"),
+      const acceptedOperation = current
+        ? JSON.parse(current.operationJSON) as Record<string, unknown>
+        : null;
+      const phase20Envelope = versionedMutationEnvelope(operation);
+      const usesPhase20Mutation = (phase20Envelope?.schemaVersion ?? 1) >= 2;
+      const verifiedMerge = current && acceptedOperation
+        ? verifiedThreeWayMerge(operation, acceptedOperation, current.revision)
+        : null;
+      const appendOnlyMerge = current && acceptedOperation
+        ? automaticallyMergeAppendOnlyRecord(
+          operation, acceptedOperation, current.revision,
+        )
+        : null;
+      // A device queue is strictly ordered. If an accepted mutation from this
+      // same device has a lower sequence number, the submitted operation is a
+      // causal successor rather than an independent concurrent edit. Rebase
+      // both revision layers and preserve the newer complete device record.
+      // Cross-device and out-of-order mutations continue through conflict
+      // detection so this never becomes an unrestricted last-writer-wins rule.
+      const automaticallyRebased = !usesPhase20Mutation && current && acceptedOperation &&
+          current.updatedByDeviceID === identity.deviceID
+        ? automaticallyRebaseSameDeviceSuccessor(
+          operation, acceptedOperation, current.revision,
+        )
+        : null;
+      const automaticallyMerged = verifiedMerge ?? appendOnlyMerge ?? automaticallyRebased ?? (
+        !usesPhase20Mutation && current && acceptedOperation && entityType === "job"
+          ? automaticallyMergeJobWorkflow(
+            operation, acceptedOperation, current.revision,
+          )
+          : null
       );
-      return json({
-        error: "record_conflict",
-        conflictID,
-        currentRevision: current?.revision ?? null,
-        currentOperation: current ? JSON.parse(current.operationJSON) : null,
-      }, 409);
+      if (automaticallyMerged) {
+        operation = automaticallyMerged;
+      } else {
+        if (current && cloudRecordClearlyNewer(current.updatedAt, operation)) {
+          return staleDeviceCloudReceipt(
+            env, identity, entityType, entityID, current.revision,
+            JSON.parse(current.operationJSON),
+          );
+        }
+        const conflictID = await recordSynchronizationConflict(
+          env, identity, operation, entityType, entityID,
+          current?.revision ?? "", JSON.parse(current?.operationJSON ?? "{}"),
+        );
+        return json({
+          error: "record_conflict",
+          conflictID,
+          currentRevision: current?.revision ?? null,
+          currentOperation: current ? JSON.parse(current.operationJSON) : null,
+        }, 409);
+      }
     }
-    const effectiveBaseRevision = baseRevision ?? (
+    const rebasedRevision = operation.baseRevision == null
+      ? null
+      : String(operation.baseRevision);
+    const effectiveBaseRevision = rebasedRevision ?? (
       current?.updatedByDeviceID === identity.deviceID
         ? current.revision
         : null
@@ -4806,8 +5869,17 @@ async function acceptOperation(
       }
     }
   }
-  if (isRecordMutation && entityType === "employee") {
+  if (isCanonicalRecordMutation && entityType === "employee") {
     const contact = employeeSearchContactFromOperation(operation);
+    const requestedAccessRole = accessRoleFromEmployeeOperation(operation);
+    const linkedMember = await env.DB.prepare(
+      `SELECT id, role FROM tenant_members
+        WHERE tenant_id = ?1 AND employee_id = ?2 AND status != 'revoked'
+        ORDER BY created_at DESC LIMIT 1`,
+    ).bind(identity.tenantID, entityID).first<{
+      id: string;
+      role: TenantRole;
+    }>();
     const statements = [
       env.DB.prepare(
         `DELETE FROM operations_account_email_index
@@ -4824,8 +5896,37 @@ async function acceptOperation(
       ).bind(identity.tenantID, entityID, contact.normalizedEmail,
         contact.displayName || null, contact.roleHint, acceptedAt));
     }
+    if (
+      linkedMember && linkedMember.role !== "owner" && requestedAccessRole &&
+      linkedMember.role !== requestedAccessRole
+    ) {
+      statements.push(env.DB.prepare(
+        `UPDATE tenant_members SET role = ?1
+          WHERE tenant_id = ?2 AND id = ?3 AND role = ?4`,
+      ).bind(requestedAccessRole, identity.tenantID, linkedMember.id,
+        linkedMember.role));
+      statements.push(accessAuditStatement(
+        env,
+        identity.tenantID,
+        requestedAccessRole === "manager"
+          ? "member.promoted_to_manager"
+          : "member.demoted_to_member",
+        {
+          actorMemberID: identity.memberID,
+          actorDeviceID: identity.deviceID,
+          targetMemberID: linkedMember.id,
+          metadata: {
+            employeeID: entityID,
+            previousRole: linkedMember.role,
+            newRole: requestedAccessRole,
+          },
+          createdAt: acceptedAt,
+        },
+      ));
+    }
     await env.DB.batch(statements);
   }
+  const acceptedOperationJSON = JSON.stringify(operation);
   await env.DB.prepare(
     `INSERT INTO synchronized_operations
       (id, tenant_id, device_id, idempotency_key, operation_type,
@@ -4841,11 +5942,21 @@ async function acceptOperation(
     String(operation.entityType ?? "custom"),
     operation.entityID ? String(operation.entityID) : null,
     String(operation.actionName ?? "unknown"),
-    JSON.stringify(operation),
+    acceptedOperationJSON,
     String(operation.createdAt ?? acceptedAt),
     acceptedAt,
     revision,
   ).run();
+  const changeSequence = await appendSynchronizationChange(
+    env, identity.tenantID, id, identity.deviceID, revision,
+    acceptedOperationJSON, acceptedAt,
+  );
+  await dispatchSynchronizationWake(
+    env,
+    identity.tenantID,
+    identity.deviceID,
+    changeSequence,
+  );
   const automaticallyResolvedConflictID = typeof metadata
       .automaticallyResolvedConflictID === "string"
     ? metadata.automaticallyResolvedConflictID
@@ -4865,7 +5976,7 @@ async function acceptOperation(
       revision, identity.tenantID, automaticallyResolvedConflictID,
     ).run();
   }
-  return json({ revision, duplicate: false }, 201);
+  return json({ revision, changeSequence, duplicate: false }, 201);
 }
 
 async function configureOwnerWorkProfile(
@@ -4984,6 +6095,16 @@ async function configureOwnerWorkProfile(
     }),
   ];
   await env.DB.batch(statements);
+  const changeSequence = await appendSynchronizationChange(
+    env, identity.tenantID, operationID, identity.deviceID,
+    revision, operationJSON, now,
+  );
+  await dispatchSynchronizationWake(
+    env,
+    identity.tenantID,
+    identity.deviceID,
+    changeSequence,
+  );
   return json({ employeeID, roles, revision }, current ? 200 : 201);
 }
 
@@ -4999,23 +6120,34 @@ async function synchronizationChanges(
   const requestedLimit = Number.parseInt(url.searchParams.get("limit") ?? "200", 10);
   const limit = Math.min(Math.max(requestedLimit || 200, 1), 500);
   const result = await env.DB.prepare(
-    `SELECT rowid AS sequence, device_id AS deviceID,
-            revision, payload_json AS payloadJSON
-       FROM synchronized_operations
-      WHERE tenant_id = ?1 AND rowid > ?2
-      ORDER BY rowid ASC
+    `SELECT tenant_sequence AS sequence, device_id AS deviceID,
+            revision, payload_json AS payloadJSON, accepted_at AS acceptedAt
+       FROM synchronization_change_log
+      WHERE tenant_id = ?1 AND tenant_sequence > ?2
+      ORDER BY tenant_sequence ASC
       LIMIT ?3`,
   ).bind(identity.tenantID, after, limit).all<{
     sequence: number;
     deviceID: string;
     revision: string;
     payloadJSON: string;
+    acceptedAt: string;
   }>();
   const changes = result.results.map((row) => {
     const operation = JSON.parse(row.payloadJSON) as Record<string, unknown>;
     const createdAt = typeof operation.createdAt === "string"
       ? operation.createdAt
       : new Date().toISOString();
+    const rawMetadata = operation.metadata;
+    const metadata = rawMetadata && typeof rawMetadata === "object" &&
+        !Array.isArray(rawMetadata)
+      ? Object.fromEntries(Object.entries(rawMetadata).map(([key, value]) => {
+        if (typeof value === "string") return [key, value];
+        if (value == null) return [key, ""];
+        if (typeof value === "object") return [key, JSON.stringify(value)];
+        return [key, String(value)];
+      }))
+      : {};
     return {
       sequence: row.sequence,
       sourceDeviceID: row.deviceID,
@@ -5023,17 +6155,893 @@ async function synchronizationChanges(
       operation: {
         sequenceNumber: 0,
         status: "synchronized",
-        updatedAt: createdAt,
         retryAttempts: [],
-        metadata: {},
         ...operation,
+        metadata,
+        updatedAt: row.acceptedAt,
       },
     };
   });
   const cursor = changes.length > 0
     ? changes[changes.length - 1].sequence
     : after;
-  return json({ cursor, hasMore: changes.length === limit, changes });
+  const serverCursor = await tenantSynchronizationCursor(env, identity.tenantID);
+  return json({
+    cursor,
+    serverCursor,
+    hasMore: cursor < serverCursor,
+    changes,
+  });
+}
+
+async function tenantSynchronizationCursor(
+  env: Env,
+  tenantID: string,
+): Promise<number> {
+  const row = await env.DB.prepare(
+    `SELECT COALESCE(MAX(tenant_sequence), 0) AS cursor
+       FROM synchronization_change_log WHERE tenant_id = ?1`,
+  ).bind(tenantID).first<{ cursor: number }>();
+  return Number(row?.cursor ?? 0);
+}
+
+async function appendSynchronizationChange(
+  env: Env,
+  tenantID: string,
+  operationID: string,
+  deviceID: string,
+  revision: string,
+  payloadJSON: string,
+  acceptedAt: string,
+): Promise<number> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const next = (await tenantSynchronizationCursor(env, tenantID)) + 1;
+    try {
+      await env.DB.prepare(
+        `INSERT INTO synchronization_change_log
+          (tenant_id, tenant_sequence, operation_id, device_id, revision,
+           payload_json, accepted_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+      ).bind(
+        tenantID, next, operationID, deviceID, revision, payloadJSON, acceptedAt,
+      ).run();
+      return next;
+    } catch (error) {
+      const existing = await env.DB.prepare(
+        `SELECT tenant_sequence AS sequence
+           FROM synchronization_change_log
+          WHERE tenant_id = ?1 AND operation_id = ?2`,
+      ).bind(tenantID, operationID).first<{ sequence: number }>();
+      if (existing) return existing.sequence;
+      if (attempt === 3) throw error;
+    }
+  }
+  throw new Error("change_sequence_allocation_failed");
+}
+
+function base64URL(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64URLJSON(value: unknown): string {
+  return base64URL(new TextEncoder().encode(JSON.stringify(value)));
+}
+
+function apnsEnvironment(env: Env): "sandbox" | "production" {
+  return env.APNS_ENVIRONMENT === "production" ? "production" : "sandbox";
+}
+
+async function apnsProviderToken(env: Env): Promise<string | null> {
+  const keyID = env.APNS_KEY_ID?.trim();
+  const teamID = env.APNS_TEAM_ID?.trim();
+  const privateKey = env.APNS_PRIVATE_KEY?.replace(/\\n/g, "\n").trim();
+  if (!keyID || !teamID || !privateKey) return null;
+  const encodedKey = privateKey
+    .replace("-----BEGIN PRIVATE KEY-----", "")
+    .replace("-----END PRIVATE KEY-----", "")
+    .replace(/\s/g, "");
+  const keyBytes = Uint8Array.from(atob(encodedKey), (character) =>
+    character.charCodeAt(0));
+  const key = await crypto.subtle.importKey(
+    "pkcs8",
+    keyBytes,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["sign"],
+  );
+  const header = base64URLJSON({ alg: "ES256", kid: keyID });
+  const claims = base64URLJSON({ iss: teamID, iat: Math.floor(Date.now() / 1000) });
+  const signingInput = `${header}.${claims}`;
+  const signature = new Uint8Array(await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" },
+    key,
+    new TextEncoder().encode(signingInput),
+  ));
+  return `${signingInput}.${base64URL(signature)}`;
+}
+
+async function registerSynchronizationPush(
+  request: Request,
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  const body = await request.json<{ token?: string; appBuild?: string }>();
+  const token = String(body.token ?? "").trim().toLowerCase();
+  const appBuild = String(body.appBuild ?? "").trim();
+  if (!/^[0-9a-f]{32,200}$/.test(token) ||
+      appBuild.length < 1 || appBuild.length > 32) {
+    return json({ error: "invalid_push_registration" }, 400);
+  }
+  const environment = apnsEnvironment(env);
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      `DELETE FROM synchronization_push_registrations
+        WHERE environment = ?1 AND token = ?2
+          AND (tenant_id <> ?3 OR device_id <> ?4)`,
+    ).bind(environment, token, identity.tenantID, identity.deviceID),
+    env.DB.prepare(
+      `INSERT INTO synchronization_push_registrations
+        (tenant_id, device_id, token, environment, app_build,
+         registered_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+       ON CONFLICT (tenant_id, device_id) DO UPDATE SET
+         token = excluded.token,
+         environment = excluded.environment,
+         app_build = excluded.app_build,
+         updated_at = excluded.updated_at,
+         last_failure_code = NULL`,
+    ).bind(identity.tenantID, identity.deviceID, token, environment, appBuild, now),
+  ]);
+  return json({ registered: true, environment, registeredAt: now });
+}
+
+async function unregisterSynchronizationPush(
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  await env.DB.prepare(
+    `DELETE FROM synchronization_push_registrations
+      WHERE tenant_id = ?1 AND device_id = ?2`,
+  ).bind(identity.tenantID, identity.deviceID).run();
+  return json({ registered: false });
+}
+
+async function dispatchSynchronizationWake(
+  env: Env,
+  tenantID: string,
+  sourceDeviceID: string,
+  cursor: number,
+): Promise<void> {
+  const topic = env.APNS_TOPIC?.trim();
+  const providerToken = await apnsProviderToken(env);
+  if (!topic || !providerToken) return;
+  const environment = apnsEnvironment(env);
+  const registrations = await env.DB.prepare(
+    `SELECT registrations.device_id AS deviceID,
+            registrations.token
+       FROM synchronization_push_registrations AS registrations
+       JOIN devices
+         ON devices.tenant_id = registrations.tenant_id
+        AND devices.id = registrations.device_id
+      WHERE registrations.tenant_id = ?1
+        AND registrations.device_id <> ?2
+        AND registrations.environment = ?3
+        AND devices.revoked_at IS NULL`,
+  ).bind(tenantID, sourceDeviceID, environment).all<{
+    deviceID: string;
+    token: string;
+  }>();
+  const host = environment === "production"
+    ? "https://api.push.apple.com"
+    : "https://api.sandbox.push.apple.com";
+  await Promise.all(registrations.results.map(async (registration) => {
+    const deliveryID = crypto.randomUUID();
+    const apnsRequestID = crypto.randomUUID();
+    const requestedAt = new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO synchronization_push_deliveries
+        (id, tenant_id, device_id, source_device_id, cursor, environment,
+         apns_request_id, requested_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+    ).bind(
+      deliveryID,
+      tenantID,
+      registration.deviceID,
+      sourceDeviceID,
+      cursor,
+      environment,
+      apnsRequestID,
+      requestedAt,
+    ).run();
+    const payload = JSON.stringify({
+      aps: { "content-available": 1 },
+      pfss: "syncWake",
+      cursor,
+      deliveryID,
+    });
+    try {
+      const response = await fetch(`${host}/3/device/${registration.token}`, {
+        method: "POST",
+        headers: {
+          authorization: `bearer ${providerToken}`,
+          "apns-topic": topic,
+          "apns-push-type": "background",
+          "apns-priority": "5",
+          "apns-collapse-id": `pfss-sync-${tenantID}`,
+          "apns-id": apnsRequestID,
+          "content-type": "application/json",
+        },
+        body: payload,
+      });
+      const now = new Date().toISOString();
+      if (response.ok) {
+        await env.DB.batch([
+          env.DB.prepare(
+            `UPDATE synchronization_push_registrations
+                SET last_notified_at = ?1, last_failure_code = NULL
+              WHERE tenant_id = ?2 AND device_id = ?3`,
+          ).bind(now, tenantID, registration.deviceID),
+          env.DB.prepare(
+            `UPDATE synchronization_push_deliveries
+                SET accepted_at = ?1, apns_response_id = ?2,
+                    apns_unique_id = ?3
+              WHERE id = ?4`,
+          ).bind(
+            now,
+            response.headers.get("apns-id"),
+            response.headers.get("apns-unique-id"),
+            deliveryID,
+          ),
+        ]);
+        return;
+      }
+      let reason = `http_${response.status}`;
+      try {
+        const body = await response.json<{ reason?: string }>();
+        if (body.reason) reason = body.reason;
+      } catch { /* retain the status-only reason */ }
+      if (response.status === 400 || response.status === 410) {
+        await env.DB.prepare(
+          `DELETE FROM synchronization_push_registrations
+            WHERE tenant_id = ?1 AND device_id = ?2`,
+        ).bind(tenantID, registration.deviceID).run();
+      } else {
+        await env.DB.prepare(
+          `UPDATE synchronization_push_registrations
+              SET last_failure_code = ?1, updated_at = ?2
+            WHERE tenant_id = ?3 AND device_id = ?4`,
+        ).bind(reason, now, tenantID, registration.deviceID).run();
+      }
+      await env.DB.prepare(
+        `UPDATE synchronization_push_deliveries
+            SET failure_code = ?1
+          WHERE id = ?2`,
+      ).bind(reason, deliveryID).run();
+    } catch {
+      const now = new Date().toISOString();
+      await env.DB.batch([
+        env.DB.prepare(
+          `UPDATE synchronization_push_registrations
+              SET last_failure_code = 'transport_error', updated_at = ?1
+            WHERE tenant_id = ?2 AND device_id = ?3`,
+        ).bind(now, tenantID, registration.deviceID),
+        env.DB.prepare(
+          `UPDATE synchronization_push_deliveries
+              SET failure_code = 'transport_error'
+            WHERE id = ?1`,
+        ).bind(deliveryID),
+      ]);
+    }
+  }));
+}
+
+async function recordSynchronizationPushEvent(
+  request: Request,
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json<Record<string, unknown>>();
+  } catch {
+    return json({ error: "invalid_json" }, 400);
+  }
+  const deliveryID = typeof body.deliveryID === "string"
+    ? body.deliveryID.trim()
+    : "";
+  const event = typeof body.event === "string" ? body.event.trim() : "";
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(deliveryID) || ![
+    "received", "syncStarted", "syncCompleted", "syncFailed",
+  ].includes(event)) {
+    return json({ error: "invalid_push_event" }, 400);
+  }
+  const delivery = await env.DB.prepare(
+    `SELECT id FROM synchronization_push_deliveries
+      WHERE id = ?1 AND tenant_id = ?2 AND device_id = ?3`,
+  ).bind(deliveryID, identity.tenantID, identity.deviceID).first();
+  if (!delivery) return json({ error: "push_delivery_not_found" }, 404);
+
+  const column = {
+    received: "received_at",
+    syncStarted: "sync_started_at",
+    syncCompleted: "sync_completed_at",
+    syncFailed: "sync_failed_at",
+  }[event]!;
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `UPDATE synchronization_push_deliveries
+        SET ${column} = COALESCE(${column}, ?1),
+            device_reported_cursor = COALESCE(?2, device_reported_cursor)
+      WHERE id = ?3 AND tenant_id = ?4 AND device_id = ?5`,
+  ).bind(
+    now,
+    Number.isSafeInteger(body.cursor) && (body.cursor as number) >= 0
+      ? body.cursor as number
+      : null,
+    deliveryID,
+    identity.tenantID,
+    identity.deviceID,
+  ).run();
+  return json({ recorded: true, event, recordedAt: now });
+}
+
+type SynchronizationHealthLevel = "healthy" | "delayed" | "actionRequired";
+
+function synchronizationHealthRank(level: SynchronizationHealthLevel): number {
+  return level === "actionRequired" ? 2 : level === "delayed" ? 1 : 0;
+}
+
+function highestSynchronizationHealthLevel(
+  levels: SynchronizationHealthLevel[],
+): SynchronizationHealthLevel {
+  return levels.reduce((highest, level) =>
+    synchronizationHealthRank(level) > synchronizationHealthRank(highest)
+      ? level
+      : highest, "healthy" as SynchronizationHealthLevel);
+}
+
+function ageSeconds(value: string | null, nowMilliseconds: number): number | null {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp)
+    ? Math.max(0, Math.floor((nowMilliseconds - timestamp) / 1000))
+    : null;
+}
+
+async function reportSynchronizationDeviceHealth(
+  request: Request,
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  let body: Record<string, unknown>;
+  try { body = await request.json<Record<string, unknown>>(); } catch {
+    return json({ error: "invalid_json" }, 400);
+  }
+  const integer = (key: string, maximum = 1_000_000): number | null => {
+    const value = body[key];
+    return Number.isSafeInteger(value) && (value as number) >= 0 &&
+        (value as number) <= maximum ? value as number : null;
+  };
+  const appBuild = typeof body.appBuild === "string"
+    ? body.appBuild.trim().slice(0, 32) : "";
+  const oldestQueuedAt = typeof body.oldestQueuedAt === "string" &&
+      Number.isFinite(Date.parse(body.oldestQueuedAt))
+    ? body.oldestQueuedAt : null;
+  const values = ["queueCount", "failedCount", "waitingRetryCount",
+    "retryAttempts24h", "blockedDependencyCount", "conflictedCount",
+    "quarantinedCount"].map((key) => integer(key));
+  if (!appBuild || values.some((value) => value == null)) {
+    return json({ error: "invalid_device_health_report" }, 400);
+  }
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO synchronization_device_health_reports
+      (tenant_id, device_id, app_build, queue_count, oldest_queued_at,
+       failed_count, waiting_retry_count, retry_attempts_24h,
+       blocked_dependency_count, conflicted_count, quarantined_count,
+       reported_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+     ON CONFLICT (tenant_id, device_id) DO UPDATE SET
+       app_build = excluded.app_build,
+       queue_count = excluded.queue_count,
+       oldest_queued_at = excluded.oldest_queued_at,
+       failed_count = excluded.failed_count,
+       waiting_retry_count = excluded.waiting_retry_count,
+       retry_attempts_24h = excluded.retry_attempts_24h,
+       blocked_dependency_count = excluded.blocked_dependency_count,
+       conflicted_count = excluded.conflicted_count,
+       quarantined_count = excluded.quarantined_count,
+       reported_at = excluded.reported_at`,
+  ).bind(
+    identity.tenantID, identity.deviceID, appBuild, values[0], oldestQueuedAt,
+    values[1], values[2], values[3], values[4], values[5], values[6], now,
+  ).run();
+  await evaluateSynchronizationHealthAlerts(env, identity.tenantID);
+  return json({ recorded: true, reportedAt: now });
+}
+
+interface SynchronizationAlertCandidate {
+  fingerprint: string;
+  kind: "tenantDivergence" | "stuckDependencies" | "excessiveRetries" |
+    "highImpactConflict";
+  severity: "warning" | "critical";
+  deviceID: string | null;
+  title: string;
+  detail: string;
+  recommendation: string;
+  observedValue: number;
+  thresholdValue: number;
+}
+
+async function evaluateSynchronizationHealthAlerts(
+  env: Env,
+  tenantID: string,
+): Promise<void> {
+  const now = new Date();
+  const nowISO = now.toISOString();
+  const [cursorResult, deviceResult, reportResult, conflictResult] =
+    await env.DB.batch([
+      env.DB.prepare(
+        `SELECT COALESCE(MAX(tenant_sequence), 0) AS serverCursor
+           FROM synchronization_change_log WHERE tenant_id = ?1`,
+      ).bind(tenantID),
+      env.DB.prepare(
+        `SELECT devices.id, devices.display_name AS displayName,
+                COALESCE(cursors.acknowledged_sequence, 0) AS acknowledgedCursor,
+                cursors.updated_at AS cursorUpdatedAt
+           FROM devices
+           JOIN tenant_members AS members
+             ON members.tenant_id = devices.tenant_id
+            AND members.id = devices.member_id
+           LEFT JOIN synchronization_device_cursors AS cursors
+             ON cursors.tenant_id = devices.tenant_id
+            AND cursors.device_id = devices.id
+          WHERE devices.tenant_id = ?1 AND devices.revoked_at IS NULL
+            AND members.status = 'active'`,
+      ).bind(tenantID),
+      env.DB.prepare(
+        `SELECT reports.device_id AS deviceID, devices.display_name AS displayName,
+                reports.oldest_queued_at AS oldestQueuedAt,
+                reports.retry_attempts_24h AS retryAttempts24h,
+                reports.blocked_dependency_count AS blockedDependencyCount
+           FROM synchronization_device_health_reports AS reports
+           JOIN devices ON devices.tenant_id = reports.tenant_id
+             AND devices.id = reports.device_id
+          WHERE reports.tenant_id = ?1`,
+      ).bind(tenantID),
+      env.DB.prepare(
+        `SELECT id, entity_type AS entityType, affected_fields_json AS fieldsJSON,
+                detected_at AS detectedAt
+           FROM synchronization_conflicts
+          WHERE tenant_id = ?1 AND status = 'unresolved'`,
+      ).bind(tenantID),
+    ]);
+  const serverCursor = Number(
+    (cursorResult.results[0] as { serverCursor?: number } | undefined)
+      ?.serverCursor ?? 0,
+  );
+  const candidates: SynchronizationAlertCandidate[] = [];
+  for (const row of deviceResult.results as Array<Record<string, unknown>>) {
+    const deviceID = String(row.id);
+    const displayName = String(row.displayName);
+    const behindBy = Math.max(
+      0,
+      serverCursor - Number(row.acknowledgedCursor ?? 0),
+    );
+    const cursorAge = ageSeconds(row.cursorUpdatedAt as string | null, now.getTime());
+    if (behindBy >= 50 || (behindBy > 0 && (cursorAge ?? 0) >= 1800)) {
+      candidates.push({
+        fingerprint: `tenantDivergence:${deviceID}`,
+        kind: "tenantDivergence",
+        severity: behindBy >= 100 ? "critical" : "warning",
+        deviceID,
+        title: `${displayName} is behind`,
+        detail: `${displayName} is ${behindBy} company changes behind.`,
+        recommendation: "Connect the device to the internet, open PFSS, and check Sync Status.",
+        observedValue: behindBy,
+        thresholdValue: 50,
+      });
+    }
+  }
+  for (const row of reportResult.results as Array<Record<string, unknown>>) {
+    const deviceID = String(row.deviceID);
+    const displayName = String(row.displayName);
+    const blocked = Number(row.blockedDependencyCount ?? 0);
+    const oldestAge = ageSeconds(row.oldestQueuedAt as string | null, now.getTime());
+    if (blocked > 0 && (oldestAge ?? 0) >= 900) {
+      candidates.push({
+        fingerprint: `stuckDependencies:${deviceID}`,
+        kind: "stuckDependencies",
+        severity: (oldestAge ?? 0) >= 3600 ? "critical" : "warning",
+        deviceID,
+        title: `${displayName} has blocked work`,
+        detail: `${blocked} queued change${blocked === 1 ? " is" : "s are"} waiting behind another unresolved change.`,
+        recommendation: "Open Sync Status on the device and resolve the first failed or conflicting change.",
+        observedValue: blocked,
+        thresholdValue: 1,
+      });
+    }
+    const retries = Number(row.retryAttempts24h ?? 0);
+    if (retries >= 10) {
+      candidates.push({
+        fingerprint: `excessiveRetries:${deviceID}`,
+        kind: "excessiveRetries",
+        severity: retries >= 25 ? "critical" : "warning",
+        deviceID,
+        title: `${displayName} is retrying repeatedly`,
+        detail: `${displayName} made ${retries} synchronization retry attempts during the last 24 hours.`,
+        recommendation: "Check the device connection and Sync Status. Send diagnostics if retries continue.",
+        observedValue: retries,
+        thresholdValue: 10,
+      });
+    }
+  }
+  for (const row of conflictResult.results as Array<Record<string, unknown>>) {
+    let fields: string[] = ["record"];
+    try {
+      const parsed = JSON.parse(String(row.fieldsJSON ?? "[]"));
+      if (Array.isArray(parsed) && parsed.length) fields = parsed.map(String);
+    } catch { /* retain record */ }
+    const impact = conflictOperationalImpact(String(row.entityType), fields);
+    if (!impact.includes("shared company information")) {
+      const age = ageSeconds(String(row.detectedAt), now.getTime()) ?? 0;
+      candidates.push({
+        fingerprint: `highImpactConflict:${String(row.id)}`,
+        kind: "highImpactConflict",
+        severity: age >= 3600 ? "critical" : "warning",
+        deviceID: null,
+        title: "An important record decision is waiting",
+        detail: impact,
+        recommendation: "An Owner or Manager should open Conflict Review and choose the correct version.",
+        observedValue: age,
+        thresholdValue: 0,
+      });
+    }
+  }
+
+  for (const alert of candidates) {
+    await env.DB.prepare(
+      `INSERT INTO synchronization_health_alerts
+        (id, tenant_id, device_id, fingerprint, kind, severity, status,
+         title, detail, recommendation, observed_value, threshold_value,
+         opened_at, last_observed_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10, ?11, ?12, ?12)
+       ON CONFLICT (tenant_id, fingerprint) DO UPDATE SET
+         device_id = excluded.device_id, kind = excluded.kind,
+         severity = excluded.severity, status = 'active',
+         title = excluded.title, detail = excluded.detail,
+         recommendation = excluded.recommendation,
+         observed_value = excluded.observed_value,
+         threshold_value = excluded.threshold_value,
+         opened_at = CASE WHEN synchronization_health_alerts.status = 'resolved'
+                          THEN excluded.opened_at
+                          ELSE synchronization_health_alerts.opened_at END,
+         last_observed_at = excluded.last_observed_at, resolved_at = NULL`,
+    ).bind(
+      crypto.randomUUID(), tenantID, alert.deviceID, alert.fingerprint,
+      alert.kind, alert.severity, alert.title, alert.detail,
+      alert.recommendation, alert.observedValue, alert.thresholdValue, nowISO,
+    ).run();
+  }
+  const fingerprints = new Set(candidates.map((candidate) => candidate.fingerprint));
+  const active = await env.DB.prepare(
+    `SELECT id, fingerprint FROM synchronization_health_alerts
+      WHERE tenant_id = ?1 AND status = 'active'`,
+  ).bind(tenantID).all<{ id: string; fingerprint: string }>();
+  for (const alert of active.results) {
+    if (fingerprints.has(alert.fingerprint)) continue;
+    await env.DB.prepare(
+      `UPDATE synchronization_health_alerts
+          SET status = 'resolved', resolved_at = ?1, last_observed_at = ?1
+        WHERE tenant_id = ?2 AND id = ?3 AND status = 'active'`,
+    ).bind(nowISO, tenantID, alert.id).run();
+  }
+}
+
+async function evaluateAllSynchronizationHealthAlerts(env: Env): Promise<void> {
+  const tenants = await env.DB.prepare(
+    `SELECT id FROM tenants WHERE status = 'active'`,
+  ).all<{ id: string }>();
+  for (const tenant of tenants.results) {
+    await evaluateSynchronizationHealthAlerts(env, tenant.id);
+  }
+}
+
+async function synchronizationHealth(
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  if (!canManageMembers(identity)) return json({ error: "forbidden" }, 403);
+  await evaluateSynchronizationHealthAlerts(env, identity.tenantID);
+  const now = new Date();
+  const nowMilliseconds = now.getTime();
+  const recentCutoff = new Date(nowMilliseconds - 24 * 60 * 60 * 1000)
+    .toISOString();
+  const trendCutoff = new Date(nowMilliseconds - 7 * 24 * 60 * 60 * 1000)
+    .toISOString();
+
+  const [cursorResult, deviceResult, conflictResult, quarantineResult,
+    recentConflictResult, recentQuarantineResult, pushResult, alertResult] =
+    await env.DB.batch([
+    env.DB.prepare(
+      `SELECT COALESCE(MAX(tenant_sequence), 0) AS serverCursor
+         FROM synchronization_change_log WHERE tenant_id = ?1`,
+    ).bind(identity.tenantID),
+    env.DB.prepare(
+      `SELECT devices.id, devices.display_name AS displayName,
+              devices.last_seen_at AS lastSeenAt, members.role,
+              COALESCE(cursors.acknowledged_sequence, 0) AS acknowledgedCursor,
+              cursors.updated_at AS cursorUpdatedAt,
+              registrations.app_build AS appBuild,
+              registrations.last_failure_code AS registrationFailure,
+              deliveries.requested_at AS pushRequestedAt,
+              deliveries.accepted_at AS pushAcceptedAt,
+              deliveries.received_at AS pushReceivedAt,
+              deliveries.sync_completed_at AS pushCompletedAt,
+              deliveries.sync_failed_at AS pushFailedAt,
+              deliveries.failure_code AS pushFailure
+         FROM devices
+         JOIN tenant_members AS members
+           ON members.tenant_id = devices.tenant_id
+          AND members.id = devices.member_id
+         LEFT JOIN synchronization_device_cursors AS cursors
+           ON cursors.tenant_id = devices.tenant_id
+          AND cursors.device_id = devices.id
+         LEFT JOIN synchronization_push_registrations AS registrations
+           ON registrations.tenant_id = devices.tenant_id
+          AND registrations.device_id = devices.id
+         LEFT JOIN synchronization_push_deliveries AS deliveries
+           ON deliveries.id = (
+             SELECT latest.id FROM synchronization_push_deliveries AS latest
+              WHERE latest.tenant_id = devices.tenant_id
+                AND latest.device_id = devices.id
+              ORDER BY latest.requested_at DESC LIMIT 1
+           )
+        WHERE devices.tenant_id = ?1
+          AND devices.revoked_at IS NULL
+          AND members.status = 'active'
+        ORDER BY devices.display_name ASC`,
+    ).bind(identity.tenantID),
+    env.DB.prepare(
+      `SELECT id, entity_type AS entityType, affected_fields_json AS fieldsJSON,
+              detected_at AS detectedAt
+         FROM synchronization_conflicts
+        WHERE tenant_id = ?1 AND status = 'unresolved'
+        ORDER BY detected_at ASC`,
+    ).bind(identity.tenantID),
+    env.DB.prepare(
+      `SELECT id, entity_type AS entityType, operation_json AS operationJSON,
+              failure_json AS failureJSON, detected_at AS detectedAt
+         FROM synchronization_quarantines
+        WHERE tenant_id = ?1 AND status = 'unresolved'
+        ORDER BY detected_at ASC`,
+    ).bind(identity.tenantID),
+    env.DB.prepare(
+      `SELECT entity_type AS entityType, affected_fields_json AS fieldsJSON
+         FROM synchronization_conflicts
+        WHERE tenant_id = ?1 AND detected_at >= ?2`,
+    ).bind(identity.tenantID, trendCutoff),
+    env.DB.prepare(
+      `SELECT entity_type AS entityType, operation_json AS operationJSON,
+              failure_json AS failureJSON
+         FROM synchronization_quarantines
+        WHERE tenant_id = ?1 AND detected_at >= ?2`,
+    ).bind(identity.tenantID, trendCutoff),
+    env.DB.prepare(
+      `SELECT COUNT(*) AS sent,
+              SUM(CASE WHEN accepted_at IS NOT NULL THEN 1 ELSE 0 END) AS accepted,
+              SUM(CASE WHEN received_at IS NOT NULL THEN 1 ELSE 0 END) AS received,
+              SUM(CASE WHEN sync_completed_at IS NOT NULL THEN 1 ELSE 0 END) AS completed,
+              SUM(CASE WHEN failure_code IS NOT NULL OR sync_failed_at IS NOT NULL
+                       THEN 1 ELSE 0 END) AS failed,
+              SUM(CASE WHEN accepted_at IS NOT NULL AND received_at IS NULL
+                         AND requested_at < ?2 THEN 1 ELSE 0 END) AS deferred
+         FROM synchronization_push_deliveries
+        WHERE tenant_id = ?1 AND requested_at >= ?3`,
+    ).bind(
+      identity.tenantID,
+      new Date(nowMilliseconds - 2 * 60 * 1000).toISOString(),
+      recentCutoff,
+    ),
+    env.DB.prepare(
+      `SELECT id, kind, severity, title, detail, recommendation,
+              device_id AS deviceID, observed_value AS observedValue,
+              threshold_value AS thresholdValue, opened_at AS openedAt,
+              last_observed_at AS lastObservedAt
+         FROM synchronization_health_alerts
+        WHERE tenant_id = ?1 AND status = 'active'
+        ORDER BY CASE severity WHEN 'critical' THEN 0 ELSE 1 END,
+                 opened_at ASC`,
+    ).bind(identity.tenantID),
+  ]);
+
+  const serverCursor = Number(
+    (cursorResult.results[0] as { serverCursor?: number } | undefined)
+      ?.serverCursor ?? 0,
+  );
+  const devices = (deviceResult.results as Array<Record<string, unknown>>).map(
+    (row) => {
+      const acknowledgedCursor = Number(row.acknowledgedCursor ?? 0);
+      const behindBy = Math.max(0, serverCursor - acknowledgedCursor);
+      const cursorAgeSeconds = ageSeconds(
+        row.cursorUpdatedAt as string | null,
+        nowMilliseconds,
+      );
+      const pushAgeSeconds = ageSeconds(
+        row.pushRequestedAt as string | null,
+        nowMilliseconds,
+      );
+      const reasons: string[] = [];
+      let status: SynchronizationHealthLevel = "healthy";
+      if (row.registrationFailure || row.pushFailure || row.pushFailedAt) {
+        status = "actionRequired";
+        reasons.push("The latest background delivery or synchronization failed.");
+      }
+      if (behindBy >= 50 || (behindBy > 0 && (cursorAgeSeconds ?? 0) >= 1800)) {
+        status = "actionRequired";
+        reasons.push(`This device is ${behindBy} company changes behind.`);
+      } else if (behindBy > 0) {
+        status = highestSynchronizationHealthLevel([status, "delayed"]);
+        reasons.push(`This device is ${behindBy} company change${behindBy === 1 ? "" : "s"} behind.`);
+      }
+      if (row.pushAcceptedAt && !row.pushReceivedAt &&
+          pushAgeSeconds != null && pushAgeSeconds >= 120) {
+        status = highestSynchronizationHealthLevel([status, "delayed"]);
+        reasons.push("Apple accepted the latest signal but the device has not reported receipt.");
+      }
+      if (reasons.length === 0) reasons.push("This device matches the company change feed.");
+      return {
+        deviceID: row.id,
+        displayName: row.displayName,
+        role: row.role,
+        status,
+        reasons,
+        acknowledgedCursor,
+        serverCursor,
+        behindBy,
+        cursorAgeSeconds,
+        lastSeenAt: row.lastSeenAt,
+        cursorUpdatedAt: row.cursorUpdatedAt,
+        appBuild: row.appBuild,
+        latestPush: row.pushRequestedAt ? {
+          requestedAt: row.pushRequestedAt,
+          acceptedAt: row.pushAcceptedAt,
+          receivedAt: row.pushReceivedAt,
+          completedAt: row.pushCompletedAt,
+          failedAt: row.pushFailedAt,
+          failureCode: row.pushFailure ?? row.registrationFailure,
+        } : null,
+      };
+    },
+  );
+
+  const unresolvedConflicts = conflictResult.results as Array<Record<string, unknown>>;
+  const unresolvedQuarantines = quarantineResult.results as Array<Record<string, unknown>>;
+  const oldestConflictAgeSeconds = ageSeconds(
+    unresolvedConflicts[0]?.detectedAt as string | null ?? null,
+    nowMilliseconds,
+  );
+  const oldestQuarantineAgeSeconds = ageSeconds(
+    unresolvedQuarantines[0]?.detectedAt as string | null ?? null,
+    nowMilliseconds,
+  );
+  const entityCounts = new Map<string, number>();
+  const fieldCounts = new Map<string, number>();
+  const failureCounts = new Map<string, number>();
+  const countFields = (entityType: string, fields: string[]) => {
+    entityCounts.set(entityType, (entityCounts.get(entityType) ?? 0) + 1);
+    for (const field of fields) {
+      fieldCounts.set(field, (fieldCounts.get(field) ?? 0) + 1);
+    }
+  };
+  for (const row of recentConflictResult.results as Array<Record<string, unknown>>) {
+    let fields: string[] = ["record"];
+    try {
+      const decoded = JSON.parse(String(row.fieldsJSON ?? "[]"));
+      if (Array.isArray(decoded) && decoded.length > 0) fields = decoded.map(String);
+    } catch { /* retain record-level classification */ }
+    countFields(String(row.entityType ?? "unknown"), fields);
+  }
+  for (const row of recentQuarantineResult.results as Array<Record<string, unknown>>) {
+    let operation: Record<string, unknown> = {};
+    let reason = "unknown";
+    try { operation = JSON.parse(String(row.operationJSON ?? "{}")); } catch { /* empty */ }
+    try {
+      const failure = JSON.parse(String(row.failureJSON ?? "{}"));
+      reason = String(failure.reason ?? "unknown");
+    } catch { /* retain unknown */ }
+    const fields = quarantineReviewDetails(operation, null).affectedFields;
+    countFields(String(row.entityType ?? "unknown"), fields);
+    failureCounts.set(reason, (failureCounts.get(reason) ?? 0) + 1);
+  }
+  const push = (pushResult.results[0] ?? {}) as Record<string, unknown>;
+  const pushSummary = {
+    sent: Number(push.sent ?? 0),
+    accepted: Number(push.accepted ?? 0),
+    received: Number(push.received ?? 0),
+    completed: Number(push.completed ?? 0),
+    failed: Number(push.failed ?? 0),
+    deferred: Number(push.deferred ?? 0),
+  };
+  const queueLevel: SynchronizationHealthLevel =
+    unresolvedConflicts.length > 0 || unresolvedQuarantines.length > 0
+      ? "actionRequired"
+      : "healthy";
+  const pushLevel: SynchronizationHealthLevel = pushSummary.failed > 0
+    ? "actionRequired"
+    : pushSummary.deferred > 0 ? "delayed" : "healthy";
+  const status = highestSynchronizationHealthLevel([
+    queueLevel,
+    pushLevel,
+    ...devices.map((device) => device.status),
+  ]);
+  return json({
+    generatedAt: now.toISOString(),
+    status,
+    statusLabel: status === "healthy" ? "Healthy"
+      : status === "delayed" ? "Delayed" : "Action Required",
+    serverCursor,
+    summary: {
+      activeDevices: devices.length,
+      healthyDevices: devices.filter((device) => device.status === "healthy").length,
+      delayedDevices: devices.filter((device) => device.status === "delayed").length,
+      actionRequiredDevices: devices.filter((device) =>
+        device.status === "actionRequired").length,
+      unresolvedConflicts: unresolvedConflicts.length,
+      quarantinedChanges: unresolvedQuarantines.length,
+      oldestConflictAgeSeconds,
+      oldestQuarantineAgeSeconds,
+      pushLast24Hours: pushSummary,
+      activeAlerts: alertResult.results.length,
+      criticalAlerts: (alertResult.results as Array<Record<string, unknown>>)
+        .filter((alert) => alert.severity === "critical").length,
+    },
+    alerts: alertResult.results,
+    devices,
+    trendsLast7Days: {
+      byEntity: [...entityCounts.entries()].map(([entityType, count]) => ({
+        entityType, count,
+      })).sort((left, right) => right.count - left.count),
+      byField: [...fieldCounts.entries()].map(([field, count]) => ({ field, count }))
+        .sort((left, right) => right.count - left.count),
+      quarantineReasons: [...failureCounts.entries()].map(([reason, count]) => ({
+        reason, count,
+      })).sort((left, right) => right.count - left.count),
+    },
+    thresholds: {
+      delayedBehindChanges: 1,
+      actionRequiredBehindChanges: 50,
+      actionRequiredCursorAgeSeconds: 1800,
+      deferredPushAgeSeconds: 120,
+    },
+  });
+}
+
+async function acknowledgeSynchronizationCursor(
+  request: Request,
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  const body = await request.json<{ cursor?: number }>();
+  const requested = Number(body.cursor ?? -1);
+  if (!Number.isInteger(requested) || requested < 0) {
+    return json({ error: "invalid_synchronization_cursor" }, 400);
+  }
+  const serverCursor = await tenantSynchronizationCursor(env, identity.tenantID);
+  const cursor = Math.min(requested, serverCursor);
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO synchronization_device_cursors
+      (tenant_id, device_id, acknowledged_sequence, updated_at)
+     VALUES (?1, ?2, ?3, ?4)
+     ON CONFLICT (tenant_id, device_id) DO UPDATE SET
+       acknowledged_sequence = MAX(acknowledged_sequence, excluded.acknowledged_sequence),
+       updated_at = excluded.updated_at`,
+  ).bind(identity.tenantID, identity.deviceID, cursor, now).run();
+  return json({ cursor, serverCursor, acknowledgedAt: now });
 }
 
 interface MileageTripUpload {
@@ -5489,6 +7497,9 @@ async function publishSynchronizationSnapshot(
   }
   const publishedAt = new Date().toISOString();
   const revision = crypto.randomUUID();
+  const changeCursor = await tenantSynchronizationCursor(
+    env, identity.tenantID,
+  );
   await env.ARCHIVES.put(
     tenantSynchronizationSnapshotKey(identity.tenantID),
     body,
@@ -5498,10 +7509,11 @@ async function publishSynchronizationSnapshot(
         tenantID: identity.tenantID,
         publishedAt,
         revision,
+        changeCursor: String(changeCursor),
       },
     },
   );
-  return json({ publishedAt, revision }, 201);
+  return json({ publishedAt, revision, changeCursor }, 201);
 }
 
 async function synchronizationBootstrap(
@@ -5517,8 +7529,643 @@ async function synchronizationBootstrap(
       "content-type": archiveMediaType,
       "cache-control": "no-store",
       "x-pfss-snapshot-revision": object.customMetadata?.revision ?? "",
+      "x-pfss-change-cursor": object.customMetadata?.changeCursor ?? "0",
     },
   });
+}
+
+async function synchronizationCanonicalBaseline(
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  const result = await env.DB.prepare(
+    `SELECT revision, operation_json AS operationJSON, updated_at AS updatedAt
+       FROM synchronized_records
+      WHERE tenant_id = ?1
+      ORDER BY entity_type ASC, entity_id ASC`,
+  ).bind(identity.tenantID).all<{
+    revision: string;
+    operationJSON: string;
+    updatedAt: string;
+  }>();
+  const records = result.results.map((row) => {
+    const operation = JSON.parse(row.operationJSON) as Record<string, unknown>;
+    const rawMetadata = operation.metadata;
+    const metadata = rawMetadata && typeof rawMetadata === "object" &&
+        !Array.isArray(rawMetadata)
+      ? Object.fromEntries(Object.entries(rawMetadata).map(([key, value]) => {
+        if (typeof value === "string") return [key, value];
+        if (value == null) return [key, ""];
+        if (typeof value === "object") return [key, JSON.stringify(value)];
+        return [key, String(value)];
+      }))
+      : {};
+    return {
+      revision: row.revision,
+      operation: {
+        ...operation,
+        metadata,
+        sequenceNumber: 0,
+        status: "synchronized",
+        updatedAt: row.updatedAt,
+      },
+    };
+  });
+  return json({
+    cursor: await tenantSynchronizationCursor(env, identity.tenantID),
+    records,
+  });
+}
+
+
+async function reportSynchronizationQuarantine(
+  request: Request,
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  const body = await request.json<{
+    operation?: Record<string, unknown>;
+    reason?: string;
+  }>();
+  const operation = body.operation;
+  const operationID = String(operation?.id ?? "").toLowerCase();
+  const entityType = String(operation?.entityType ?? "custom");
+  const entityID = operation?.entityID == null
+    ? null
+    : String(operation.entityID).toLowerCase();
+  const reason = body.reason?.trim().slice(0, 1000) ?? "";
+  if (!operation || !operationID || reason.length < 3) {
+    return json({ error: "invalid_quarantine_report" }, 400);
+  }
+  let cloudOperationJSON: string | null = null;
+  let cloudRevision: string | null = null;
+  if (entityID) {
+    const current = await env.DB.prepare(
+      `SELECT operation_json AS operationJSON, revision
+         FROM synchronized_records
+        WHERE tenant_id = ?1 AND entity_type = ?2 AND entity_id = ?3`,
+    ).bind(identity.tenantID, entityType, entityID).first<{
+      operationJSON: string;
+      revision: string;
+    }>();
+    cloudOperationJSON = current?.operationJSON ?? null;
+    cloudRevision = current?.revision ?? null;
+  }
+  const now = new Date().toISOString();
+  const existing = await env.DB.prepare(
+    `SELECT id FROM synchronization_quarantines
+      WHERE tenant_id = ?1 AND source_device_id = ?2 AND operation_id = ?3`,
+  ).bind(identity.tenantID, identity.deviceID, operationID)
+    .first<{ id: string }>();
+  const quarantineID = existing?.id ?? crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO synchronization_quarantines
+      (id, tenant_id, operation_id, entity_type, entity_id, source_member_id,
+       source_device_id, operation_json, cloud_operation_json, cloud_revision,
+       failure_json, status, policy_version, detected_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'unresolved',
+             ?12, ?13)
+     ON CONFLICT(tenant_id, source_device_id, operation_id) DO UPDATE SET
+       operation_json = excluded.operation_json,
+       cloud_operation_json = excluded.cloud_operation_json,
+       cloud_revision = excluded.cloud_revision,
+       failure_json = excluded.failure_json,
+       status = 'unresolved',
+       resolution_action = NULL,
+       resolution_reason = NULL,
+       resolved_by_member_id = NULL,
+       resolved_by_device_id = NULL,
+       resolver_role = NULL,
+       replacement_operation_id = NULL,
+       detected_at = excluded.detected_at,
+       resolved_at = NULL`,
+  ).bind(
+    quarantineID, identity.tenantID, operationID, entityType, entityID,
+    identity.memberID, identity.deviceID, JSON.stringify(operation),
+    cloudOperationJSON, cloudRevision, JSON.stringify({ reason }),
+    SYNCHRONIZATION_QUARANTINE_POLICY_VERSION, now,
+  ).run();
+  return json({ quarantineID }, existing ? 200 : 201);
+}
+
+function quarantineReviewDetails(
+  operation: Record<string, unknown>,
+  cloudOperation: Record<string, unknown> | null,
+): { affectedFields: string[]; operationalImpact: string } {
+  if (cloudOperation) return conflictReviewDetails(operation, cloudOperation);
+  const envelope = versionedMutationEnvelope(operation);
+  const affectedFields = envelope?.changedFields?.filter((field) => field.trim())
+    ?? ["record"];
+  return {
+    affectedFields: affectedFields.length > 0 ? affectedFields : ["record"],
+    operationalImpact: conflictOperationalImpact(
+      String(operation.entityType ?? "custom"),
+      affectedFields,
+    ),
+  };
+}
+
+async function listSynchronizationQuarantines(
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  if (!canResolveConflicts(identity)) return json({ error: "forbidden" }, 403);
+  const result = await env.DB.prepare(
+    `SELECT id, operation_id AS operationID, entity_type AS entityType,
+            entity_id AS entityID, source_member_id AS sourceMemberID,
+            source_device_id AS sourceDeviceID,
+            operation_json AS operationJSON,
+            cloud_operation_json AS cloudOperationJSON,
+            cloud_revision AS cloudRevision, failure_json AS failureJSON,
+            policy_version AS policyVersion, detected_at AS detectedAt
+       FROM synchronization_quarantines
+      WHERE tenant_id = ?1 AND status = 'unresolved'
+      ORDER BY detected_at ASC`,
+  ).bind(identity.tenantID).all<{
+    id: string; operationID: string; entityType: string; entityID: string | null;
+    sourceMemberID: string; sourceDeviceID: string; operationJSON: string;
+    cloudOperationJSON: string | null; cloudRevision: string | null;
+    failureJSON: string; policyVersion: number; detectedAt: string;
+  }>();
+  return json({ quarantines: result.results.map((row) => {
+    const operation = JSON.parse(row.operationJSON) as Record<string, unknown>;
+    const cloudOperation = row.cloudOperationJSON
+      ? JSON.parse(row.cloudOperationJSON) as Record<string, unknown>
+      : null;
+    return {
+      id: row.id,
+      operationID: row.operationID,
+      entityType: row.entityType,
+      entityID: row.entityID,
+      sourceMemberID: row.sourceMemberID,
+      sourceDeviceID: row.sourceDeviceID,
+      operation,
+      cloudOperation,
+      cloudRevision: row.cloudRevision,
+      failure: JSON.parse(row.failureJSON),
+      policyVersion: row.policyVersion,
+      detectedAt: row.detectedAt,
+      ...quarantineReviewDetails(operation, cloudOperation),
+    };
+  }) });
+}
+
+async function resolveSynchronizationQuarantine(
+  request: Request,
+  env: Env,
+  identity: DeviceIdentity,
+  quarantineID: string,
+): Promise<Response> {
+  if (!canResolveConflicts(identity)) return json({ error: "forbidden" }, 403);
+  const body = await request.json<{
+    action?: string; reason?: string; replacementOperationID?: string;
+  }>();
+  if (
+    body.action !== "discard" && body.action !== "retry" &&
+    body.action !== "repair"
+  ) {
+    return json({ error: "invalid_quarantine_resolution" }, 400);
+  }
+  const providedReason = body.reason?.trim().slice(0, 500) ?? "";
+  const actionDescription = body.action === "discard"
+    ? "discarded the device change"
+    : body.action === "retry"
+      ? "retried the device change"
+      : "repaired and approved the device change";
+  const reason = providedReason ||
+    `Manager or Owner ${actionDescription} without an additional note.`;
+  if (body.action === "repair" && !body.replacementOperationID?.trim()) {
+    return json({ error: "repair_replacement_required" }, 400);
+  }
+  const existing = await env.DB.prepare(
+    `SELECT operation_id AS operationID, status, resolution_action AS action,
+            resolved_at AS resolvedAt
+       FROM synchronization_quarantines
+      WHERE tenant_id = ?1 AND id = ?2`,
+  ).bind(identity.tenantID, quarantineID).first<{
+    operationID: string; status: string; action: string | null;
+    resolvedAt: string | null;
+  }>();
+  if (!existing) return json({ error: "quarantine_not_found" }, 404);
+  if (existing.status === "resolved") {
+    return json({
+      id: quarantineID, operationID: existing.operationID,
+      action: existing.action, resolvedAt: existing.resolvedAt, duplicate: true,
+    });
+  }
+  if (body.action === "repair") {
+    const replacement = await env.DB.prepare(
+      `SELECT synchronized_operations.id
+         FROM synchronized_operations
+         JOIN synchronization_quarantines
+           ON synchronization_quarantines.tenant_id = synchronized_operations.tenant_id
+          AND synchronization_quarantines.id = ?1
+          AND synchronization_quarantines.entity_type = synchronized_operations.entity_type
+          AND COALESCE(synchronization_quarantines.entity_id, '') =
+              COALESCE(synchronized_operations.entity_id, '')
+        WHERE synchronized_operations.tenant_id = ?2
+          AND synchronized_operations.id = ?3
+          AND synchronized_operations.device_id = ?4`,
+    ).bind(
+      quarantineID, identity.tenantID,
+      body.replacementOperationID!.trim(), identity.deviceID,
+    ).first<{ id: string }>();
+    if (!replacement) {
+      return json({ error: "repair_replacement_not_accepted" }, 409);
+    }
+  }
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE synchronization_quarantines
+          SET status = 'resolved', resolution_action = ?1,
+              resolution_reason = ?2, resolved_by_member_id = ?3,
+              resolved_by_device_id = ?4, resolver_role = ?5, resolved_at = ?6,
+              replacement_operation_id = ?9
+        WHERE tenant_id = ?7 AND id = ?8 AND status = 'unresolved'`,
+    ).bind(
+      body.action, reason, identity.memberID, identity.deviceID, identity.role,
+      now, identity.tenantID, quarantineID,
+      body.replacementOperationID?.trim() ?? null,
+    ),
+    env.DB.prepare(
+      `INSERT INTO access_audit_events
+        (id, tenant_id, actor_member_id, actor_device_id, event_type,
+         metadata_json, created_at)
+       SELECT ?1, ?2, ?3, ?4, 'sync.quarantine_resolved', ?5, ?6
+        WHERE EXISTS (
+          SELECT 1 FROM synchronization_quarantines
+           WHERE tenant_id = ?2 AND id = ?7 AND status = 'resolved'
+             AND resolved_at = ?6
+        )`,
+    ).bind(
+      crypto.randomUUID(), identity.tenantID, identity.memberID,
+      identity.deviceID, JSON.stringify({
+        quarantineID, operationID: existing.operationID,
+        action: body.action, reason,
+        replacementOperationID: body.replacementOperationID ?? null,
+        policyVersion: SYNCHRONIZATION_QUARANTINE_POLICY_VERSION,
+      }), now, quarantineID,
+    ),
+  ]);
+  return json({
+    id: quarantineID, operationID: existing.operationID,
+    action: body.action, resolvedAt: now, duplicate: false,
+  });
+}
+
+async function listSourceQuarantineResolutions(
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  const result = await env.DB.prepare(
+    `SELECT id, operation_id AS operationID, resolution_action AS action,
+            resolution_reason AS reason, resolved_at AS resolvedAt
+       FROM synchronization_quarantines
+      WHERE tenant_id = ?1
+        AND (source_device_id = ?2 OR source_member_id = ?3)
+        AND status = 'resolved'
+      ORDER BY resolved_at ASC`,
+  ).bind(identity.tenantID, identity.deviceID, identity.memberID).all<{
+    id: string; operationID: string; action: "discard" | "retry" | "repair";
+    reason: string; resolvedAt: string;
+  }>();
+  return json({ resolutions: result.results });
+}
+
+const synchronizationDiagnosticMediaType =
+  "application/vnd.pfss.sync-diagnostics+json";
+const synchronizationDiagnosticMaximumBytes = 256 * 1024;
+const synchronizationDiagnosticRetentionMilliseconds = 30 * 24 * 60 * 60 * 1000;
+
+function diagnosticRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function diagnosticString(value: unknown, maximum = 200): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed && trimmed.length <= maximum ? trimmed : null;
+}
+
+function sanitizeSynchronizationDiagnostic(body: Record<string, unknown>) {
+  const app = diagnosticRecord(body.app);
+  const device = diagnosticRecord(body.device);
+  const synchronization = diagnosticRecord(body.synchronization);
+  const inventory = diagnosticRecord(body.inventory);
+  const recovery = diagnosticRecord(synchronization.latestRecovery);
+  const operations = Array.isArray(body.operations) ? body.operations.slice(0, 100) : [];
+  return {
+    schemaVersion: 1,
+    generatedAt: diagnosticString(body.generatedAt, 40),
+    app: {
+      version: diagnosticString(app.version, 40),
+      build: diagnosticString(app.build, 40),
+    },
+    device: {
+      model: diagnosticString(device.model, 100),
+      systemName: diagnosticString(device.systemName, 40),
+      systemVersion: diagnosticString(device.systemVersion, 40),
+    },
+    synchronization: {
+      cursor: Number.isSafeInteger(synchronization.cursor)
+        ? synchronization.cursor : null,
+      connectivity: diagnosticString(synchronization.connectivity, 40),
+      cloudAccessStatus: diagnosticString(synchronization.cloudAccessStatus, 80),
+      queuePersistenceError: diagnosticString(
+        synchronization.queuePersistenceError, 300,
+      ),
+      latestRecovery: Object.keys(recovery).length === 0 ? null : {
+        startedAt: diagnosticString(recovery.startedAt, 40),
+        completedAt: diagnosticString(recovery.completedAt, 40),
+        startingCursor: Number.isSafeInteger(recovery.startingCursor)
+          ? recovery.startingCursor : null,
+        endingCursor: Number.isSafeInteger(recovery.endingCursor)
+          ? recovery.endingCursor : null,
+        pulledChanges: Number.isSafeInteger(recovery.pulledChanges)
+          ? recovery.pulledChanges : null,
+        alreadyReflected: Number.isSafeInteger(recovery.alreadyReflected)
+          ? recovery.alreadyReflected : null,
+        supersededDeviceChanges: Number.isSafeInteger(recovery.supersededDeviceChanges)
+          ? recovery.supersededDeviceChanges : null,
+        requiringReview: Number.isSafeInteger(recovery.requiringReview)
+          ? recovery.requiringReview : null,
+      },
+    },
+    inventory: {
+      customers: Number.isSafeInteger(inventory.customers) ? inventory.customers : null,
+      sites: Number.isSafeInteger(inventory.sites) ? inventory.sites : null,
+      leads: Number.isSafeInteger(inventory.leads) ? inventory.leads : null,
+      estimates: Number.isSafeInteger(inventory.estimates) ? inventory.estimates : null,
+      jobs: Number.isSafeInteger(inventory.jobs) ? inventory.jobs : null,
+      invoices: Number.isSafeInteger(inventory.invoices) ? inventory.invoices : null,
+      employees: Number.isSafeInteger(inventory.employees) ? inventory.employees : null,
+      catalogItems: Number.isSafeInteger(inventory.catalogItems) ? inventory.catalogItems : null,
+      recurringWorkTemplates: Number.isSafeInteger(inventory.recurringWorkTemplates)
+        ? inventory.recurringWorkTemplates : null,
+      assignments: Number.isSafeInteger(inventory.assignments) ? inventory.assignments : null,
+    },
+    operations: operations.map((raw) => {
+      const operation = diagnosticRecord(raw);
+      const failure = diagnosticRecord(operation.failure);
+      const conflict = diagnosticRecord(operation.conflict);
+      const metadata = diagnosticRecord(operation.metadata);
+      const retries = Array.isArray(operation.retries)
+        ? operation.retries.slice(-10).map((rawRetry) => {
+          const retry = diagnosticRecord(rawRetry);
+          return {
+            attemptNumber: Number.isSafeInteger(retry.attemptNumber)
+              ? retry.attemptNumber : null,
+            startedAt: diagnosticString(retry.startedAt, 40),
+            completedAt: diagnosticString(retry.completedAt, 40),
+            outcome: diagnosticString(retry.outcome, 40),
+            failureCode: diagnosticString(retry.failureCode, 120),
+          };
+        }) : [];
+      const allowedMetadata = [
+        "serverQuarantineID", "serverQuarantineStatus", "serverConflictID",
+        "sourceOperationID", "mutationEnvelopeVersion", "mutationKind",
+        "commandName", "changedFields", "quarantineDeliveryStatus",
+        "conflictDeliveryStatus", "appliedQuarantineResolutionID",
+        "quarantineResolution", "recoveryClassification", "remoteRevision",
+      ];
+      return {
+        operationID: diagnosticString(operation.operationID, 80),
+        idempotencyKey: diagnosticString(operation.idempotencyKey, 160),
+        sequenceNumber: Number.isSafeInteger(operation.sequenceNumber)
+          ? operation.sequenceNumber : null,
+        entityType: diagnosticString(operation.entityType, 60),
+        recordID: diagnosticString(operation.recordID, 80),
+        actionName: diagnosticString(operation.actionName, 100),
+        status: diagnosticString(operation.status, 40),
+        createdAt: diagnosticString(operation.createdAt, 40),
+        updatedAt: diagnosticString(operation.updatedAt, 40),
+        nextRetryAt: diagnosticString(operation.nextRetryAt, 40),
+        failure: Object.keys(failure).length === 0 ? null : {
+          category: diagnosticString(failure.category, 60),
+          code: diagnosticString(failure.code, 120),
+          isRetryable: typeof failure.isRetryable === "boolean"
+            ? failure.isRetryable : null,
+          occurredAt: diagnosticString(failure.occurredAt, 40),
+        },
+        conflict: Object.keys(conflict).length === 0 ? null : {
+          kind: diagnosticString(conflict.kind, 60),
+          detectedAt: diagnosticString(conflict.detectedAt, 40),
+          resolution: diagnosticString(conflict.resolution, 60),
+        },
+        metadata: Object.fromEntries(allowedMetadata.flatMap((key) => {
+          const value = diagnosticString(metadata[key], 300);
+          return value === null ? [] : [[key, value]];
+        })),
+        retries,
+      };
+    }),
+  };
+}
+
+function synchronizationDiagnosticCaseCode(): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  const token = Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("");
+  return `PFSS-${token.slice(0, 4)}-${token.slice(4)}`;
+}
+
+async function submitSynchronizationDiagnostic(
+  request: Request,
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  if (request.headers.get("content-type") !== synchronizationDiagnosticMediaType) {
+    return json({ error: "unsupported_diagnostic_type" }, 415);
+  }
+  const contentLength = Number(request.headers.get("content-length") ?? "0");
+  if (contentLength > synchronizationDiagnosticMaximumBytes) {
+    return json({ error: "diagnostic_too_large" }, 413);
+  }
+  const body = await request.json<Record<string, unknown>>();
+  const description = body.description == null
+    ? null : diagnosticString(body.description, 500);
+  if (body.description != null && description === null) {
+    return json({ error: "invalid_diagnostic_description" }, 400);
+  }
+  const sanitized = sanitizeSynchronizationDiagnostic(body);
+  if (!sanitized.generatedAt || !sanitized.app.version || !sanitized.app.build ||
+      !sanitized.device.model || !sanitized.device.systemVersion) {
+    return json({ error: "invalid_diagnostic_bundle" }, 400);
+  }
+  const recent = await env.DB.prepare(
+    `SELECT COUNT(*) AS count FROM synchronization_diagnostics
+      WHERE tenant_id = ?1 AND source_device_id = ?2 AND submitted_at >= ?3`,
+  ).bind(
+    identity.tenantID, identity.deviceID,
+    new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+  ).first<{ count: number }>();
+  if (Number(recent?.count ?? 0) >= 5) {
+    return json({ error: "diagnostic_rate_limited" }, 429);
+  }
+
+  const id = crypto.randomUUID();
+  const caseCode = synchronizationDiagnosticCaseCode();
+  const submittedAt = new Date();
+  const expiresAt = new Date(
+    submittedAt.getTime() + synchronizationDiagnosticRetentionMilliseconds,
+  );
+  const objectKey = `support-diagnostics/${identity.tenantID}/${id}.json`;
+  const stored = {
+    header: {
+      caseCode,
+      tenantID: identity.tenantID,
+      tenantName: identity.tenantName,
+      sourceMemberID: identity.memberID,
+      sourceMemberName: identity.memberName,
+      sourceRole: identity.role,
+      sourceDeviceID: identity.deviceID,
+      sourceDeviceName: identity.deviceName,
+      submittedAt: submittedAt.toISOString(),
+      expiresAt: expiresAt.toISOString(),
+    },
+    description,
+    diagnostic: sanitized,
+  };
+  const data = new TextEncoder().encode(JSON.stringify(stored));
+  if (data.byteLength > synchronizationDiagnosticMaximumBytes) {
+    return json({ error: "diagnostic_too_large" }, 413);
+  }
+  await env.ARCHIVES.put(objectKey, data, {
+    httpMetadata: { contentType: synchronizationDiagnosticMediaType },
+    customMetadata: {
+      caseCode, tenantID: identity.tenantID, sourceDeviceID: identity.deviceID,
+      submittedAt: submittedAt.toISOString(), expiresAt: expiresAt.toISOString(),
+    },
+  });
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO synchronization_diagnostics
+          (id, case_code, tenant_id, source_member_id, source_device_id,
+           source_role, description, object_key, byte_size, app_version,
+           build_number, system_version, device_model, submitted_at, expires_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)`,
+      ).bind(
+        id, caseCode, identity.tenantID, identity.memberID, identity.deviceID,
+        identity.role, description, objectKey, data.byteLength,
+        sanitized.app.version, sanitized.app.build,
+        sanitized.device.systemVersion, sanitized.device.model,
+        submittedAt.toISOString(), expiresAt.toISOString(),
+      ),
+      accessAuditStatement(env, identity.tenantID, "support.sync_diagnostics_submitted", {
+        actorMemberID: identity.memberID,
+        actorDeviceID: identity.deviceID,
+        metadata: {
+          caseCode,
+          byteSize: String(data.byteLength),
+          expiresAt: expiresAt.toISOString(),
+        },
+        createdAt: submittedAt.toISOString(),
+      }),
+    ]);
+  } catch (error) {
+    await env.ARCHIVES.delete(objectKey);
+    throw error;
+  }
+  return json({ caseCode, submittedAt, expiresAt }, 201);
+}
+
+async function listSynchronizationDiagnostics(
+  env: Env,
+  identity: DeviceIdentity,
+): Promise<Response> {
+  const managerScope = identity.role === "owner" || identity.role === "manager";
+  const result = await env.DB.prepare(
+    `SELECT case_code AS caseCode, source_member_id AS sourceMemberID,
+            source_device_id AS sourceDeviceID, source_role AS sourceRole,
+            description, byte_size AS byteSize, app_version AS appVersion,
+            build_number AS buildNumber, system_version AS systemVersion,
+            device_model AS deviceModel, submitted_at AS submittedAt,
+            expires_at AS expiresAt
+       FROM synchronization_diagnostics
+      WHERE tenant_id = ?1 AND deleted_at IS NULL
+        AND (?2 = 1 OR source_member_id = ?3)
+      ORDER BY submitted_at DESC LIMIT 100`,
+  ).bind(identity.tenantID, managerScope ? 1 : 0, identity.memberID).all();
+  return json({ diagnostics: result.results });
+}
+
+async function getSynchronizationDiagnostic(
+  env: Env,
+  identity: DeviceIdentity,
+  caseCode: string,
+): Promise<Response> {
+  const row = await env.DB.prepare(
+    `SELECT source_member_id AS sourceMemberID, object_key AS objectKey
+       FROM synchronization_diagnostics
+      WHERE tenant_id = ?1 AND case_code = ?2 AND deleted_at IS NULL`,
+  ).bind(identity.tenantID, caseCode.toUpperCase()).first<{
+    sourceMemberID: string; objectKey: string;
+  }>();
+  if (!row) return json({ error: "diagnostic_not_found" }, 404);
+  if (identity.role === "member" && row.sourceMemberID !== identity.memberID) {
+    return json({ error: "forbidden" }, 403);
+  }
+  const object = await env.ARCHIVES.get(row.objectKey);
+  if (!object) return json({ error: "diagnostic_content_missing" }, 404);
+  await accessAuditStatement(env, identity.tenantID, "support.sync_diagnostics_accessed", {
+    actorMemberID: identity.memberID,
+    actorDeviceID: identity.deviceID,
+    metadata: { caseCode: caseCode.toUpperCase() },
+  }).run();
+  return new Response(object.body, {
+    headers: { "content-type": synchronizationDiagnosticMediaType },
+  });
+}
+
+async function deleteSynchronizationDiagnostic(
+  env: Env,
+  identity: DeviceIdentity,
+  caseCode: string,
+): Promise<Response> {
+  if (identity.role === "member") return json({ error: "forbidden" }, 403);
+  const normalized = caseCode.toUpperCase();
+  const row = await env.DB.prepare(
+    `SELECT object_key AS objectKey FROM synchronization_diagnostics
+      WHERE tenant_id = ?1 AND case_code = ?2 AND deleted_at IS NULL`,
+  ).bind(identity.tenantID, normalized).first<{ objectKey: string }>();
+  if (!row) return json({ error: "diagnostic_not_found" }, 404);
+  await env.ARCHIVES.delete(row.objectKey);
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE synchronization_diagnostics
+          SET deleted_at = ?1, deleted_by_member_id = ?2
+        WHERE tenant_id = ?3 AND case_code = ?4 AND deleted_at IS NULL`,
+    ).bind(now, identity.memberID, identity.tenantID, normalized),
+    accessAuditStatement(env, identity.tenantID, "support.sync_diagnostics_deleted", {
+      actorMemberID: identity.memberID,
+      actorDeviceID: identity.deviceID,
+      metadata: { caseCode: normalized },
+      createdAt: now,
+    }),
+  ]);
+  return json({ caseCode: normalized, deletedAt: now });
+}
+
+async function cleanupExpiredSynchronizationDiagnostics(
+  env: Env,
+  now: Date = new Date(),
+): Promise<number> {
+  const expired = await env.DB.prepare(
+    `SELECT id, object_key AS objectKey FROM synchronization_diagnostics
+      WHERE expires_at <= ?1 LIMIT 1000`,
+  ).bind(now.toISOString()).all<{ id: string; objectKey: string }>();
+  for (const row of expired.results) await env.ARCHIVES.delete(row.objectKey);
+  if (expired.results.length > 0) {
+    await env.DB.batch(expired.results.map((row) => env.DB.prepare(
+      "DELETE FROM synchronization_diagnostics WHERE id = ?1",
+    ).bind(row.id)));
+  }
+  return expired.results.length;
 }
 
 async function uploadBackup(
@@ -5791,7 +8438,6 @@ export default {
       ) {
         return acknowledgeCompanyDataRemoval(request, env);
       }
-
       const identity = await authenticate(request, env);
       if (identity instanceof Response) return identity;
 
@@ -5902,6 +8548,24 @@ export default {
       if (request.method === "GET" && url.pathname === "/v1/sync/changes") {
         return synchronizationChanges(url, env, identity);
       }
+      if (request.method === "POST" && url.pathname === "/v1/sync/cursor") {
+        return acknowledgeSynchronizationCursor(request, env, identity);
+      }
+      if (request.method === "POST" && url.pathname === "/v1/sync/push") {
+        return registerSynchronizationPush(request, env, identity);
+      }
+      if (request.method === "DELETE" && url.pathname === "/v1/sync/push") {
+        return unregisterSynchronizationPush(env, identity);
+      }
+      if (request.method === "POST" && url.pathname === "/v1/sync/push-events") {
+        return recordSynchronizationPushEvent(request, env, identity);
+      }
+      if (request.method === "POST" && url.pathname === "/v1/sync/device-health") {
+        return reportSynchronizationDeviceHealth(request, env, identity);
+      }
+      if (request.method === "GET" && url.pathname === "/v1/sync/health") {
+        return synchronizationHealth(env, identity);
+      }
       if (request.method === "POST" && url.pathname === "/v1/mileage/sync") {
         return synchronizeMileageTrips(request, env, identity);
       }
@@ -5940,8 +8604,46 @@ export default {
       if (request.method === "GET" && url.pathname === "/v1/sync/conflict-audit") {
         return listConflictAudit(env, identity);
       }
+      if (request.method === "GET" && url.pathname === "/v1/sync/quarantines") {
+        return listSynchronizationQuarantines(env, identity);
+      }
+      if (
+        request.method === "GET" &&
+        url.pathname === "/v1/sync/quarantine-resolutions"
+      ) {
+        return listSourceQuarantineResolutions(env, identity);
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/sync/quarantines/report"
+      ) {
+        return reportSynchronizationQuarantine(request, env, identity);
+      }
+      const quarantineResolutionMatch = url.pathname.match(
+        /^\/v1\/sync\/quarantines\/([^/]+)\/resolve$/,
+      );
+      if (request.method === "POST" && quarantineResolutionMatch) {
+        return resolveSynchronizationQuarantine(
+          request, env, identity,
+          decodeURIComponent(quarantineResolutionMatch[1]),
+        );
+      }
       if (request.method === "POST" && url.pathname === "/v1/sync/conflicts/report") {
         return reportSynchronizationConflict(request, env, identity);
+      }
+      if (
+        request.method === "GET" &&
+        url.pathname === "/v1/sync/conflicts/revoked-device-scope"
+      ) {
+        return revokedDeviceSynchronizationConflictScope(url, env, identity);
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/sync/conflicts/discard-revoked-device"
+      ) {
+        return discardRevokedDeviceSynchronizationConflicts(
+          request, env, identity,
+        );
       }
       const conflictResolutionMatch = url.pathname.match(
         /^\/v1\/sync\/conflicts\/([^/]+)\/resolve$/,
@@ -5957,6 +8659,37 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/v1/sync/bootstrap") {
         return synchronizationBootstrap(env, identity);
+      }
+      if (
+        request.method === "GET" &&
+        url.pathname === "/v1/sync/baseline-records"
+      ) {
+        return synchronizationCanonicalBaseline(env, identity);
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/support/sync-diagnostics"
+      ) {
+        return submitSynchronizationDiagnostic(request, env, identity);
+      }
+      if (
+        request.method === "GET" &&
+        url.pathname === "/v1/support/sync-diagnostics"
+      ) {
+        return listSynchronizationDiagnostics(env, identity);
+      }
+      const synchronizationDiagnosticMatch = url.pathname.match(
+        /^\/v1\/support\/sync-diagnostics\/([^/]+)$/,
+      );
+      if (synchronizationDiagnosticMatch && request.method === "GET") {
+        return getSynchronizationDiagnostic(
+          env, identity, decodeURIComponent(synchronizationDiagnosticMatch[1]),
+        );
+      }
+      if (synchronizationDiagnosticMatch && request.method === "DELETE") {
+        return deleteSynchronizationDiagnostic(
+          env, identity, decodeURIComponent(synchronizationDiagnosticMatch[1]),
+        );
       }
       if (request.method === "POST" && url.pathname === "/v1/backups") {
         return uploadBackup(request, env, identity);
@@ -5978,6 +8711,10 @@ export default {
     env: Env,
     context: ExecutionContext,
   ): void {
-    context.waitUntil(runAccessCleanup(env));
+    context.waitUntil(Promise.all([
+      runAccessCleanup(env),
+      cleanupExpiredSynchronizationDiagnostics(env),
+      evaluateAllSynchronizationHealthAlerts(env),
+    ]));
   },
 };

@@ -6,29 +6,48 @@
 //
 
 import CoreLocation
+import Combine
 import MapKit
 import SwiftUI
+
+@MainActor
+private final class MapAssistedAddressSession: ObservableObject, Identifiable {
+    let id = UUID()
+    let initialAddress: String
+    @Published var cameraPosition: MapCameraPosition = .automatic
+    @Published var selectedCoordinate: CLLocationCoordinate2D?
+    @Published var reviewedAddress: String
+    @Published var isResolvingAddress = false
+    @Published var errorMessage = ""
+    var hasCenteredInitialAddress = false
+    var selectionRevision = 0
+
+    init(initialAddress: String) {
+        self.initialAddress = initialAddress
+        reviewedAddress = initialAddress
+    }
+}
 
 struct MapAssistedAddressButton: View {
     @Binding var address: String
     let label: String
 
-    @State private var isShowingPicker = false
+    @State private var pickerSession: MapAssistedAddressSession?
 
     var body: some View {
         Button {
-            isShowingPicker = true
+            pickerSession = MapAssistedAddressSession(initialAddress: address)
         } label: {
             Label(label, systemImage: "map.fill")
         }
         .accessibilityHint("Opens a map to select and review an address")
-        .sheet(isPresented: $isShowingPicker) {
+        .sheet(item: $pickerSession) { session in
             NavigationStack {
                 MapAssistedAddressPicker(
-                    initialAddress: address,
+                    session: session,
                     onApply: { selectedAddress in
                         address = selectedAddress
-                        isShowingPicker = false
+                        pickerSession = nil
                     }
                 )
             }
@@ -44,12 +63,7 @@ struct MapAssistedAddressPicker: View {
     let onApply: (String, CLLocationCoordinate2D?) -> Void
 
     @StateObject private var locationManager = TechnicianLocationManager()
-    @State private var cameraPosition: MapCameraPosition = .automatic
-    @State private var selectedCoordinate: CLLocationCoordinate2D?
-    @State private var reviewedAddress = ""
-    @State private var isResolvingAddress = false
-    @State private var errorMessage = ""
-    @State private var hasCenteredInitialAddress = false
+    @StateObject private var session: MapAssistedAddressSession
     @State private var isSatelliteView = false
     @FocusState private var isAddressFocused: Bool
 
@@ -62,6 +76,19 @@ struct MapAssistedAddressPicker: View {
         self.initialAddress = initialAddress
         requiresCoordinate = false
         self.onApply = { address, _ in onApply(address) }
+        _session = StateObject(
+            wrappedValue: MapAssistedAddressSession(initialAddress: initialAddress)
+        )
+    }
+
+    fileprivate init(
+        session: MapAssistedAddressSession,
+        onApply: @escaping (String) -> Void
+    ) {
+        initialAddress = session.initialAddress
+        requiresCoordinate = false
+        self.onApply = { address, _ in onApply(address) }
+        _session = StateObject(wrappedValue: session)
     }
 
     init(
@@ -74,14 +101,17 @@ struct MapAssistedAddressPicker: View {
             guard let coordinate else { return }
             onApplySelection(address, coordinate)
         }
+        _session = StateObject(
+            wrappedValue: MapAssistedAddressSession(initialAddress: initialAddress)
+        )
     }
 
     var body: some View {
         VStack(spacing: 0) {
             MapReader { proxy in
-                Map(position: $cameraPosition) {
+                Map(position: $session.cameraPosition) {
                     UserAnnotation()
-                    if let selectedCoordinate {
+                    if let selectedCoordinate = session.selectedCoordinate {
                         Marker(
                             "Selected Property",
                             coordinate: selectedCoordinate
@@ -138,9 +168,9 @@ struct MapAssistedAddressPicker: View {
                             systemImage: locationManager.status.systemImage
                         )
                     }
-                    .disabled(isResolvingAddress)
+                    .disabled(session.isResolvingAddress)
 
-                    if isResolvingAddress {
+                    if session.isResolvingAddress {
                         HStack {
                             ProgressView()
                             Text("Finding the street address…")
@@ -152,7 +182,7 @@ struct MapAssistedAddressPicker: View {
                 Section("Review Address") {
                     TextField(
                         "Street, City, State ZIP",
-                        text: $reviewedAddress,
+                        text: $session.reviewedAddress,
                         axis: .vertical
                     )
                     .textContentType(.fullStreetAddress)
@@ -164,10 +194,10 @@ struct MapAssistedAddressPicker: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if !errorMessage.isEmpty {
+                if !session.errorMessage.isEmpty {
                     Section {
                         Label(
-                            errorMessage,
+                            session.errorMessage,
                             systemImage: "exclamationmark.triangle.fill"
                         )
                         .foregroundStyle(.orange)
@@ -188,22 +218,21 @@ struct MapAssistedAddressPicker: View {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Apply Address") {
                     onApply(
-                        reviewedAddress.trimmingCharacters(
+                        session.reviewedAddress.trimmingCharacters(
                             in: .whitespacesAndNewlines
                         ),
-                        selectedCoordinate
+                        session.selectedCoordinate
                     )
                 }
                 .disabled(
-                    reviewedAddress.trimmingCharacters(
+                    session.reviewedAddress.trimmingCharacters(
                         in: .whitespacesAndNewlines
-                    ).isEmpty || isResolvingAddress ||
-                    (requiresCoordinate && selectedCoordinate == nil)
+                    ).isEmpty || session.isResolvingAddress ||
+                    (requiresCoordinate && session.selectedCoordinate == nil)
                 )
             }
         }
         .task {
-            reviewedAddress = initialAddress
             await centerInitialAddressIfPossible()
         }
     }
@@ -226,11 +255,13 @@ struct MapAssistedAddressPicker: View {
     }
 
     private func useCurrentLocation() {
-        errorMessage = ""
+        session.errorMessage = ""
+        let requestRevision = beginUserSelection()
         locationManager.requestCurrentLocation { result in
+            guard requestRevision == session.selectionRevision else { return }
             switch result {
             case .success(let location):
-                cameraPosition = .region(
+                session.cameraPosition = .region(
                     MKCoordinateRegion(
                         center: location.coordinate,
                         latitudinalMeters: 350,
@@ -239,62 +270,79 @@ struct MapAssistedAddressPicker: View {
                 )
                 resolve(
                     location,
-                    source: .currentLocation
+                    source: .currentLocation,
+                    revision: requestRevision
                 )
             case .failure(let error):
-                errorMessage = error.localizedDescription +
+                session.errorMessage = error.localizedDescription +
                     " You can still browse the map or type the address manually."
             }
         }
     }
 
     private func selectMapPoint(_ coordinate: CLLocationCoordinate2D) {
-        selectedCoordinate = coordinate
+        let requestRevision = beginUserSelection()
+        session.selectedCoordinate = coordinate
         resolve(
             CLLocation(
                 latitude: coordinate.latitude,
                 longitude: coordinate.longitude
             ),
-            source: .selectedMapPoint
+            source: .selectedMapPoint,
+            revision: requestRevision
         )
+    }
+
+    private func beginUserSelection() -> Int {
+        session.selectionRevision += 1
+        return session.selectionRevision
     }
 
     private func resolve(
         _ location: CLLocation,
-        source: AddressCandidate.Source
+        source: AddressCandidate.Source,
+        revision: Int
     ) {
-        selectedCoordinate = location.coordinate
-        isResolvingAddress = true
-        errorMessage = ""
+        session.selectedCoordinate = location.coordinate
+        session.isResolvingAddress = true
+        session.errorMessage = ""
 
         Task { @MainActor in
-            defer { isResolvingAddress = false }
+            defer {
+                if revision == session.selectionRevision {
+                    session.isResolvingAddress = false
+                }
+            }
             do {
                 let candidate = try await addressService.candidate(
                     for: location,
                     source: source
                 )
-                reviewedAddress = candidate.formattedAddress
+                guard revision == session.selectionRevision else { return }
+                session.reviewedAddress = candidate.formattedAddress
             } catch {
-                errorMessage = error.localizedDescription
+                guard revision == session.selectionRevision else { return }
+                session.errorMessage = error.localizedDescription
             }
         }
     }
 
     private func centerInitialAddressIfPossible() async {
-        guard !hasCenteredInitialAddress else { return }
-        hasCenteredInitialAddress = true
+        guard !session.hasCenteredInitialAddress else { return }
+        session.hasCenteredInitialAddress = true
         let cleaned = initialAddress.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
         guard !cleaned.isEmpty else { return }
+        let startupRevision = session.selectionRevision
 
         do {
             let location = try await AddressGeocoder().geocode(
                 address: cleaned
             )
-            selectedCoordinate = location.coordinate
-            cameraPosition = .region(
+            guard startupRevision == session.selectionRevision else { return }
+            session.selectedCoordinate = location.coordinate
+            session.cameraPosition = .region(
                 MKCoordinateRegion(
                     center: location.coordinate,
                     latitudinalMeters: 500,

@@ -11,6 +11,24 @@ import XCTest
 
 @MainActor
 final class OfflineWorkflowIntegrationTests: XCTestCase {
+    func testPhysicalDeviceWorkflowFixturesAreRecognizedForNotificationCleanup() {
+        XCTAssertTrue(PFSSJobStartReminderService.isTestFixtureJobNumber(
+            "JOB-OFFLINE-TRAVEL-PAUSE"
+        ))
+        XCTAssertTrue(PFSSJobStartReminderService.isTestFixtureJobNumber(
+            "JOB-FIELD-DAY-SCHEDULED"
+        ))
+        XCTAssertTrue(PFSSJobStartReminderService.isTestFixtureJobNumber(
+            "JOB-CROSS-ENTRY-POINT"
+        ))
+        XCTAssertTrue(PFSSJobStartReminderService.isTestFixtureJobNumber(
+            "JOB-STEP-6-ACCEPTANCE"
+        ))
+        XCTAssertFalse(PFSSJobStartReminderService.isTestFixtureJobNumber(
+            "JOB-2608-00001"
+        ))
+    }
+
     private let technicianID = UUID()
     private let siteID = UUID()
 

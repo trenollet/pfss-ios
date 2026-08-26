@@ -10,6 +10,8 @@
   },
   "vars": {
     "PFSS_ENVIRONMENT": "staging",
+    "APNS_ENVIRONMENT": "sandbox",
+    "APNS_TOPIC": "com.patriot.PPS-Receipt-Printer",
     "APP_STORE_BUNDLE_ID": "com.patriot.PPS-Receipt-Printer",
     "APP_STORE_ENVIRONMENT": "sandbox",
     "WORKOS_ENVIRONMENT": "staging",

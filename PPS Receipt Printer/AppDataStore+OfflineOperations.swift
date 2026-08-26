@@ -74,6 +74,15 @@ struct OfflineRecordMutationPayload: Codable, Equatable {
     var modifiedAt: Date
 }
 
+/// Early record-mutation envelopes sometimes omitted the duplicate inner
+/// entity ID even though the durable operation retained the authoritative ID.
+/// This shape is accepted only while rebuilding from server canonical state.
+private struct LegacyCanonicalRecordMutationPayload: Decodable {
+    var entityType: OfflineEntityType
+    var recordData: Data
+    var modifiedAt: Date
+}
+
 @MainActor
 extension AppDataStore {
     func applyServerConflictResolutionReceipts(
@@ -93,7 +102,16 @@ extension AppDataStore {
                 queued.createdAt >= receipt.resolvedAt &&
                 [.pending, .waitingForRetry, .failed].contains(queued.status) {
                 try? offlineOperationQueue.mutate(id: queued.id) {
-                    $0.baseRevision = receipt.finalRevision
+                    if let payload = try? OfflineRecordMutationCodec
+                        .rebasingBaseRevision(
+                            $0.payload,
+                            to: receipt.finalRevision,
+                            decoder: Self.recordSynchronizationDecoder,
+                            encoder: Self.recordSynchronizationEncoder
+                        ) {
+                        $0.payload = payload
+                        $0.baseRevision = receipt.finalRevision
+                    }
                 }
             }
             guard let local = offlineOperationQueue.operations.first(where: {
@@ -169,6 +187,16 @@ extension AppDataStore {
             operation.metadata["serverConflictID"] = serverConflict.id
             operation.metadata["sourceMemberID"] = serverConflict.sourceMemberID
             operation.metadata["sourceDeviceID"] = serverConflict.sourceDeviceID
+            if let affectedFields = serverConflict.affectedFields,
+               !affectedFields.isEmpty {
+                operation.metadata["conflictingPaths"] = affectedFields.joined(separator: ",")
+            }
+            if let operationalImpact = serverConflict.operationalImpact {
+                operation.metadata["conflictOperationalImpact"] = operationalImpact
+            }
+            if let policyVersion = serverConflict.policyVersion {
+                operation.metadata["conflictPolicyVersion"] = policyVersion.formatted()
+            }
             try offlineOperationQueue.enqueue(operation)
         }
     }
@@ -206,6 +234,269 @@ extension AppDataStore {
             note: "Resolved from the tenant Manager conflict inbox.",
             resubmitLocal: false
         )
+    }
+
+    func discardRevokedDeviceConflicts(
+        sourceDeviceID: String,
+        expectedCount: Int
+    ) async throws {
+        guard canOverrideSynchronizationConflicts,
+              let requestCleanup = onRevokedDeviceConflictCleanupRequested else {
+            throw OfflineConflictResolutionError.invalidResolution
+        }
+        let receipt = try await requestCleanup(
+            sourceDeviceID,
+            expectedCount,
+            "Discarded retained changes after the source device was revoked."
+        )
+        guard receipt.resolvedCount > 0,
+              receipt.sourceDeviceID == sourceDeviceID,
+              receipt.resolution == "keptCloud" else {
+            throw OfflineConflictResolutionError.invalidResolution
+        }
+        for operation in offlineOperationQueue.operations where
+            operation.status == .conflicted &&
+            operation.metadata["sourceDeviceID"] == sourceDeviceID {
+            try? offlineOperationQueue.remove(id: operation.id)
+        }
+    }
+
+    func applyServerQuarantineResolutionReceipts(
+        _ receipts: [PFSSCloudflareQuarantineResolutionReceipt]
+    ) {
+        for receipt in receipts {
+            guard let operation = offlineOperationQueue.operation(
+                id: receipt.operationID
+            ) ?? offlineOperationQueue.operations.first(where: {
+                $0.metadata["serverQuarantineID"] == receipt.id
+            }) else { continue }
+            let wasAlreadyFinalized =
+                operation.metadata["appliedQuarantineResolutionID"] == receipt.id &&
+                (receipt.action == "retry" || operation.status == .cancelled)
+            guard !wasAlreadyFinalized else { continue }
+            let localOperationID = operation.id
+            let resolution: OfflineQuarantineResolution = receipt.action == "retry"
+                ? .retry
+                : .discard
+            do {
+                try offlineOperationQueue.resolveQuarantinedOperation(
+                    id: localOperationID,
+                    resolution: resolution,
+                    reason: receipt.reason
+                        ?? "Resolved by a Manager or Owner in the quarantine inbox.",
+                    at: receipt.resolvedAt
+                )
+                try offlineOperationQueue.mutate(id: localOperationID) {
+                    $0.metadata["appliedQuarantineResolutionID"] = receipt.id
+                    if receipt.action == "retry" {
+                        $0.metadata.removeValue(forKey: "serverQuarantineID")
+                        $0.metadata.removeValue(forKey: "quarantineDeliveryStatus")
+                        $0.metadata.removeValue(forKey: "quarantineDeliveryError")
+                    }
+                }
+            } catch {
+                // Leave the receipt eligible for the next synchronization poll.
+            }
+        }
+        if receipts.contains(where: { $0.action == "retry" }) {
+            offlineSynchronizationService?.syncNow()
+        }
+    }
+
+    func reconcileServerQuarantineInbox(
+        _ serverItems: [PFSSCloudflareSynchronizationQuarantine]
+    ) throws {
+        let activeIDs = Set(serverItems.map(\.id))
+        for operation in offlineOperationQueue.operations {
+            if let quarantineID = operation.metadata["serverQuarantineID"],
+               !activeIDs.contains(quarantineID) {
+                try offlineOperationQueue.remove(id: operation.id)
+            }
+        }
+        for item in serverItems {
+            var authoritativeOperation = item.operation
+            if let envelope = try? item.operation.payload.decode(
+                SynchronizationMutationEnvelope.self,
+                decoder: Self.recordSynchronizationDecoder
+            ), envelope.schemaVersion >= SynchronizationMutationEnvelope.currentSchemaVersion,
+               envelope.operationID != authoritativeOperation.id {
+                authoritativeOperation.id = envelope.operationID
+                authoritativeOperation.idempotencyKey =
+                    "pfss-operation-\(envelope.operationID.uuidString.lowercased())"
+            }
+            if let existing = offlineOperationQueue.operations.first(where: {
+                $0.metadata["serverQuarantineID"] == item.id ||
+                    $0.id == authoritativeOperation.id ||
+                    $0.id == item.operationID ||
+                    $0.metadata["sourceOperationID"] ==
+                        item.operationID.uuidString.lowercased()
+            }) {
+                if existing.id != authoritativeOperation.id {
+                    try offlineOperationQueue.remove(id: existing.id)
+                } else {
+                try offlineOperationQueue.mutate(id: existing.id) { operation in
+                    operation.status = .failed
+                    operation.updatedAt = item.detectedAt
+                    operation.failure = OfflineFailureDetails(
+                        category: .validation,
+                        code: "manager_quarantine_review_required",
+                        message: item.failure.reason,
+                        isRetryable: false,
+                        occurredAt: item.detectedAt
+                    )
+                    operation.metadata["serverQuarantineStatus"] = "unresolved"
+                    operation.metadata["serverQuarantineID"] = item.id
+                    operation.metadata["sourceOperationID"] =
+                        item.operationID.uuidString.lowercased()
+                    operation.metadata["sourceMemberID"] = item.sourceMemberID
+                    operation.metadata["sourceDeviceID"] = item.sourceDeviceID
+                    operation.metadata.removeValue(forKey: "quarantineResolvedAt")
+                    operation.metadata.removeValue(forKey: "quarantineResolution")
+                    operation.metadata.removeValue(forKey: "quarantineResolutionReason")
+                }
+                continue
+                }
+            }
+            var operation = authoritativeOperation
+            operation.sequenceNumber = 0
+            operation.status = .failed
+            operation.updatedAt = item.detectedAt
+            operation.failure = OfflineFailureDetails(
+                category: .validation,
+                code: "manager_quarantine_review_required",
+                message: item.failure.reason,
+                isRetryable: false,
+                occurredAt: item.detectedAt
+            )
+            if let cloud = item.cloudOperation {
+                operation.conflict = OfflineConflictInformation(
+                    id: operation.id,
+                    kind: .concurrentModification,
+                    detectedAt: item.detectedAt,
+                    localVersion: OfflineRecordVersion(
+                        revision: operation.baseRevision,
+                        modifiedAt: operation.createdAt,
+                        source: .local,
+                        payload: operation.payload
+                    ),
+                    remoteVersion: OfflineRecordVersion(
+                        revision: item.cloudRevision,
+                        modifiedAt: cloud.createdAt,
+                        source: .remote,
+                        payload: cloud.payload
+                    )
+                )
+            }
+            operation.metadata["serverQuarantineID"] = item.id
+            operation.metadata["serverQuarantineStatus"] = "unresolved"
+            operation.metadata["sourceOperationID"] =
+                item.operationID.uuidString.lowercased()
+            operation.metadata["sourceMemberID"] = item.sourceMemberID
+            operation.metadata["sourceDeviceID"] = item.sourceDeviceID
+            operation.metadata["quarantineReason"] = item.failure.reason
+            operation.metadata["quarantinedAt"] = ISO8601DateFormatter()
+                .string(from: item.detectedAt)
+            operation.metadata["quarantineAffectedFields"] =
+                item.affectedFields.joined(separator: ",")
+            operation.metadata["quarantineOperationalImpact"] =
+                item.operationalImpact
+            operation.metadata["quarantinePolicyVersion"] =
+                item.policyVersion.formatted()
+            try offlineOperationQueue.enqueue(operation)
+        }
+    }
+
+    func resolveInboxQuarantine(
+        operationID: UUID,
+        resolution: OfflineQuarantineResolution,
+        reason: String
+    ) async throws {
+        guard let operation = offlineOperationQueue.operation(id: operationID),
+              let quarantineID = operation.metadata["serverQuarantineID"],
+              let requestResolution = onServerQuarantineResolutionRequested
+        else { throw OfflineOperationQueueError.operationNotFound(operationID) }
+        _ = try await requestResolution(quarantineID, resolution, reason)
+        try offlineOperationQueue.remove(id: operationID)
+    }
+
+    func repairAssignmentQuarantine(
+        operationID: UUID,
+        repairedAssignment: Assignment,
+        reason: String
+    ) async throws {
+        guard canOverrideSynchronizationConflicts,
+              let quarantined = offlineOperationQueue.operation(id: operationID),
+              quarantined.entityType == .assignment,
+              quarantined.entityID == repairedAssignment.id,
+              let quarantineID = quarantined.metadata["serverQuarantineID"],
+              let remote = quarantined.conflict?.remoteVersion,
+              let submitRepair = onServerQuarantineRepairRequested
+        else { throw OfflineOperationQueueError.operationNotFound(operationID) }
+        let validation = assignmentEngine.validateAssignment(repairedAssignment)
+        guard validation.state != .invalid else {
+            throw NSError(
+                domain: "PFSSAssignmentRepair",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey:
+                    validation.messages.joined(separator: " ")]
+            )
+        }
+        let remoteMutation = try OfflineRecordMutationCodec.decode(
+            remote.payload,
+            decoder: Self.recordSynchronizationDecoder
+        )
+        let repairedData = try Self.recordSynchronizationEncoder.encode(
+            repairedAssignment
+        )
+        let classification = SynchronizationMutationClassifier.classify(
+            entityType: .assignment,
+            baseRecordData: remoteMutation.recordData,
+            recordData: repairedData
+        )
+        let replacementID = UUID()
+        let now = Date()
+        let payload = try OfflineRecordMutationCodec.envelopePayload(
+            operationID: replacementID,
+            entityType: .assignment,
+            entityID: repairedAssignment.id,
+            recordData: repairedData,
+            baseRecordData: remoteMutation.recordData,
+            modifiedAt: now,
+            baseRevision: remote.revision,
+            mutationKind: classification.kind,
+            changedFields: classification.changedFields,
+            commandName: classification.commandName,
+            actorEmployeeID: cloudEmployeeID,
+            encoder: Self.recordSynchronizationEncoder
+        )
+        var replacement = PendingOfflineOperation(
+            id: replacementID,
+            type: .recordMutation,
+            entityType: .assignment,
+            entityID: repairedAssignment.id,
+            actionName: "upsertRecord",
+            actorEmployeeID: cloudEmployeeID,
+            payload: payload,
+            createdAt: now,
+            baseRevision: remote.revision,
+            metadata: [
+                "recordSync": "true",
+                "mutationEnvelopeVersion": String(
+                    SynchronizationMutationEnvelope.currentSchemaVersion
+                ),
+                "mutationKind": classification.kind.rawValue,
+                "changedFields": classification.changedFields.joined(separator: ","),
+                "commandName": classification.commandName ?? "",
+                "repairedQuarantineID": quarantineID,
+                "replacesOperationID": quarantined.metadata["sourceOperationID"]
+                    ?? ""
+            ]
+        )
+        let revision = try await submitRepair(quarantineID, replacement, reason)
+        replacement.status = .synchronized
+        replacement.metadata["remoteRevision"] = revision
+        applyRemoteRecordOperations([replacement])
+        try offlineOperationQueue.remove(id: operationID)
     }
 
     func resolveRecordConflict(
@@ -253,8 +544,8 @@ extension AppDataStore {
         }
 
         for operation in recordOperations {
-            guard let mutation = try? operation.payload.decode(
-                OfflineRecordMutationPayload.self,
+            guard let mutation = try? OfflineRecordMutationCodec.decode(
+                operation.payload,
                 decoder: Self.recordSynchronizationDecoder
             ) else { continue }
             applyRemoteRecordMutation(mutation)
@@ -269,6 +560,235 @@ extension AppDataStore {
         }
         relinkActiveOperationsToAuthenticatedEmployeeIfNeeded()
         saveSynchronizedRecordRevisions()
+    }
+
+    /// Replaces every server-synchronized record family with the canonical
+    /// tenant baseline. Archive-only settings remain available, while records
+    /// absent from server authority cannot survive as stale local additions.
+    func applyAuthoritativeCanonicalBaseline(
+        _ operations: [PendingOfflineOperation]
+    ) {
+        let recordOperations = operations.filter {
+            $0.type == .recordMutation && $0.actionName == "upsertRecord"
+        }
+
+        // The protected archive is the compatibility fallback for canonical
+        // records written by an older app schema. Only records whose IDs are
+        // still present in server authority may survive through this fallback.
+        let fallbackCustomers = Dictionary(uniqueKeysWithValues: customers.map { ($0.id, $0) })
+        let fallbackSites = Dictionary(uniqueKeysWithValues: sites.map { ($0.id, $0) })
+        let fallbackLeads = Dictionary(uniqueKeysWithValues: leads.map { ($0.id, $0) })
+        let fallbackEstimates = Dictionary(uniqueKeysWithValues: estimates.map { ($0.id, $0) })
+        let fallbackJobs = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0) })
+        let fallbackInvoices = Dictionary(uniqueKeysWithValues: invoices.map { ($0.id, $0) })
+        let fallbackEmployees = Dictionary(uniqueKeysWithValues: employees.map { ($0.id, $0) })
+        let fallbackCatalog = Dictionary(uniqueKeysWithValues: serviceCatalogItems.map { ($0.id, $0) })
+        let fallbackRecurring = Dictionary(uniqueKeysWithValues: recurringWorkTemplates.map { ($0.id, $0) })
+        let fallbackAssignments = Dictionary(
+            uniqueKeysWithValues: assignmentStore.assignments.map { ($0.id, $0) }
+        )
+        let fallbackBusinessProfile = businessProfile
+
+        isApplyingRestoredSnapshot = true
+        isApplyingRemoteSynchronization = true
+        defer { isApplyingRemoteSynchronization = false }
+
+        customers = []
+        sites = []
+        leads = []
+        estimates = []
+        jobs = []
+        invoices = []
+        employees = []
+        serviceCatalogItems = []
+        recurringWorkTemplates = []
+        businessProfile = BusinessProfile()
+        try? assignmentStore.replaceAll(with: [])
+        var canonicalAssignments: [Assignment] = []
+
+        for operation in recordOperations {
+            let mutation: OfflineRecordMutationPayload
+            if let decoded = try? OfflineRecordMutationCodec.decode(
+                operation.payload,
+                decoder: Self.recordSynchronizationDecoder
+            ) {
+                mutation = decoded
+            } else if let entityID = operation.entityID,
+                      let legacy = try? operation.payload.decode(
+                        LegacyCanonicalRecordMutationPayload.self,
+                        decoder: Self.recordSynchronizationDecoder
+                      ) {
+                mutation = OfflineRecordMutationPayload(
+                    entityType: legacy.entityType,
+                    entityID: entityID,
+                    recordData: legacy.recordData,
+                    modifiedAt: legacy.modifiedAt
+                )
+            } else {
+                continue
+            }
+            switch mutation.entityType {
+            case .customer:
+                Self.upsertRemote(
+                    decodeRemote(Customer.self, mutation) ?? fallbackCustomers[mutation.entityID],
+                    in: &customers
+                )
+            case .site:
+                Self.upsertRemote(
+                    decodeRemote(CustomerSite.self, mutation) ?? fallbackSites[mutation.entityID],
+                    in: &sites
+                )
+            case .lead:
+                Self.upsertRemote(
+                    decodeRemote(Lead.self, mutation) ?? fallbackLeads[mutation.entityID],
+                    in: &leads
+                )
+            case .estimate:
+                Self.upsertRemote(
+                    decodeRemote(EstimateRecord.self, mutation) ?? fallbackEstimates[mutation.entityID],
+                    in: &estimates
+                )
+            case .job:
+                Self.upsertRemote(
+                    decodeRemote(JobRecord.self, mutation) ?? fallbackJobs[mutation.entityID],
+                    in: &jobs
+                )
+            case .invoice:
+                Self.upsertRemote(
+                    decodeRemote(InvoiceRecord.self, mutation) ?? fallbackInvoices[mutation.entityID],
+                    in: &invoices
+                )
+            case .employee:
+                Self.upsertRemote(
+                    decodeRemote(EmployeeRecord.self, mutation) ?? fallbackEmployees[mutation.entityID],
+                    in: &employees
+                )
+            case .catalog:
+                Self.upsertRemote(
+                    decodeRemote(ServiceCatalogItem.self, mutation) ?? fallbackCatalog[mutation.entityID],
+                    in: &serviceCatalogItems
+                )
+            case .recurringWork:
+                Self.upsertRemote(
+                    decodeRemote(RecurringWorkTemplate.self, mutation) ?? fallbackRecurring[mutation.entityID],
+                    in: &recurringWorkTemplates
+                )
+            case .assignment:
+                if let assignment = decodeRemote(Assignment.self, mutation) ??
+                    fallbackAssignments[mutation.entityID] {
+                    canonicalAssignments.append(assignment)
+                }
+            case .custom:
+                guard mutation.entityID == Self.businessProfileSynchronizationID else { break }
+                businessProfile = decodeRemote(BusinessProfile.self, mutation) ??
+                    fallbackBusinessProfile
+            case .payment, .route:
+                break
+            }
+            if let revision = operation.metadata["remoteRevision"] {
+                synchronizedRecordRevisions[
+                    synchronizationKey(
+                        type: mutation.entityType,
+                        id: mutation.entityID
+                    )
+                ] = revision
+            }
+        }
+
+        // Historical server authority can contain more than one record with
+        // the same human-facing assignment number. AssignmentStore correctly
+        // rejects that invalid snapshot, but recovery must not turn one
+        // duplicate into an empty assignment database. Keep the newest
+        // authoritative record for each number and install every unaffected
+        // assignment in one validated pass.
+        let recoverableAssignments = Self.recoverableCanonicalAssignments(
+            canonicalAssignments
+        )
+        try? assignmentStore.replaceAll(with: recoverableAssignments)
+
+        saveSynchronizedRecordRevisions()
+        persistAppliedSnapshotWithoutEnqueuingChanges()
+    }
+
+    private static func recoverableCanonicalAssignments(
+        _ assignments: [Assignment]
+    ) -> [Assignment] {
+        var newestByNumber: [String: Assignment] = [:]
+        for assignment in assignments {
+            let key = assignment.assignmentNumber
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            guard let existing = newestByNumber[key] else {
+                newestByNumber[key] = assignment
+                continue
+            }
+            if assignment.updatedDate > existing.updatedDate ||
+                (assignment.updatedDate == existing.updatedDate &&
+                    assignment.id.uuidString < existing.id.uuidString) {
+                newestByNumber[key] = assignment
+            }
+        }
+        return Array(newestByNumber.values)
+    }
+
+    /// Reconciles durable device intent against authoritative changes pulled
+    /// before upload. Identical intent is completed locally. Device changes
+    /// older than the eight-hour stale window are superseded by the cloud;
+    /// recent divergent intent remains queued for normal policy/conflict review.
+    func reconcilePendingOperationsBeforeUpload(
+        with remoteOperations: [PendingOfflineOperation],
+        staleWindow: TimeInterval = 8 * 60 * 60
+    ) -> (alreadyReflected: Int, superseded: Int) {
+        var alreadyReflected = 0
+        var superseded = 0
+
+        for remote in remoteOperations where remote.type == .recordMutation {
+            guard let entityID = remote.entityID,
+                  let remoteMutation = try? OfflineRecordMutationCodec.decode(
+                    remote.payload,
+                    decoder: Self.recordSynchronizationDecoder
+                  ) else { continue }
+            let remoteRevision = remote.metadata["remoteRevision"]
+            let candidates = offlineOperationQueue.operations.filter {
+                $0.type == .recordMutation &&
+                $0.entityType == remote.entityType &&
+                $0.entityID == entityID &&
+                !$0.status.isTerminal
+            }
+
+            for candidate in candidates {
+                guard let localMutation = try? OfflineRecordMutationCodec.decode(
+                    candidate.payload,
+                    decoder: Self.recordSynchronizationDecoder
+                ) else { continue }
+                let isIdentical = localMutation.recordData == remoteMutation.recordData
+                let isStale = candidate.createdAt.addingTimeInterval(staleWindow)
+                    <= remote.updatedAt
+                guard isIdentical || isStale else { continue }
+
+                try? offlineOperationQueue.mutate(id: candidate.id) { operation in
+                    operation.status = .synchronized
+                    operation.synchronizedAt = Date()
+                    operation.failure = nil
+                    operation.conflict = nil
+                    operation.nextRetryAt = nil
+                    if let remoteRevision {
+                        operation.metadata["remoteRevision"] = remoteRevision
+                    }
+                    if isIdentical {
+                        operation.metadata["recoveryClassification"] =
+                            "alreadyReflected"
+                    } else {
+                        operation.metadata["recoveryClassification"] =
+                            "supersededByCloud"
+                        operation.metadata["staleDeviceChangeDiscarded"] = "true"
+                    }
+                }
+                if isIdentical { alreadyReflected += 1 }
+                else { superseded += 1 }
+            }
+        }
+        return (alreadyReflected, superseded)
     }
 
     /// Repairs operational references created before a cloud membership was
@@ -385,7 +905,10 @@ extension AppDataStore {
         }
     }
 
-    private func applyRemoteRecordMutation(_ mutation: OfflineRecordMutationPayload) {
+    private func applyRemoteRecordMutation(
+        _ mutation: OfflineRecordMutationPayload,
+        materializeRecurringWork: Bool = true
+    ) {
         switch mutation.entityType {
         case .customer:
             Self.upsertRemote(decodeRemote(Customer.self, mutation), in: &customers)
@@ -417,7 +940,9 @@ extension AppDataStore {
                 decodeRemote(RecurringWorkTemplate.self, mutation),
                 in: &recurringWorkTemplates
             )
-            materializeRecurringWorkHorizon()
+            if materializeRecurringWork {
+                materializeRecurringWorkHorizon()
+            }
         case .custom:
             guard mutation.entityID == Self.businessProfileSynchronizationID,
                   let profile = decodeRemote(BusinessProfile.self, mutation) else {
@@ -463,22 +988,36 @@ extension AppDataStore {
         entityType: OfflineEntityType,
         entityID: UUID,
         value: Value,
+        baseRecordData: Data? = nil,
         modifiedAt: Date = Date()
     ) {
         guard offlineSynchronizationMode.requiresRemoteQueue else { return }
         do {
             let recordData = try Self.recordSynchronizationEncoder.encode(value)
-            let mutation = OfflineRecordMutationPayload(
+            let operationID = UUID()
+            let baseRevision = synchronizedRecordRevisions[
+                synchronizationKey(type: entityType, id: entityID)
+            ]
+            let classification = SynchronizationMutationClassifier.classify(
+                entityType: entityType,
+                baseRecordData: baseRecordData,
+                recordData: recordData
+            )
+            let payload = try OfflineRecordMutationCodec.envelopePayload(
+                operationID: operationID,
                 entityType: entityType,
                 entityID: entityID,
                 recordData: recordData,
-                modifiedAt: modifiedAt
-            )
-            let payload = try OfflineOperationPayload(
-                mutation,
+                baseRecordData: baseRecordData,
+                modifiedAt: modifiedAt,
+                baseRevision: baseRevision,
+                mutationKind: classification.kind,
+                changedFields: classification.changedFields,
+                commandName: classification.commandName,
                 encoder: Self.recordSynchronizationEncoder
             )
             let operation = PendingOfflineOperation(
+                id: operationID,
                 type: .recordMutation,
                 entityType: entityType,
                 entityID: entityID,
@@ -486,10 +1025,16 @@ extension AppDataStore {
                 actorEmployeeID: nil,
                 payload: payload,
                 createdAt: modifiedAt,
-                baseRevision: synchronizedRecordRevisions[
-                    synchronizationKey(type: entityType, id: entityID)
-                ],
-                metadata: ["recordSync": "true"]
+                baseRevision: baseRevision,
+                metadata: [
+                    "recordSync": "true",
+                    "mutationEnvelopeVersion": String(
+                        SynchronizationMutationEnvelope.currentSchemaVersion
+                    ),
+                    "mutationKind": classification.kind.rawValue,
+                    "changedFields": classification.changedFields.joined(separator: ","),
+                    "commandName": classification.commandName ?? "",
+                ]
             )
             _ = try offlineOperationQueue.enqueue(operation)
             lastOfflineOperationError = nil

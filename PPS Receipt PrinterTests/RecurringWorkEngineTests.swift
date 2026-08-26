@@ -370,6 +370,41 @@ struct RecurringWorkEngineTests {
         #expect(rebuilt.first?.scheduledDate == releaseDate)
     }
 
+    @MainActor
+    @Test func movingOneOccurrenceDoesNotChangeTemplateOrFutureJobs() throws {
+        let originalDate = try testDate(year: 2026, month: 8, day: 10)
+        let futureDate = try testDate(year: 2026, month: 8, day: 17)
+        let movedDate = try testDate(year: 2026, month: 8, day: 11)
+        let template = makeTemplate(anchor: originalDate, rule: .weekly)
+
+        var selected = template.prototype
+        selected.recurringWorkTemplateID = template.id
+        selected.recurrenceSeriesID = template.id
+        selected.recurrenceSequence = 0
+
+        var future = template.prototype
+        future.id = UUID()
+        future.recurringWorkTemplateID = template.id
+        future.recurrenceSeriesID = template.id
+        future.recurrenceSequence = 1
+        future.scheduledDate = futureDate
+
+        let store = AppDataStore(persistenceEnabled: false)
+        store.recurringWorkTemplates = [template]
+        store.jobs = [selected, future]
+
+        var moved = selected
+        moved.assignmentSchedulingMode = .fixedTime
+        moved.scheduledDate = movedDate
+
+        #expect(store.updateSingleJobOccurrenceSchedule(moved))
+        #expect(store.jobs.first(where: { $0.id == selected.id })?.scheduledDate == movedDate)
+        #expect(store.jobs.first(where: { $0.id == future.id })?.scheduledDate == futureDate)
+        #expect(store.recurringWorkTemplates.first?.anchorDate == originalDate)
+        #expect(store.recurringWorkTemplates.first?.prototype.scheduledDate == originalDate)
+        #expect(store.assignment(forJobID: selected.id)?.scheduling.fixedStartDate == movedDate)
+    }
+
     private func makeTemplate(
         anchor: Date,
         rule: RecurringWorkRule

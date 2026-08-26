@@ -111,6 +111,66 @@ enum OfflineFailureCategory: String, CaseIterable, Codable, Hashable {
     case unknown
 }
 
+struct SynchronizationIssueExplanation: Equatable {
+    var title: String
+    var summary: String
+    var impact: String
+    var recommendedAction: String
+    var technicalCode: String?
+
+    static func explain(
+        failure: OfflineFailureDetails?,
+        entityType: OfflineEntityType
+    ) -> SynchronizationIssueExplanation {
+        let rawCode = failure?.code?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        switch rawCode {
+        case "technician_assignment_change_requires_manager":
+            return .init(
+                title: "A Manager Must Approve This Assignment Change",
+                summary: "An employee tried to change who is assigned to this work. Only a Manager or Owner can approve or correct that crew change.",
+                impact: "The current company assignment remains unchanged until an authorized person reviews it.",
+                recommendedAction: "Review the intended crew, correct it if needed, then approve the repaired assignment or discard the employee change.",
+                technicalCode: rawCode
+            )
+        case "employee_role_change_requires_manager":
+            return .init(
+                title: "A Manager Must Approve This Employee Access Change",
+                summary: "An employee device attempted to change a team member's role or permissions.",
+                impact: "The existing employee access remains in effect.",
+                recommendedAction: "Confirm the correct employee role before approving or discarding the change.",
+                technicalCode: rawCode
+            )
+        case "catalog_change_requires_manager":
+            return .init(
+                title: "A Manager Must Approve This Service Change",
+                summary: "An employee device attempted to change shared service or pricing information.",
+                impact: "The current company service record remains unchanged.",
+                recommendedAction: "Review the service details and approve a corrected Manager change or discard the employee change.",
+                technicalCode: rawCode
+            )
+        case "mutation_rebase_failed":
+            return .init(
+                title: "This Device Change Needs Repair",
+                summary: "PFSS could not safely place this saved device change on top of the newer company record.",
+                impact: "The device change is preserved, but it has not changed the company record.",
+                recommendedAction: "Compare the intended and current values, correct the record, and submit a repaired replacement.",
+                technicalCode: rawCode
+            )
+        default:
+            let recordName = entityType.conflictDisplayName.lowercased()
+            return .init(
+                title: "This \(entityType.conflictDisplayName) Change Needs Review",
+                summary: "PFSS could not safely synchronize this \(recordName) change. The employee's work is preserved for review.",
+                impact: "The accepted company record remains unchanged unless an authorized repair is approved.",
+                recommendedAction: "Compare the device change with the current company record, then repair, retry, or discard it.",
+                technicalCode: rawCode
+            )
+        }
+    }
+}
+
 /// A durable explanation of the latest synchronization failure. User-facing
 /// UI should display `message`; deeper details remain available for support.
 struct OfflineFailureDetails: Codable, Hashable {
@@ -395,5 +455,36 @@ struct PendingOfflineOperation: Identifiable, Codable, Hashable {
         guard failure?.isRetryable != false else { return false }
 
         return nextRetryAt.map { $0 <= date } ?? true
+    }
+
+    /// Queue dependencies are intentionally narrower than queue order. Every
+    /// operation for the same record is serialized, while unrelated records
+    /// remain free to synchronize. Domain commands may add an aggregate key
+    /// or explicit prerequisite operation identifiers through metadata.
+    var synchronizationDependencyKeys: Set<String> {
+        var keys: Set<String> = []
+        if let entityID {
+            keys.insert("record:\(entityType.rawValue):\(entityID.uuidString.lowercased())")
+        } else {
+            // Identity-free legacy operations must not globally block each
+            // other. Their own durable operation identity is the safe fallback.
+            keys.insert("operation:\(id.uuidString.lowercased())")
+        }
+
+        for metadataKey in ["dependencyKey", "dependencyKeys", "aggregateDependencyKey"] {
+            guard let value = metadata[metadataKey] else { continue }
+            value.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .forEach { keys.insert("explicit:\($0)") }
+        }
+        return keys
+    }
+
+    var prerequisiteOperationIDs: Set<UUID> {
+        guard let value = metadata["prerequisiteOperationIDs"] else { return [] }
+        return Set(value.split(separator: ",").compactMap {
+            UUID(uuidString: $0.trimmingCharacters(in: .whitespacesAndNewlines))
+        })
     }
 }

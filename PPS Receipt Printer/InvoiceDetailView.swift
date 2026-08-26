@@ -9,6 +9,18 @@ import SwiftUI
 import UIKit
 
 struct InvoiceDetailView: View {
+    private enum ActiveSheet: Identifiable {
+        case catalogPicker
+        case editLineItem(ServiceLineItem)
+
+        var id: String {
+            switch self {
+            case .catalogPicker: return "catalogPicker"
+            case .editLineItem(let item): return "editLineItem-\(item.id)"
+            }
+        }
+    }
+
     @EnvironmentObject var store: AppDataStore
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var printer: BluetoothPrinter
@@ -22,6 +34,7 @@ struct InvoiceDetailView: View {
     @State private var isShowingReceiptPrinter = false
     @State private var showingUnsavedChangesAlert = false
     @State private var showingTaxCalculation = false
+    @State private var activeSheet: ActiveSheet?
     @FocusState private var isInputFocused: Bool
 
     init(invoice: InvoiceRecord, showsDismissButton: Bool = false) {
@@ -123,53 +136,49 @@ struct InvoiceDetailView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(invoice.lineItems) { item in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(serviceName(for: item))
-                                .font(.headline)
-
-                            if !item.description.isEmpty {
-                                Text(item.description)
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(serviceName(for: item))
+                                    .font(.headline)
+                                if !item.description.isEmpty {
+                                    Text(item.description)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Text("\(item.quantity, specifier: "%.2f") × \(item.unitPrice, format: .currency(code: "USD"))")
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                Text(item.lineTotal, format: .currency(code: "USD"))
+                                    .fontWeight(.semibold)
                             }
-
-                            HStack(spacing: 6) {
-                                Text(
-                                    item.catalogItemTypeSnapshot?.rawValue
-                                    ?? "Legacy Item"
-                                )
-
-                                Text("•")
-
-                                Text(
-                                    item.taxTreatmentSnapshot?.rawValue
-                                    ?? "Tax Classification Not Recorded"
-                                )
+                            Spacer()
+                            Button {
+                                activeSheet = .editLineItem(item)
+                            } label: {
+                                Label("Edit", systemImage: "pencil")
                             }
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(
-                                item.taxTreatmentSnapshot == nil
-                                ? Color.orange
-                                : Color.secondary
-                            )
-
-                            HStack {
-                                Text(
-                                    "\(item.quantity, specifier: "%.2f") × \(item.unitPrice, format: .currency(code: "USD"))"
-                                )
-                                .font(.caption)
-
-                                Spacer()
-
-                                Text(
-                                    item.lineTotal,
-                                    format: .currency(code: "USD")
-                                )
-                                .fontWeight(.semibold)
-                            }
+                            .buttonStyle(.bordered)
                         }
                         .padding(.vertical, 4)
+                        .swipeActions {
+                            Button(role: .destructive) {
+                                invoice.lineItems.removeAll { $0.id == item.id }
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
                     }
+                }
+
+                Button {
+                    activeSheet = .catalogPicker
+                } label: {
+                    Label("Add Invoice Item", systemImage: "plus.circle.fill")
+                }
+
+                if !(invoice.receipts ?? []).isEmpty {
+                    Text("Editing charges will not alter the payment already recorded. If the corrected total is higher, the remaining amount will become due.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -418,6 +427,23 @@ struct InvoiceDetailView: View {
                 reviewerName: reviewerName,
                 companyTaxSettings: store.businessProfile.taxSettings
             )
+        }
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .catalogPicker:
+                ServiceCatalogPickerView(
+                    lineItems: $invoice.lineItems,
+                    onFinished: { activeSheet = nil }
+                )
+                .environmentObject(store)
+            case .editLineItem(let item):
+                EditableLineItemView(
+                    lineItems: $invoice.lineItems,
+                    catalogItem: nil,
+                    existingLineItem: item
+                )
+                .environmentObject(store)
+            }
         }
     }
 

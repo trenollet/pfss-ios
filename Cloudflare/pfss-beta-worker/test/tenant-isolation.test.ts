@@ -156,6 +156,303 @@ function request(
   return new Request(`https://pfss.test${path}`, { ...init, headers });
 }
 
+describe("synchronization push registration", () => {
+  it("binds a token to the authenticated tenant and device", async () => {
+    const owner = await seedIdentity("Push Owner");
+    const token = "a1".repeat(32);
+    const response = await worker.fetch(request(owner, "/v1/sync/push", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, appBuild: "20.7.5" }),
+    }), env);
+
+    expect(response.status).toBe(200);
+    const row = await env.DB.prepare(
+      `SELECT tenant_id AS tenantID, device_id AS deviceID,
+              environment, app_build AS appBuild
+         FROM synchronization_push_registrations
+        WHERE token = ?1`,
+    ).bind(token).first<{
+      tenantID: string;
+      deviceID: string;
+      environment: string;
+      appBuild: string;
+    }>();
+    expect(row).toEqual({
+      tenantID: owner.tenantID,
+      deviceID: owner.deviceID,
+      environment: "sandbox",
+      appBuild: "20.7.5",
+    });
+  });
+
+  it("rejects malformed tokens and only unregisters the calling device", async () => {
+    const owner = await seedIdentity("Push Isolation");
+    const peer = await seedAdditionalDevice(owner, "Push Peer");
+    const ownerToken = "b2".repeat(32);
+    const peerToken = "c3".repeat(32);
+    for (const [identity, token] of [[owner, ownerToken], [peer, peerToken]] as const) {
+      expect((await worker.fetch(request(identity, "/v1/sync/push", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token, appBuild: "20.7.5" }),
+      }), env)).status).toBe(200);
+    }
+    expect((await worker.fetch(request(owner, "/v1/sync/push", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: "not-a-token", appBuild: "20.7.5" }),
+    }), env)).status).toBe(400);
+    expect((await worker.fetch(request(owner, "/v1/sync/push", {
+      method: "DELETE",
+    }), env)).status).toBe(200);
+
+    const remaining = await env.DB.prepare(
+      `SELECT device_id AS deviceID, token
+         FROM synchronization_push_registrations
+        WHERE tenant_id = ?1`,
+    ).bind(owner.tenantID).all<{ deviceID: string; token: string }>();
+    expect(remaining.results).toEqual([{
+      deviceID: peer.deviceID,
+      token: peerToken,
+    }]);
+  });
+
+  it("records lifecycle telemetry only for the receiving device", async () => {
+    const owner = await seedIdentity("Push Telemetry Owner");
+    const peer = await seedAdditionalDevice(owner, "Push Telemetry Peer");
+    const deliveryID = crypto.randomUUID();
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO synchronization_push_deliveries
+        (id, tenant_id, device_id, source_device_id, cursor, environment,
+         apns_request_id, requested_at, accepted_at)
+       VALUES (?1, ?2, ?3, ?4, 42, 'sandbox', ?5, ?6, ?6)`,
+    ).bind(
+      deliveryID,
+      owner.tenantID,
+      peer.deviceID,
+      owner.deviceID,
+      crypto.randomUUID(),
+      now,
+    ).run();
+
+    expect((await worker.fetch(request(owner, "/v1/sync/push-events", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ deliveryID, event: "received", cursor: 41 }),
+    }), env)).status).toBe(404);
+
+    for (const event of ["received", "syncStarted", "syncCompleted"]) {
+      expect((await worker.fetch(request(peer, "/v1/sync/push-events", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ deliveryID, event, cursor: 42 }),
+      }), env)).status).toBe(200);
+    }
+    const delivery = await env.DB.prepare(
+      `SELECT received_at AS receivedAt, sync_started_at AS syncStartedAt,
+              sync_completed_at AS syncCompletedAt,
+              device_reported_cursor AS reportedCursor
+         FROM synchronization_push_deliveries WHERE id = ?1`,
+    ).bind(deliveryID).first<{
+      receivedAt: string | null;
+      syncStartedAt: string | null;
+      syncCompletedAt: string | null;
+      reportedCursor: number | null;
+    }>();
+    expect(delivery?.receivedAt).toBeTruthy();
+    expect(delivery?.syncStartedAt).toBeTruthy();
+    expect(delivery?.syncCompletedAt).toBeTruthy();
+    expect(delivery?.reportedCursor).toBe(42);
+  });
+});
+
+describe("synchronization health monitoring", () => {
+  it("is tenant scoped, manager authorized, and payload free", async () => {
+    const owner = await seedIdentity("Health Owner");
+    const manager = await seedMemberInTenant(owner, "Health Manager", "manager");
+    const employee = await seedMemberInTenant(owner, "Health Employee", "member");
+    const foreignOwner = await seedIdentity("Foreign Health Owner");
+    const now = new Date().toISOString();
+    const operationID = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO synchronization_change_log
+          (tenant_id, tenant_sequence, operation_id, device_id, revision,
+           payload_json, accepted_at)
+         VALUES (?1, 1, ?2, ?3, ?4, '{}', ?5)`,
+      ).bind(owner.tenantID, crypto.randomUUID(), owner.deviceID,
+        crypto.randomUUID(), now),
+      env.DB.prepare(
+        `INSERT INTO synchronization_quarantines
+          (id, tenant_id, operation_id, entity_type, entity_id,
+           source_member_id, source_device_id, operation_json, failure_json,
+           status, policy_version, detected_at)
+         VALUES (?1, ?2, ?3, 'job', ?4, ?5, ?6, ?7, ?8,
+                 'unresolved', 1, ?9)`,
+      ).bind(
+        crypto.randomUUID(), owner.tenantID, operationID, crypto.randomUUID(),
+        employee.memberID, employee.deviceID,
+        JSON.stringify({
+          id: operationID,
+          entityType: "job",
+          metadata: { privatePayloadMarker: "must-not-leak" },
+        }),
+        JSON.stringify({ reason: "schema_validation_failed" }),
+        now,
+      ),
+      env.DB.prepare(
+        `INSERT INTO synchronization_quarantines
+          (id, tenant_id, operation_id, entity_type, entity_id,
+           source_member_id, source_device_id, operation_json, failure_json,
+           status, policy_version, detected_at)
+         VALUES (?1, ?2, ?3, 'customer', ?4, ?5, ?6, '{}', '{}',
+                 'unresolved', 1, ?7)`,
+      ).bind(
+        crypto.randomUUID(), foreignOwner.tenantID, crypto.randomUUID(),
+        crypto.randomUUID(), foreignOwner.memberID, foreignOwner.deviceID, now,
+      ),
+    ]);
+
+    expect((await worker.fetch(
+      request(employee, "/v1/sync/health"), env,
+    )).status).toBe(403);
+    const response = await worker.fetch(
+      request(manager, "/v1/sync/health"), env,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<{
+      status: string;
+      serverCursor: number;
+      summary: { activeDevices: number; quarantinedChanges: number };
+      devices: Array<{ deviceID: string; behindBy: number }>;
+      trendsLast7Days: {
+        byEntity: Array<{ entityType: string; count: number }>;
+        quarantineReasons: Array<{ reason: string; count: number }>;
+      };
+    }>();
+    expect(body.status).toBe("actionRequired");
+    expect(body.serverCursor).toBe(1);
+    expect(body.summary.activeDevices).toBe(3);
+    expect(body.summary.quarantinedChanges).toBe(1);
+    expect(body.devices.every((device) => device.behindBy === 1)).toBe(true);
+    expect(body.trendsLast7Days.byEntity).toContainEqual({
+      entityType: "job",
+      count: 1,
+    });
+    expect(body.trendsLast7Days.quarantineReasons).toContainEqual({
+      reason: "schema_validation_failed",
+      count: 1,
+    });
+    expect(JSON.stringify(body)).not.toContain("must-not-leak");
+    expect(JSON.stringify(body)).not.toContain(foreignOwner.tenantID);
+  });
+
+  it("opens and resolves device alerts without exposing queue contents", async () => {
+    const owner = await seedIdentity("Alert Owner");
+    const employee = await seedMemberInTenant(owner, "Alert Employee", "member");
+    const report = (retryAttempts24h: number) => request(
+      employee,
+      "/v1/sync/device-health",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          appBuild: "20.7.12",
+          queueCount: 2,
+          oldestQueuedAt: new Date(Date.now() - 60_000).toISOString(),
+          failedCount: 0,
+          waitingRetryCount: 2,
+          retryAttempts24h,
+          blockedDependencyCount: 0,
+          conflictedCount: 0,
+          quarantinedCount: 0,
+          privateQueueContents: "must-not-leak",
+        }),
+      },
+    );
+
+    expect((await worker.fetch(report(10), env)).status).toBe(200);
+    let response = await worker.fetch(request(owner, "/v1/sync/health"), env);
+    let body = await response.json<{
+      alerts: Array<{ kind: string; deviceID: string; title: string }>;
+      summary: { activeAlerts: number };
+    }>();
+    expect(body.summary.activeAlerts).toBe(1);
+    expect(body.alerts).toHaveLength(1);
+    expect(body.alerts[0].kind).toBe("excessiveRetries");
+    expect(body.alerts[0].deviceID).toBe(employee.deviceID);
+    expect(JSON.stringify(body)).not.toContain("must-not-leak");
+
+    expect((await worker.fetch(report(0), env)).status).toBe(200);
+    response = await worker.fetch(request(owner, "/v1/sync/health"), env);
+    body = await response.json();
+    expect(body.summary.activeAlerts).toBe(0);
+    expect(body.alerts).toEqual([]);
+    const resolved = await env.DB.prepare(
+      `SELECT status, resolved_at AS resolvedAt
+         FROM synchronization_health_alerts
+        WHERE tenant_id = ?1 AND fingerprint = ?2`,
+    ).bind(
+      owner.tenantID,
+      `excessiveRetries:${employee.deviceID}`,
+    ).first<{ status: string; resolvedAt: string | null }>();
+    expect(resolved?.status).toBe("resolved");
+    expect(resolved?.resolvedAt).toBeTruthy();
+  });
+});
+
+async function sendVersionedMutation(
+  identity: SeededIdentity,
+  options: {
+    entityType: string;
+    entityID: string;
+    baseRevision: string | null;
+    mutationKind: "wholeRecord" | "fieldPatch" | "appendFact" | "domainCommand";
+    changedFields: string[];
+    record: Record<string, unknown>;
+    baseRecord?: Record<string, unknown>;
+    commandName?: string;
+    sequenceNumber: number;
+  },
+): Promise<Response> {
+  const operationID = crypto.randomUUID();
+  const timestamp = new Date(Date.now() + options.sequenceNumber * 1_000).toISOString();
+  const mutation = Buffer.from(JSON.stringify({
+    schemaVersion: 2,
+    operationID,
+    entityType: options.entityType,
+    recordID: options.entityID,
+    baseRevision: options.baseRevision,
+    mutationKind: options.mutationKind,
+    changedFields: options.changedFields,
+    commandName: options.commandName,
+    baseRecordData: options.baseRecord === undefined
+      ? undefined
+      : Buffer.from(JSON.stringify(options.baseRecord)).toString("base64"),
+    recordData: Buffer.from(JSON.stringify(options.record)).toString("base64"),
+    clientCreatedAt: timestamp,
+    deviceModifiedAt: timestamp,
+  })).toString("base64");
+  return worker.fetch(request(identity, "/v1/operations", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      id: operationID,
+      idempotencyKey: `phase20-${crypto.randomUUID()}`,
+      sequenceNumber: options.sequenceNumber,
+      type: "recordMutation",
+      entityType: options.entityType,
+      entityID: options.entityID,
+      actionName: "upsertRecord",
+      baseRevision: options.baseRevision,
+      payload: { schemaVersion: 1, contentType: "application/json", body: mutation },
+      createdAt: timestamp,
+    }),
+  }), env);
+}
+
 async function seedEmployeeRecord(
   identity: SeededIdentity,
   employeeID: string,
@@ -1307,6 +1604,81 @@ describe("tenant isolation", () => {
     expect(bravoBody.changes).toHaveLength(0);
   });
 
+  it("keeps the tenant feed gap-free across reversed timestamps, partial rejection, and duplicate replay", async () => {
+    const owner = await seedIdentity("Failure Mode Feed");
+    const member = await seedMemberInTenant(owner, "Failure Mode Member");
+    const makeOperation = (label: string, createdAt: string) => ({
+      id: crypto.randomUUID(),
+      idempotencyKey: `failure-mode-${label}-${crypto.randomUUID()}`,
+      type: "recordMutation",
+      entityType: "customer",
+      entityID: crypto.randomUUID(),
+      actionName: "upsertRecord",
+      payload: { schemaVersion: 1, contentType: "test", body: "e30=" },
+      createdAt,
+    });
+    const firstAccepted = makeOperation("newer-clock", "2026-08-23T01:00:00Z");
+    const secondAccepted = makeOperation("older-clock", "2026-08-22T01:00:00Z");
+    const submit = (operation: unknown) => worker.fetch(
+      request(member, "/v1/operations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(operation),
+      }),
+      env,
+    );
+
+    expect((await submit(firstAccepted)).status).toBe(201);
+    const rejected = await submit({
+      ...makeOperation("invalid", "2026-08-23T01:01:00Z"),
+      idempotencyKey: "",
+    });
+    expect(rejected.status).toBe(400);
+    expect((await submit(secondAccepted)).status).toBe(201);
+    expect((await submit(firstAccepted)).status).toBe(200);
+
+    const feed = await worker.fetch(
+      request(owner, "/v1/sync/changes?after=0"), env,
+    );
+    expect(feed.status).toBe(200);
+    const body = await feed.json<{
+      cursor: number;
+      changes: Array<{
+        sequence: number;
+        operation: { idempotencyKey: string };
+      }>;
+    }>();
+    const acceptedChanges = body.changes.filter((change) =>
+      change.operation.idempotencyKey === firstAccepted.idempotencyKey ||
+      change.operation.idempotencyKey === secondAccepted.idempotencyKey
+    );
+    expect(acceptedChanges.map((change) => change.operation.idempotencyKey))
+      .toEqual([firstAccepted.idempotencyKey, secondAccepted.idempotencyKey]);
+    expect(acceptedChanges[1]?.sequence).toBe(acceptedChanges[0]!.sequence + 1);
+    expect(body.cursor).toBe(acceptedChanges[1]?.sequence);
+
+    const afterFirst = await worker.fetch(
+      request(owner, `/v1/sync/changes?after=${acceptedChanges[0]?.sequence}`), env,
+    );
+    const afterFirstBody = await afterFirst.json<{
+      cursor: number;
+      changes: Array<{ operation: { idempotencyKey: string } }>;
+    }>();
+    expect(afterFirstBody.cursor).toBe(acceptedChanges[1]?.sequence);
+    expect(afterFirstBody.changes.map((change) => change.operation.idempotencyKey))
+      .toEqual([secondAccepted.idempotencyKey]);
+
+    const stored = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM synchronized_operations
+        WHERE tenant_id = ?1 AND idempotency_key IN (?2, ?3)`,
+    ).bind(
+      owner.tenantID,
+      firstAccepted.idempotencyKey,
+      secondAccepted.idempotencyKey,
+    ).first<{ count: number }>();
+    expect(stored?.count).toBe(2);
+  });
+
   it("prevents Members from changing protected catalog records", async () => {
     const owner = await seedIdentity("Protected Records");
     const member = await seedMemberInTenant(owner, "Protected Member");
@@ -1636,6 +2008,110 @@ describe("tenant isolation", () => {
     });
   });
 
+  it("applies Owner-approved Manager promotions to the linked membership", async () => {
+    const owner = await seedIdentity("Employee Promotion Owner");
+    const member = await seedMemberInTenant(owner, "Promoted Field Employee");
+    const employeeID = crypto.randomUUID();
+    await seedEmployeeRecord(owner, employeeID, ["Technician"]);
+    await env.DB.prepare(
+      "UPDATE tenant_members SET employee_id = ?1 WHERE id = ?2",
+    ).bind(employeeID, member.memberID).run();
+
+    const submitRoles = async (roles: string[]) => {
+      const now = new Date().toISOString();
+      const recordData = Buffer.from(JSON.stringify({
+        id: employeeID,
+        firstName: "Promoted",
+        lastName: "Employee",
+        role: roles[0],
+        roles,
+      })).toString("base64");
+      const mutation = Buffer.from(JSON.stringify({
+        entityType: "employee",
+        entityID: employeeID,
+        recordData,
+        modifiedAt: now,
+      })).toString("base64");
+      return worker.fetch(request(owner, "/v1/operations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: crypto.randomUUID(),
+          idempotencyKey: `employee-role-${crypto.randomUUID()}`,
+          type: "recordMutation",
+          entityType: "employee",
+          entityID: employeeID,
+          actionName: "upsertRecord",
+          payload: { schemaVersion: 1, contentType: "test", body: mutation },
+          createdAt: now,
+        }),
+      }), env);
+    };
+
+    expect((await submitRoles(["Manager", "Technician"])).status).toBe(201);
+    const promotedSession = await worker.fetch(request(member, "/v1/session"), env);
+    expect(promotedSession.status).toBe(200);
+    expect((await promotedSession.json<{
+      member: { role: string };
+    }>()).member.role).toBe("manager");
+
+    expect((await submitRoles(["Technician"])).status).toBe(201);
+    const demotedSession = await worker.fetch(request(member, "/v1/session"), env);
+    expect((await demotedSession.json<{
+      member: { role: string };
+    }>()).member.role).toBe("member");
+
+    const audit = await env.DB.prepare(
+      `SELECT event_type AS eventType FROM access_audit_events
+        WHERE tenant_id = ?1 AND target_member_id = ?2
+          AND event_type IN ('member.promoted_to_manager', 'member.demoted_to_member')
+        ORDER BY created_at ASC`,
+    ).bind(owner.tenantID, member.memberID).all<{ eventType: string }>();
+    expect(audit.results.map((event) => event.eventType)).toEqual([
+      "member.promoted_to_manager",
+      "member.demoted_to_member",
+    ]);
+  });
+
+  it("requires an Owner to change a linked Manager access role", async () => {
+    const owner = await seedIdentity("Promotion Authority Owner");
+    const manager = await seedMemberInTenant(owner, "Existing Manager", "manager");
+    const target = await seedMemberInTenant(owner, "Promotion Target");
+    const employeeID = crypto.randomUUID();
+    await seedEmployeeRecord(owner, employeeID, ["Technician"]);
+    await env.DB.prepare(
+      "UPDATE tenant_members SET employee_id = ?1 WHERE id = ?2",
+    ).bind(employeeID, target.memberID).run();
+    const now = new Date().toISOString();
+    const recordData = Buffer.from(JSON.stringify({
+      id: employeeID,
+      role: "Manager",
+      roles: ["Manager", "Technician"],
+    })).toString("base64");
+    const mutation = Buffer.from(JSON.stringify({
+      entityType: "employee", entityID: employeeID, recordData, modifiedAt: now,
+    })).toString("base64");
+    const response = await worker.fetch(request(manager, "/v1/operations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: crypto.randomUUID(),
+        idempotencyKey: `manager-promotion-${crypto.randomUUID()}`,
+        type: "recordMutation",
+        entityType: "employee",
+        entityID: employeeID,
+        actionName: "upsertRecord",
+        payload: { schemaVersion: 1, contentType: "test", body: mutation },
+        createdAt: now,
+      }),
+    }), env);
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "employee_access_role_change_requires_owner",
+    });
+  });
+
   it("requires a Manager or Owner for reviewed local conflict overrides", async () => {
     const owner = await seedIdentity("Conflict Authority");
     const member = await seedMemberInTenant(owner, "Conflict Member");
@@ -1745,13 +2221,22 @@ describe("tenant isolation", () => {
       request(manager, "/v1/sync/conflicts"), env,
     );
     const managerConflicts = await managerInbox.json<{
-      conflicts: Array<{ id: string; sourceDeviceID: string }>;
+      conflicts: Array<{
+        id: string;
+        sourceDeviceID: string;
+        affectedFields: string[];
+        operationalImpact: string;
+        policyVersion: number;
+      }>;
     }>();
     expect(managerInbox.status).toBe(200);
     expect(managerConflicts.conflicts).toContainEqual(expect.objectContaining({
       id: conflict.conflictID,
       sourceDeviceID: secondDevice.deviceID,
+      affectedFields: ["record"],
+      policyVersion: 1,
     }));
+    expect(managerConflicts.conflicts[0].operationalImpact.length).toBeGreaterThan(10);
 
     const resolved = await worker.fetch(
       request(manager, `/v1/sync/conflicts/${conflict.conflictID}/resolve`, {
@@ -1759,7 +2244,7 @@ describe("tenant isolation", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           resolution: "keptDevice",
-          reason: "Verified the employee's corrected phone number.",
+          reason: "",
           affectedFields: ["phone"],
         }),
       }),
@@ -1823,13 +2308,15 @@ describe("tenant isolation", () => {
         reason: string;
         affectedFields: string[];
         finalRevision: string;
+        policyVersion: number;
       }>;
     }>();
     expect(auditBody.events).toContainEqual(expect.objectContaining({
       id: conflict.conflictID,
       resolverRole: "manager",
-      reason: "Verified the employee's corrected phone number.",
+      reason: "Manager or Owner chose the device version without an additional note.",
       affectedFields: ["phone"],
+      policyVersion: 1,
     }));
     expect(auditBody.events[0].finalRevision).not.toBe(secondRevision);
     const clearedInbox = await worker.fetch(
@@ -1837,6 +2324,601 @@ describe("tenant isolation", () => {
     );
     expect((await clearedInbox.json<{ conflicts: unknown[] }>()).conflicts)
       .toHaveLength(0);
+
+    const duplicateResolution = await worker.fetch(
+      request(manager, `/v1/sync/conflicts/${conflict.conflictID}/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          resolution: "keptDevice",
+          reason: "Verified the employee's corrected phone number.",
+          affectedFields: ["phone"],
+        }),
+      }),
+      env,
+    );
+    expect(duplicateResolution.status).toBe(200);
+    await expect(duplicateResolution.json()).resolves.toMatchObject({
+      id: conflict.conflictID,
+      resolution: "keptDevice",
+      finalRevision: resolvedBody.finalRevision,
+      duplicate: true,
+    });
+    const resolutionChanges = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM synchronization_change_log
+        WHERE tenant_id = ?1 AND operation_id IN (
+          SELECT id FROM synchronized_operations
+           WHERE tenant_id = ?1 AND idempotency_key = ?2
+        )`,
+    ).bind(
+      owner.tenantID,
+      `conflict-resolution-${conflict.conflictID}`,
+    ).first<{ count: number }>();
+    expect(resolutionChanges?.count).toBe(1);
+  });
+
+  it("atomically discards the exact conflict set from a revoked device", async () => {
+    const owner = await seedIdentity("Revoked Cleanup Owner");
+    const revokedDevice = await seedAdditionalDevice(owner, "Revoked Cleanup iPhone");
+    const entityIDs = [crypto.randomUUID(), crypto.randomUUID()];
+    for (const [index, entityID] of entityIDs.entries()) {
+      const accepted = await sendVersionedMutation(owner, {
+        entityType: "customer", entityID, baseRevision: null,
+        mutationKind: "wholeRecord", changedFields: [],
+        record: { id: entityID, name: `Cloud ${index}` },
+        sequenceNumber: index + 1,
+      });
+      expect(accepted.status).toBe(201);
+      const revision = (await accepted.json<{ revision: string }>()).revision;
+      const stale = await sendVersionedMutation(revokedDevice, {
+        entityType: "customer", entityID,
+        baseRevision: crypto.randomUUID(),
+        mutationKind: "wholeRecord", changedFields: [],
+        record: { id: entityID, name: `Retained Device ${index}` },
+        sequenceNumber: index + 1,
+      });
+      expect(stale.status).toBe(409);
+      expect((await stale.json<{ currentRevision: string }>()).currentRevision)
+        .toBe(revision);
+    }
+
+    const whileActive = await worker.fetch(request(owner,
+      "/v1/sync/conflicts/discard-revoked-device", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sourceDeviceID: revokedDevice.deviceID,
+          expectedCount: 2,
+          reason: "Discard retained changes from revoked test device.",
+        }),
+      }), env);
+    expect(whileActive.status).toBe(409);
+    await expect(whileActive.json()).resolves.toEqual({
+      error: "source_device_must_be_revoked",
+    });
+
+    await env.DB.prepare(
+      `UPDATE devices SET revoked_at = ?1 WHERE tenant_id = ?2 AND id = ?3`,
+    ).bind(new Date().toISOString(), owner.tenantID, revokedDevice.deviceID).run();
+    const encodedDeviceID = encodeURIComponent(revokedDevice.deviceID);
+    const scope = await worker.fetch(request(owner,
+      `/v1/sync/conflicts/revoked-device-scope?sourceDeviceID=${encodedDeviceID}`),
+    env);
+    expect(scope.status).toBe(200);
+    await expect(scope.json()).resolves.toEqual({
+      sourceDeviceID: revokedDevice.deviceID,
+      conflictCount: 2,
+      isRevoked: true,
+    });
+    const wrongCount = await worker.fetch(request(owner,
+      "/v1/sync/conflicts/discard-revoked-device", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sourceDeviceID: revokedDevice.deviceID,
+          expectedCount: 1,
+          reason: "Discard retained changes from revoked test device.",
+        }),
+      }), env);
+    expect(wrongCount.status).toBe(409);
+    await expect(wrongCount.json()).resolves.toMatchObject({
+      error: "revoked_device_conflict_count_changed",
+      currentCount: 2,
+    });
+
+    const resolved = await worker.fetch(request(owner,
+      "/v1/sync/conflicts/discard-revoked-device", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sourceDeviceID: revokedDevice.deviceID,
+          expectedCount: 2,
+          reason: "Discard retained changes from revoked test device.",
+        }),
+      }), env);
+    expect(resolved.status).toBe(200);
+    await expect(resolved.json()).resolves.toMatchObject({
+      sourceDeviceID: revokedDevice.deviceID,
+      resolvedCount: 2,
+      resolution: "keptCloud",
+    });
+    const rows = await env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM synchronization_conflicts
+           WHERE tenant_id = ?1 AND source_device_id = ?2
+             AND status = 'keptCloud') AS resolved,
+         (SELECT COUNT(*) FROM synchronized_operations
+           WHERE tenant_id = ?1
+             AND idempotency_key LIKE 'conflict-resolution-%') AS operations,
+         (SELECT COUNT(*) FROM synchronization_change_log
+           WHERE tenant_id = ?1 AND operation_id LIKE 'conflict-resolution-%') AS changes,
+         (SELECT COUNT(*) FROM access_audit_events
+           WHERE tenant_id = ?1 AND event_type = 'sync.conflict_resolved') AS audits`,
+    ).bind(owner.tenantID, revokedDevice.deviceID).first<{
+      resolved: number; operations: number; changes: number; audits: number;
+    }>();
+    expect(rows).toEqual({ resolved: 2, operations: 2, changes: 2, audits: 2 });
+    const resolutionPayloads = await env.DB.prepare(
+      `SELECT payload_json AS payloadJSON FROM synchronization_change_log
+        WHERE tenant_id = ?1 AND operation_id LIKE 'conflict-resolution-%'`,
+    ).bind(owner.tenantID).all<{ payloadJSON: string }>();
+    expect(resolutionPayloads.results).toHaveLength(2);
+    for (const row of resolutionPayloads.results) {
+      const payload = JSON.parse(row.payloadJSON) as {
+        id?: string; idempotencyKey?: string;
+      };
+      expect(payload.id).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      );
+      expect(payload.idempotencyKey).toMatch(/^conflict-resolution-/);
+    }
+  });
+
+  it("three-way merges independent Phase 20 field changes", async () => {
+    const owner = await seedIdentity("Three Way Merge Owner");
+    const secondDevice = await seedAdditionalDevice(owner, "Three Way iPad");
+    const entityID = crypto.randomUUID();
+    const original = { id: entityID, name: "Original", phone: "111" };
+    const created = await sendVersionedMutation(owner, {
+      entityType: "customer", entityID, baseRevision: null,
+      mutationKind: "wholeRecord", changedFields: [], record: original,
+      sequenceNumber: 1,
+    });
+    expect(created.status).toBe(201);
+    const baseRevision = (await created.json<{ revision: string }>()).revision;
+
+    const cloudChange = await sendVersionedMutation(owner, {
+      entityType: "customer", entityID, baseRevision,
+      mutationKind: "fieldPatch", changedFields: ["name"],
+      baseRecord: original, record: { ...original, name: "Cloud Name" },
+      sequenceNumber: 2,
+    });
+    expect(cloudChange.status).toBe(201);
+    const cloudRevision = (await cloudChange.json<{ revision: string }>()).revision;
+
+    const deviceChange = await sendVersionedMutation(secondDevice, {
+      entityType: "customer", entityID, baseRevision,
+      mutationKind: "fieldPatch", changedFields: ["phone"],
+      baseRecord: original, record: { ...original, phone: "222" },
+      sequenceNumber: 1,
+    });
+    expect(deviceChange.status).toBe(201);
+    const merged = await deviceChange.json<{ revision: string }>();
+    expect(merged.revision).not.toBe(cloudRevision);
+
+    const stored = await env.DB.prepare(
+      `SELECT operation_json AS operationJSON FROM synchronized_records
+        WHERE tenant_id = ?1 AND entity_type = 'customer' AND entity_id = ?2`,
+    ).bind(owner.tenantID, entityID.toLowerCase()).first<{ operationJSON: string }>();
+    const operation = JSON.parse(stored!.operationJSON) as {
+      metadata: { verifiedThreeWayMerge: boolean };
+      payload: { body: string };
+    };
+    const mutation = JSON.parse(Buffer.from(operation.payload.body, "base64")
+      .toString("utf8")) as { recordData: string };
+    const record = JSON.parse(Buffer.from(mutation.recordData, "base64")
+      .toString("utf8")) as { name: string; phone: string };
+    expect(operation.metadata.verifiedThreeWayMerge).toBe(true);
+    expect(record).toMatchObject({ name: "Cloud Name", phone: "222" });
+  });
+
+  it("creates a focused review only for the contradictory Phase 20 field", async () => {
+    const owner = await seedIdentity("Focused Conflict Owner");
+    const secondDevice = await seedAdditionalDevice(owner, "Focused Conflict iPad");
+    const entityID = crypto.randomUUID();
+    const original = { id: entityID, name: "Original", phone: "111" };
+    const created = await sendVersionedMutation(owner, {
+      entityType: "customer", entityID, baseRevision: null,
+      mutationKind: "wholeRecord", changedFields: [], record: original,
+      sequenceNumber: 1,
+    });
+    const baseRevision = (await created.json<{ revision: string }>()).revision;
+    const cloudRecord = { ...original, phone: "333" };
+    const cloudChange = await sendVersionedMutation(owner, {
+      entityType: "customer", entityID, baseRevision,
+      mutationKind: "fieldPatch", changedFields: ["phone"],
+      baseRecord: original, record: cloudRecord,
+      sequenceNumber: 2,
+    });
+    expect(cloudChange.status).toBe(201);
+    const cloudRevision = (await cloudChange.json<{ revision: string }>()).revision;
+
+    const deviceChange = await sendVersionedMutation(secondDevice, {
+      entityType: "customer", entityID, baseRevision,
+      mutationKind: "fieldPatch", changedFields: ["name", "phone"],
+      baseRecord: original,
+      record: { ...original, name: "Device Name", phone: "222" },
+      sequenceNumber: 1,
+    });
+    expect(deviceChange.status).toBe(409);
+    const conflictID = (await deviceChange.json<{ conflictID: string }>()).conflictID;
+
+    const inbox = await worker.fetch(request(owner, "/v1/sync/conflicts"), env);
+    const inboxBody = await inbox.json<{
+      conflicts: Array<{
+        id: string;
+        affectedFields: string[];
+        operationalImpact: string;
+        policyVersion: number;
+      }>;
+    }>();
+    expect(inboxBody.conflicts).toContainEqual(expect.objectContaining({
+      id: conflictID,
+      affectedFields: ["phone"],
+      policyVersion: 1,
+    }));
+    expect(inboxBody.conflicts[0].operationalImpact)
+      .toContain("shared company information");
+
+    const newerCloudChange = await sendVersionedMutation(owner, {
+      entityType: "customer", entityID, baseRevision: cloudRevision,
+      mutationKind: "fieldPatch", changedFields: ["phone"],
+      baseRecord: cloudRecord, record: { ...cloudRecord, phone: "444" },
+      sequenceNumber: 3,
+    });
+    expect(newerCloudChange.status).toBe(201);
+    const staleReview = await worker.fetch(
+      request(owner, `/v1/sync/conflicts/${conflictID}/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          resolution: "keptCloud",
+          reason: "The current customer phone number was verified.",
+          affectedFields: ["phone"],
+        }),
+      }),
+      env,
+    );
+    expect(staleReview.status).toBe(409);
+    await expect(staleReview.json()).resolves.toMatchObject({
+      error: "conflict_changed_since_review",
+    });
+
+    const resolved = await worker.fetch(
+      request(owner, `/v1/sync/conflicts/${conflictID}/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          resolution: "keptCloud",
+          reason: "The current customer phone number was verified.",
+          affectedFields: ["name", "phone"],
+        }),
+      }),
+      env,
+    );
+    expect(resolved.status).toBe(200);
+    await expect(resolved.json()).resolves.toMatchObject({
+      id: conflictID,
+      resolution: "keptCloud",
+      affectedFields: ["phone"],
+      policyVersion: 1,
+    });
+  });
+
+  it("merges nested assignment history as append-only facts", async () => {
+    const owner = await seedIdentity("Append History Owner");
+    const secondDevice = await seedAdditionalDevice(owner, "Append History iPad");
+    const entityID = crypto.randomUUID();
+    const firstEvent = { id: crypto.randomUUID(), type: "created" };
+    const cloudEvent = { id: crypto.randomUUID(), type: "dispatchNote" };
+    const deviceEvent = { id: crypto.randomUUID(), type: "fieldNote" };
+    const original = { id: entityID, history: { events: [firstEvent] } };
+    const created = await sendVersionedMutation(owner, {
+      entityType: "assignment", entityID, baseRevision: null,
+      mutationKind: "wholeRecord", changedFields: [], record: original,
+      sequenceNumber: 1,
+    });
+    expect(created.status).toBe(201);
+    const baseRevision = (await created.json<{ revision: string }>()).revision;
+
+    const cloudChange = await sendVersionedMutation(owner, {
+      entityType: "assignment", entityID, baseRevision,
+      mutationKind: "domainCommand", commandName: "assignment.updateNotes",
+      changedFields: ["dispatchNotes", "history"], baseRecord: original,
+      record: {
+        ...original,
+        dispatchNotes: "Call first",
+        history: { events: [firstEvent, cloudEvent] },
+      },
+      sequenceNumber: 2,
+    });
+    expect(cloudChange.status).toBe(201);
+
+    const deviceChange = await sendVersionedMutation(secondDevice, {
+      entityType: "assignment", entityID, baseRevision,
+      mutationKind: "domainCommand", commandName: "assignment.updateNotes",
+      changedFields: ["fieldNotes", "history"], baseRecord: original,
+      record: {
+        ...original,
+        fieldNotes: "Gate was locked",
+        history: { events: [firstEvent, deviceEvent] },
+      },
+      sequenceNumber: 1,
+    });
+    expect(deviceChange.status).toBe(201);
+
+    const stored = await env.DB.prepare(
+      `SELECT operation_json AS operationJSON FROM synchronized_records
+        WHERE tenant_id = ?1 AND entity_type = 'assignment' AND entity_id = ?2`,
+    ).bind(owner.tenantID, entityID.toLowerCase()).first<{ operationJSON: string }>();
+    const operation = JSON.parse(stored!.operationJSON) as { payload: { body: string } };
+    const mutation = JSON.parse(Buffer.from(operation.payload.body, "base64")
+      .toString("utf8")) as { recordData: string };
+    const record = JSON.parse(Buffer.from(mutation.recordData, "base64")
+      .toString("utf8")) as {
+        dispatchNotes: string;
+        fieldNotes: string;
+        history: { events: Array<{ id: string }> };
+      };
+    expect(record.dispatchNotes).toBe("Call first");
+    expect(record.fieldNotes).toBe("Gate was locked");
+    expect(record.history.events.map((event) => event.id))
+      .toEqual([firstEvent.id, cloudEvent.id, deviceEvent.id]);
+  });
+
+  it("accepts recurring-work hold scheduling as an authorized domain command", async () => {
+    const owner = await seedIdentity("Recurring Work Hold Owner");
+    const entityID = crypto.randomUUID();
+    const original = {
+      id: entityID,
+      status: "active",
+      heldScheduledDate: null,
+    };
+    const created = await sendVersionedMutation(owner, {
+      entityType: "recurringWork", entityID, baseRevision: null,
+      mutationKind: "wholeRecord", changedFields: [], record: original,
+      sequenceNumber: 1,
+    });
+    expect(created.status).toBe(201);
+    const baseRevision = (await created.json<{ revision: string }>()).revision;
+
+    const held = await sendVersionedMutation(owner, {
+      entityType: "recurringWork", entityID, baseRevision,
+      mutationKind: "domainCommand", commandName: "recurringWork.update",
+      changedFields: ["heldScheduledDate"], baseRecord: original,
+      record: { ...original, heldScheduledDate: "2026-08-24T14:00:00Z" },
+      sequenceNumber: 2,
+    });
+
+    expect(held.status).toBe(201);
+  });
+
+  it("accepts assignment rescheduling with its system-maintained update date", async () => {
+    const owner = await seedIdentity("Assignment Reschedule Owner");
+    const entityID = crypto.randomUUID();
+    const original = {
+      id: entityID,
+      scheduling: { scheduledStart: "2026-08-24T14:00:00Z" },
+      history: { events: [] },
+      updatedDate: "2026-08-24T13:00:00Z",
+    };
+    const created = await sendVersionedMutation(owner, {
+      entityType: "assignment", entityID, baseRevision: null,
+      mutationKind: "wholeRecord", changedFields: [], record: original,
+      sequenceNumber: 1,
+    });
+    expect(created.status).toBe(201);
+    const baseRevision = (await created.json<{ revision: string }>()).revision;
+
+    const rescheduled = await sendVersionedMutation(owner, {
+      entityType: "assignment", entityID, baseRevision,
+      mutationKind: "domainCommand", commandName: "assignment.reschedule",
+      changedFields: ["history", "scheduling", "updatedDate"],
+      baseRecord: original,
+      record: {
+        ...original,
+        scheduling: { scheduledStart: "2026-08-25T14:00:00Z" },
+        history: { events: [{ id: crypto.randomUUID(), type: "rescheduled" }] },
+        updatedDate: "2026-08-24T13:10:05Z",
+      },
+      sequenceNumber: 2,
+    });
+
+    expect(rescheduled.status).toBe(201);
+    const quarantine = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM synchronization_quarantines
+        WHERE tenant_id = ?1`,
+    ).bind(owner.tenantID).first<{ count: number }>();
+    expect(quarantine?.count).toBe(0);
+  });
+
+  it("unions timeline notes from legacy whole-record job mutations", async () => {
+    const owner = await seedIdentity("Timeline Note Owner");
+    const technician = await seedAdditionalDevice(owner, "Timeline Note Technician");
+    const entityID = crypto.randomUUID();
+    const originalEvent = {
+      id: crypto.randomUUID(),
+      type: "created",
+      title: "Job Created",
+      timestamp: new Date().toISOString(),
+    };
+    const ownerNote = {
+      id: crypto.randomUUID(),
+      type: "technicianNote",
+      title: "Owner note",
+      timestamp: new Date(Date.now() + 1_000).toISOString(),
+    };
+    const technicianNote = {
+      id: crypto.randomUUID(),
+      type: "technicianNote",
+      title: "Technician note",
+      timestamp: new Date(Date.now() + 2_000).toISOString(),
+    };
+    const original = { id: entityID, status: "assigned", timelineEvents: [originalEvent] };
+    const created = await sendVersionedMutation(owner, {
+      entityType: "job",
+      entityID,
+      baseRevision: null,
+      mutationKind: "wholeRecord",
+      changedFields: [],
+      record: original,
+      sequenceNumber: 1,
+    });
+    expect(created.status).toBe(201);
+    const baseRevision = (await created.json<{ revision: string }>()).revision;
+
+    const ownerChange = await sendVersionedMutation(owner, {
+      entityType: "job",
+      entityID,
+      baseRevision,
+      mutationKind: "wholeRecord",
+      changedFields: [],
+      record: { ...original, timelineEvents: [originalEvent, ownerNote] },
+      sequenceNumber: 2,
+    });
+    expect(ownerChange.status).toBe(201);
+
+    const technicianChange = await sendVersionedMutation(technician, {
+      entityType: "job",
+      entityID,
+      baseRevision,
+      mutationKind: "wholeRecord",
+      changedFields: [],
+      record: { ...original, timelineEvents: [originalEvent, technicianNote] },
+      sequenceNumber: 1,
+    });
+    expect(technicianChange.status).toBe(201);
+
+    const stored = await env.DB.prepare(
+      `SELECT operation_json AS operationJSON FROM synchronized_records
+        WHERE tenant_id = ?1 AND entity_type = 'job' AND entity_id = ?2`,
+    ).bind(owner.tenantID, entityID.toLowerCase()).first<{ operationJSON: string }>();
+    const operation = JSON.parse(stored!.operationJSON) as {
+      metadata?: Record<string, string>;
+      payload: { body: string };
+    };
+    const mutation = JSON.parse(Buffer.from(operation.payload.body, "base64")
+      .toString("utf8")) as { recordData: string };
+    const record = JSON.parse(Buffer.from(mutation.recordData, "base64")
+      .toString("utf8")) as { timelineEvents: Array<{ id: string }> };
+    expect(record.timelineEvents.map((event) => event.id))
+      .toEqual([originalEvent.id, ownerNote.id, technicianNote.id]);
+    expect(operation.metadata?.serverMergePolicy).toBe("appendOnlyUnionV1");
+  });
+
+  it("does not apply the unsafe whole-record rebase to Phase 20 mutations", async () => {
+    const owner = await seedIdentity("Safe Rebase Owner");
+    const entityID = crypto.randomUUID();
+    const original = { id: entityID, name: "Original" };
+    const created = await sendVersionedMutation(owner, {
+      entityType: "customer", entityID, baseRevision: null,
+      mutationKind: "wholeRecord", changedFields: [], record: original,
+      sequenceNumber: 1,
+    });
+    const baseRevision = (await created.json<{ revision: string }>()).revision;
+    const second = await sendVersionedMutation(owner, {
+      entityType: "customer", entityID, baseRevision,
+      mutationKind: "wholeRecord", changedFields: [],
+      baseRecord: original, record: { ...original, name: "Second" },
+      sequenceNumber: 2,
+    });
+    expect(second.status).toBe(201);
+    const unsafeSuccessor = await sendVersionedMutation(owner, {
+      entityType: "customer", entityID, baseRevision,
+      mutationKind: "wholeRecord", changedFields: [],
+      baseRecord: original, record: { ...original, name: "Third" },
+      sequenceNumber: 3,
+    });
+    expect(unsafeSuccessor.status).toBe(409);
+  });
+
+  it("retains the legacy same-device causal rebase for pre-Phase-20 mutations", async () => {
+    const owner = await seedIdentity("Causal Successor Owner");
+    const entityID = crypto.randomUUID();
+    const send = (
+      label: string,
+      baseRevision: string | null,
+      sequenceNumber: number,
+    ) => {
+      const operationID = crypto.randomUUID();
+      const timestamp = new Date(Date.now() + sequenceNumber * 1_000).toISOString();
+      const recordData = Buffer.from(JSON.stringify({
+        id: entityID,
+        name: label,
+      })).toString("base64");
+      const mutation = Buffer.from(JSON.stringify({
+        schemaVersion: 1,
+        operationID,
+        entityType: "customer",
+        recordID: entityID,
+        baseRevision,
+        mutationKind: "wholeRecord",
+        changedFields: [],
+        recordData,
+        clientCreatedAt: timestamp,
+        deviceModifiedAt: timestamp,
+      })).toString("base64");
+      return worker.fetch(request(owner, "/v1/operations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: operationID,
+          idempotencyKey: `causal-${crypto.randomUUID()}`,
+          sequenceNumber,
+          type: "recordMutation",
+          entityType: "customer",
+          entityID,
+          actionName: "upsertRecord",
+          baseRevision,
+          payload: { schemaVersion: 1, contentType: "application/json", body: mutation },
+          createdAt: timestamp,
+        }),
+      }), env);
+    };
+
+    const first = await send("created", null, 1);
+    expect(first.status).toBe(201);
+    const firstRevision = (await first.json<{ revision: string }>()).revision;
+    const second = await send("scheduled", firstRevision, 2);
+    expect(second.status).toBe(201);
+    const secondRevision = (await second.json<{ revision: string }>()).revision;
+
+    // This operation was already queued behind sequence 2 and therefore still
+    // carries sequence 2's original base. It is causally newer, not concurrent.
+    const third = await send("workflow-updated", firstRevision, 3);
+    expect(third.status).toBe(201);
+    const thirdBody = await third.json<{ revision: string }>();
+    expect(thirdBody.revision).not.toBe(secondRevision);
+
+    const stored = await env.DB.prepare(
+      `SELECT operation_json AS operationJSON FROM synchronized_records
+        WHERE tenant_id = ?1 AND entity_type = 'customer' AND entity_id = ?2`,
+    ).bind(owner.tenantID, entityID.toLowerCase()).first<{ operationJSON: string }>();
+    const operation = JSON.parse(stored!.operationJSON) as {
+      baseRevision: string;
+      sequenceNumber: number;
+      metadata: { serverMergePolicy: string };
+      payload: { body: string };
+    };
+    const mutation = JSON.parse(Buffer.from(operation.payload.body, "base64")
+      .toString("utf8")) as { baseRevision: string; recordData: string };
+    const record = JSON.parse(Buffer.from(mutation.recordData, "base64")
+      .toString("utf8")) as { name: string };
+    expect(operation.baseRevision).toBe(secondRevision);
+    expect(mutation.baseRevision).toBe(secondRevision);
+    expect(operation.sequenceNumber).toBe(3);
+    expect(operation.metadata.serverMergePolicy).toBe("sameDeviceCausalSuccessorV1");
+    expect(record.name).toBe("workflow-updated");
   });
 
   it("automatically keeps cloud data when a device change is over eight hours stale", async () => {
@@ -2537,6 +3619,33 @@ describe("membership authorization", () => {
     expect(await alphaBootstrap.text()).toBe("alpha-current-state");
     expect(alphaBootstrap.headers.get("cache-control")).toBe("no-store");
 
+    const canonicalEmployeeID = crypto.randomUUID();
+    await seedEmployeeRecord(alphaOwner, canonicalEmployeeID, ["Technician"]);
+    const alphaBaseline = await worker.fetch(
+      request(alphaMember, "/v1/sync/baseline-records"),
+      env,
+    );
+    expect(alphaBaseline.status).toBe(200);
+    const alphaBaselineBody = await alphaBaseline.json<{
+      cursor: number;
+      records: Array<{
+        revision: string;
+        operation: { entityType?: string; entityID?: string; status?: string };
+      }>;
+    }>();
+    expect(alphaBaselineBody.records).toHaveLength(1);
+    expect(alphaBaselineBody.records[0]?.operation).toMatchObject({
+      entityType: "employee",
+      entityID: canonicalEmployeeID,
+      status: "synchronized",
+    });
+
+    const bravoBaseline = await worker.fetch(
+      request(bravoOwner, "/v1/sync/baseline-records"),
+      env,
+    );
+    expect((await bravoBaseline.json<{ records: unknown[] }>()).records).toHaveLength(0);
+
     const bravoBootstrap = await worker.fetch(
       request(bravoOwner, "/v1/sync/bootstrap"),
       env,
@@ -2546,6 +3655,305 @@ describe("membership authorization", () => {
       request(alphaMember, "/v1/backups"),
       env,
     )).status).toBe(403);
+  });
+
+  it("stores redacted tenant-scoped sync diagnostics with audited access", async () => {
+    const owner = await seedIdentity("Diagnostic Owner");
+    const member = await seedMemberInTenant(owner, "Diagnostic Technician");
+    const otherMember = await seedMemberInTenant(owner, "Other Technician");
+    const outsider = await seedIdentity("Diagnostic Outsider");
+    const operationID = crypto.randomUUID();
+    const response = await worker.fetch(request(
+      member,
+      "/v1/support/sync-diagnostics",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/vnd.pfss.sync-diagnostics+json",
+        },
+        body: JSON.stringify({
+          schemaVersion: 1,
+          generatedAt: new Date().toISOString(),
+          description: "Assignment synchronization failed after field work.",
+          app: { version: "1.0", build: "20.7.1" },
+          device: {
+            model: "iPad",
+            systemName: "iPadOS",
+            systemVersion: "26.5",
+          },
+          synchronization: {
+            cursor: 42,
+            connectivity: "online",
+            cloudAccessStatus: "available",
+          },
+          inventory: {
+            customers: 16,
+            sites: 15,
+            leads: 8,
+            estimates: 1,
+            jobs: 46,
+            invoices: 11,
+            employees: 3,
+            catalogItems: 8,
+            recurringWorkTemplates: 3,
+            assignments: 151,
+          },
+          operations: [{
+            operationID,
+            entityType: "assignment",
+            recordID: crypto.randomUUID(),
+            status: "failed",
+            failure: {
+              category: "validation",
+              code: "invalid_domain_command",
+              isRetryable: false,
+              occurredAt: new Date().toISOString(),
+            },
+            payload: { customerName: "Must Never Be Stored", body: "secret" },
+          }],
+        }),
+      },
+    ), env);
+    expect(response.status).toBe(201);
+    const submitted = await response.json<{
+      caseCode: string; submittedAt: string; expiresAt: string;
+    }>();
+    expect(submitted.caseCode).toMatch(/^PFSS-[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+
+    const row = await env.DB.prepare(
+      `SELECT tenant_id AS tenantID, source_member_id AS sourceMemberID,
+              source_device_id AS sourceDeviceID, object_key AS objectKey
+         FROM synchronization_diagnostics WHERE case_code = ?1`,
+    ).bind(submitted.caseCode).first<{
+      tenantID: string; sourceMemberID: string; sourceDeviceID: string;
+      objectKey: string;
+    }>();
+    expect(row).toMatchObject({
+      tenantID: member.tenantID,
+      sourceMemberID: member.memberID,
+      sourceDeviceID: member.deviceID,
+    });
+    const stored = await env.ARCHIVES.get(row!.objectKey);
+    const storedText = await stored!.text();
+    expect(storedText).not.toContain("Must Never Be Stored");
+    expect(storedText).not.toContain('"payload"');
+    expect(JSON.parse(storedText)).toMatchObject({
+      header: {
+        caseCode: submitted.caseCode,
+        tenantID: member.tenantID,
+        sourceMemberID: member.memberID,
+        sourceDeviceID: member.deviceID,
+      },
+      diagnostic: {
+        app: { version: "1.0", build: "20.7.1" },
+        inventory: { catalogItems: 8, assignments: 151 },
+        operations: [{ operationID, status: "failed" }],
+      },
+    });
+
+    expect((await worker.fetch(
+      request(member, `/v1/support/sync-diagnostics/${submitted.caseCode}`), env,
+    )).status).toBe(200);
+    expect((await worker.fetch(
+      request(otherMember, `/v1/support/sync-diagnostics/${submitted.caseCode}`), env,
+    )).status).toBe(403);
+    expect((await worker.fetch(
+      request(outsider, `/v1/support/sync-diagnostics/${submitted.caseCode}`), env,
+    )).status).toBe(404);
+    expect((await worker.fetch(
+      request(member, `/v1/support/sync-diagnostics/${submitted.caseCode}`, {
+        method: "DELETE",
+      }), env,
+    )).status).toBe(403);
+    expect((await worker.fetch(
+      request(owner, `/v1/support/sync-diagnostics/${submitted.caseCode}`, {
+        method: "DELETE",
+      }), env,
+    )).status).toBe(200);
+    expect(await env.ARCHIVES.get(row!.objectKey)).toBeNull();
+
+    const audit = await env.DB.prepare(
+      `SELECT event_type AS eventType FROM access_audit_events
+        WHERE tenant_id = ?1 AND event_type LIKE 'support.sync_diagnostics_%'
+        ORDER BY created_at`,
+    ).bind(owner.tenantID).all<{ eventType: string }>();
+    expect(audit.results.map((event) => event.eventType)).toEqual([
+      "support.sync_diagnostics_submitted",
+      "support.sync_diagnostics_accessed",
+      "support.sync_diagnostics_deleted",
+    ]);
+  });
+
+  it("centralizes tenant quarantine review and returns an audited source receipt", async () => {
+    const owner = await seedIdentity("Quarantine Owner", "owner");
+    const member = await seedMemberInTenant(owner, "Quarantine Technician");
+    const refreshedMemberDevice = await seedAdditionalDevice(
+      member, "Quarantine Technician Refreshed",
+    );
+    const outsider = await seedIdentity("Quarantine Outsider", "owner");
+    const operationID = crypto.randomUUID();
+    const entityID = crypto.randomUUID();
+    const operation = {
+      id: operationID,
+      idempotencyKey: `quarantine-${operationID}`,
+      type: "recordMutation",
+      entityType: "customer",
+      entityID,
+      actionName: "upsertRecord",
+      payload: { schemaVersion: 1, contentType: "test", body: "dGVzdA==" },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "failed",
+      sequenceNumber: 1,
+      retryAttempts: [],
+      metadata: { quarantinedAt: new Date().toISOString() },
+    };
+    const report = await worker.fetch(request(member, "/v1/sync/quarantines/report", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ operation, reason: "Schema validation failed." }),
+    }), env);
+    expect(report.status).toBe(201);
+    const { quarantineID } = await report.json<{ quarantineID: string }>();
+
+    expect((await worker.fetch(
+      request(member, "/v1/sync/quarantines"), env,
+    )).status).toBe(403);
+    const inbox = await worker.fetch(
+      request(owner, "/v1/sync/quarantines"), env,
+    );
+    const inboxBody = await inbox.json<{ quarantines: Array<{
+      id: string; operationID: string; failure: { reason: string };
+    }> }>();
+    expect(inboxBody.quarantines).toHaveLength(1);
+    expect(inboxBody.quarantines[0]).toMatchObject({
+      id: quarantineID,
+      operationID,
+      failure: { reason: "Schema validation failed." },
+    });
+    expect((await (await worker.fetch(
+      request(outsider, "/v1/sync/quarantines"), env,
+    )).json<{ quarantines: unknown[] }>()).quarantines).toHaveLength(0);
+
+    const resolved = await worker.fetch(request(
+      owner,
+      `/v1/sync/quarantines/${quarantineID}/resolve`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "discard",
+          reason: "",
+        }),
+      },
+    ), env);
+    expect(resolved.status).toBe(200);
+    const duplicate = await worker.fetch(request(
+      owner,
+      `/v1/sync/quarantines/${quarantineID}/resolve`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "discard",
+          reason: "Device change was invalid and should be discarded.",
+        }),
+      },
+    ), env);
+    expect((await duplicate.json<{ duplicate: boolean }>()).duplicate).toBe(true);
+
+    const receipts = await worker.fetch(
+      request(member, "/v1/sync/quarantine-resolutions"), env,
+    );
+    expect((await receipts.json<{ resolutions: Array<{
+      operationID: string; action: string;
+    }> }>()).resolutions).toContainEqual(expect.objectContaining({
+      operationID,
+      action: "discard",
+    }));
+    const refreshedDeviceReceipts = await worker.fetch(
+      request(refreshedMemberDevice, "/v1/sync/quarantine-resolutions"), env,
+    );
+    expect((await refreshedDeviceReceipts.json<{ resolutions: Array<{
+      operationID: string; action: string;
+    }> }>()).resolutions).toContainEqual(expect.objectContaining({
+      operationID,
+      action: "discard",
+    }));
+    const audit = await env.DB.prepare(
+      `SELECT COUNT(*) AS count, MAX(metadata_json) AS metadataJSON
+         FROM access_audit_events
+        WHERE tenant_id = ?1 AND event_type = 'sync.quarantine_resolved'`,
+    ).bind(owner.tenantID).first<{ count: number; metadataJSON: string }>();
+    expect(Number(audit?.count ?? 0)).toBe(1);
+    expect(JSON.parse(audit?.metadataJSON ?? "{}").reason).toBe(
+      "Manager or Owner discarded the device change without an additional note.",
+    );
+
+    const rereport = await worker.fetch(request(
+      member,
+      "/v1/sync/quarantines/report",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          operation,
+          reason: "The retried operation failed validation again.",
+        }),
+      },
+    ), env);
+    expect(rereport.status).toBe(200);
+    const reopened = await worker.fetch(
+      request(owner, "/v1/sync/quarantines"), env,
+    );
+    expect((await reopened.json<{ quarantines: Array<{ id: string }> }>()
+    ).quarantines).toContainEqual(expect.objectContaining({ id: quarantineID }));
+
+    const replacementID = crypto.randomUUID();
+    const replacementMutation = Buffer.from(JSON.stringify({
+      entityType: "customer",
+      entityID,
+      recordData: Buffer.from(JSON.stringify({ id: entityID, name: "Repaired" }))
+        .toString("base64"),
+      modifiedAt: new Date().toISOString(),
+    })).toString("base64");
+    const replacement = {
+      ...operation,
+      id: replacementID,
+      idempotencyKey: `repair-${replacementID}`,
+      status: "pending",
+      payload: { schemaVersion: 1, contentType: "test", body: replacementMutation },
+    };
+    expect((await worker.fetch(request(owner, "/v1/operations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(replacement),
+    }), env)).status).toBe(201);
+    const repaired = await worker.fetch(request(
+      owner,
+      `/v1/sync/quarantines/${quarantineID}/resolve`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "repair",
+          reason: "Manager corrected and approved the customer record.",
+          replacementOperationID: replacementID,
+        }),
+      },
+    ), env);
+    expect(repaired.status).toBe(200);
+    const repairRow = await env.DB.prepare(
+      `SELECT resolution_action AS action,
+              replacement_operation_id AS replacementOperationID
+         FROM synchronization_quarantines WHERE id = ?1`,
+    ).bind(quarantineID).first<{
+      action: string; replacementOperationID: string;
+    }>();
+    expect(repairRow).toEqual({
+      action: "repair",
+      replacementOperationID: replacementID,
+    });
   });
 
   it("protects Owner memberships and purges only aged credential material", async () => {
