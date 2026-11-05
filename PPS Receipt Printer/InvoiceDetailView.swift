@@ -35,6 +35,9 @@ struct InvoiceDetailView: View {
     @State private var showingUnsavedChangesAlert = false
     @State private var showingTaxCalculation = false
     @State private var activeSheet: ActiveSheet?
+    @State private var showingPaymentCorrection = false
+    @State private var paymentEditError: String?
+    @State private var explicitlyMarkedPaid = false
     @FocusState private var isInputFocused: Bool
 
     init(invoice: InvoiceRecord, showsDismissButton: Bool = false) {
@@ -78,7 +81,7 @@ struct InvoiceDetailView: View {
     }
 
     var body: some View {
-        Form {
+        List {
             Section("Invoice") {
                 LabeledContent("Invoice Number") {
                     Text(invoice.invoiceNumber)
@@ -92,14 +95,74 @@ struct InvoiceDetailView: View {
 
                 if !invoice.jobNumber.isEmpty {
                     LabeledContent("Job Number") {
-                        Text(invoice.jobNumber)
+                        Text(invoice.jobNumbers.joined(separator: ", "))
                     }
                 }
 
                 Picker("Status", selection: $invoice.status) {
-                    ForEach(InvoiceStatus.allCases) { status in
+                    ForEach(InvoiceStatus.allCases.filter {
+                        (invoice.combination == nil && invoice.paymentCorrection == nil) || $0 != .void || invoice.status == .void
+                    }) { status in
                         Text(status.rawValue)
                             .tag(status)
+                    }
+                }
+                .onChange(of: invoice.status) {
+                    explicitlyMarkedPaid = invoice.status == .paid
+                    if explicitlyMarkedPaid {
+                        invoice.amountPaid = max(invoice.total, 0)
+                        invoice.balanceDue = 0
+                    }
+                }
+            }
+
+            if let combination = invoice.combination {
+                Section("Combined Invoices") {
+                    ForEach(combination.sourceInvoices) { source in
+                        LabeledContent(source.invoiceNumber, value: source.jobNumber)
+                    }
+                    if combination.refundRequired > 0 {
+                        LabeledContent("Refund Required") {
+                            Text(NSDecimalNumber(decimal: combination.refundRequired).doubleValue, format: .currency(code: "USD"))
+                        }
+                        Text("Resolve this refund manually. PFSS has not issued a refund.").font(.caption).foregroundStyle(.orange)
+                    }
+                    Text("Source charges and tax evidence are preserved. Changes to a combined bill require manual payment redistribution.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            if invoice.combination != nil || invoice.paymentCorrection != nil {
+                Section("Payment Corrections") {
+                    Button {
+                        if hasUnsavedChanges {
+                            paymentEditError = "Save or discard current edits before opening payment corrections."
+                        } else {
+                            showingPaymentCorrection = true
+                        }
+                    } label: {
+                        Label("Split & Redistribute Payments", systemImage: "arrow.triangle.branch")
+                            .frame(maxWidth: .infinity)
+                    }.buttonStyle(.borderedProminent).tint(.orange)
+                        .disabled(correctionRoot == nil)
+                    Text("Current edits must be saved or discarded before opening payment corrections.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let correction = invoice.paymentCorrection, let latest = correction.history.last {
+                        LabeledContent("Correction History", value: "\(correction.history.count - 1) saved corrections")
+                        NavigationLink("View Correction History") {
+                            InvoicePaymentCorrectionHistoryView(history: correction.history)
+                        }
+                        if latest.refundRequired > 0 {
+                            LabeledContent("Payment Group Refund Required") {
+                                Text(NSDecimalNumber(decimal: latest.refundRequired).doubleValue, format: .currency(code: "USD"))
+                            }
+                            Text("Unassigned funds require manual review. No refund has been issued.").font(.caption).foregroundStyle(.orange)
+                        }
+                        if invoice.id == correction.rootInvoiceID, correction.retainedInvoiceIDs.isEmpty {
+                            Text("This combined invoice was split and is retained for audit only. Open the restored invoices to bill or share.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
@@ -182,6 +245,8 @@ struct InvoiceDetailView: View {
                 }
             }
 
+            .disabled(invoice.combination != nil || invoice.paymentCorrection != nil)
+
             Section("Financial Summary") {
                 LabeledContent("Subtotal") {
                     Text(
@@ -197,7 +262,15 @@ struct InvoiceDetailView: View {
                     )
                 }
 
-                if let tax = invoice.taxSnapshot {
+                if let combination = invoice.combination {
+                    ForEach(combination.sourceInvoices) { source in
+                        if let tax = source.taxSnapshot {
+                            LabeledContent("Tax · \(source.jobNumber)") {
+                                Text(NSDecimalNumber(decimal: tax.addedTax).doubleValue, format: .currency(code: "USD"))
+                            }
+                        }
+                    }
+                } else if let tax = invoice.taxSnapshot {
                     LabeledContent("Tax") {
                         Text(
                             NSDecimalNumber(decimal: tax.addedTax).doubleValue,
@@ -232,6 +305,7 @@ struct InvoiceDetailView: View {
                             value: $invoice.amountPaid
                         )
                         .focused($isInputFocused)
+                        .disabled(invoice.status != .partiallyPaid)
                     }
                     .frame(maxWidth: 150)
                 }
@@ -270,7 +344,9 @@ struct InvoiceDetailView: View {
                 }
 
                 Text(
-                    invoice.taxSnapshot == nil
+                    invoice.combination != nil
+                    ? "Each original invoice retains its own tax jurisdiction and amount. These charges are not recalculated for the billing customer."
+                    : invoice.taxSnapshot == nil
                     ? "Tax has not been calculated for this invoice. PFSS will "
                         + "not guess a jurisdiction rate."
                     : "The displayed tax is retained with this invoice. Later "
@@ -279,7 +355,7 @@ struct InvoiceDetailView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-                if store.canManageCompany {
+                if store.canManageCompany && invoice.combination == nil && invoice.paymentCorrection == nil {
                     Button(
                         invoice.taxSnapshot == nil
                         ? "Calculate Invoice Tax"
@@ -353,6 +429,8 @@ struct InvoiceDetailView: View {
                 }
             }
         }
+        .listStyle(.insetGrouped)
+        .scrollDismissesKeyboard(.interactively)
         .navigationTitle("Invoice")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
@@ -376,7 +454,6 @@ struct InvoiceDetailView: View {
                 Button("Save") {
                     saveInvoice()
                 }
-                .disabled(!hasUnsavedChanges)
             }
 
         }
@@ -396,6 +473,19 @@ struct InvoiceDetailView: View {
                 )
             }
         }
+        .sheet(isPresented: $showingPaymentCorrection) {
+            if let root = correctionRoot {
+                InvoicePaymentCorrectionView(root: root) { _ in
+                    if let current = store.invoices.first(where: { $0.id == invoice.id }) {
+                        invoice = store.invoiceDestination(for: current)
+                        originalInvoice = invoice
+                    }
+                }.environmentObject(store)
+            }
+        }
+        .alert("Payment Correction Required", isPresented: Binding(get: { paymentEditError != nil }, set: { if !$0 { paymentEditError = nil } })) {
+            Button("OK", role: .cancel) { paymentEditError = nil }
+        } message: { Text(paymentEditError ?? "Use the payment correction workspace.") }
         .sheet(isPresented: $isShowingReceiptPrinter) {
             ReceiptPrinterSelectionView(
                 receiptText: thermalReceiptText()
@@ -451,13 +541,29 @@ struct InvoiceDetailView: View {
         encodedInvoice(invoice) != encodedInvoice(originalInvoice)
     }
 
+    private var correctionRoot: InvoiceRecord? {
+        let id = invoice.paymentCorrection?.rootInvoiceID ?? invoice.id
+        return store.invoices.first { $0.id == id && $0.combination != nil }
+    }
+
     private func saveInvoice() {
         isInputFocused = false
+        if invoice.combination != nil || invoice.paymentCorrection != nil {
+            let previous = store.invoices.first { $0.id == invoice.id } ?? originalInvoice
+            guard previous.status != .void, invoice.status != .void, invoice.amountPaid >= previous.amountPaid else {
+                paymentEditError = "Use Split & Redistribute Payments to reduce or correct collected funds. A split combined invoice is read-only."
+                return
+            }
+        }
 
-        invoice = InvoiceEngine.recalculated(invoice)
+        invoice = InvoiceEngine.recalculatedForEditorSave(
+            invoice,
+            explicitlyMarkedPaid: explicitlyMarkedPaid
+        )
 
         store.updateInvoice(invoice)
         originalInvoice = invoice
+        explicitlyMarkedPaid = false
         dismiss()
     }
 
@@ -523,17 +629,7 @@ struct InvoiceDetailView: View {
             site = nil
         }
 
-        if let receipt = ReceiptEngine.latestReceipt(in: invoice) {
-            return ThermalReceiptRenderer.render(
-                receipt: receipt,
-                businessProfile: store.businessProfile,
-                customer: customer,
-                site: site,
-                catalogItems: store.serviceCatalogItems
-            )
-        }
-
-        return ThermalReceiptRenderer.render(
+        return ThermalReceiptRenderer.renderPrintableDocument(
             invoice: invoice,
             businessProfile: store.businessProfile,
             customer: customer,

@@ -116,6 +116,31 @@ struct EstimatePDFRenderer {
                     startingAt: currentY
                 )
 
+                let scopeOfWork = estimate.scopeOfWork.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+
+                if !scopeOfWork.isEmpty {
+                    currentY += 12
+
+                    let scopeHeight = titledTextHeight(
+                        scopeOfWork,
+                        width: contentWidth
+                    )
+                    let maximumY = pageHeight - pageMargin - footerHeight
+
+                    if currentY + scopeHeight > maximumY {
+                        finishPage()
+                        beginPage(showColumnHeadings: false)
+                    }
+
+                    currentY = drawTitledText(
+                        title: "SCOPE OF WORK",
+                        text: scopeOfWork,
+                        startingAt: currentY
+                    )
+                }
+
                 if !businessProfile.invoiceHeaderText
                     .trimmingCharacters(
                         in: .whitespacesAndNewlines
@@ -147,7 +172,8 @@ struct EstimatePDFRenderer {
 
                 for item in estimate.lineItems {
                     let itemHeight = lineItemHeight(
-                        for: item
+                        for: item,
+                        catalogItems: catalogItems
                     )
 
                     let maximumY =
@@ -170,7 +196,8 @@ struct EstimatePDFRenderer {
                     currentY += itemHeight
                 }
 
-                let summaryHeight: CGFloat = 150
+                let summaryHeight: CGFloat =
+                    18 + 61 + (estimate.discount == 0 ? 0 : 23)
                 let maximumSummaryY =
                     pageHeight -
                     pageMargin -
@@ -187,20 +214,6 @@ struct EstimatePDFRenderer {
                     estimate: estimate,
                     startingAt: currentY
                 )
-
-                if !estimate.serviceDetails
-                    .trimmingCharacters(
-                        in: .whitespacesAndNewlines
-                    )
-                    .isEmpty {
-
-                    currentY += 18
-
-                    currentY = drawNotes(
-                        estimate.serviceDetails,
-                        startingAt: currentY
-                    )
-                }
 
                 if !businessProfile.invoiceFooterText
                     .trimmingCharacters(
@@ -450,7 +463,6 @@ struct EstimatePDFRenderer {
         Created: \(formattedDate(estimate.createdDate))
         Expires: \(formattedDate(estimate.expirationDate))
         Status: \(estimate.status.rawValue)
-        Estimate: \(estimate.estimateNumber)
         """
 
         drawText(
@@ -481,7 +493,7 @@ struct EstimatePDFRenderer {
             height: 24
         )
 
-        UIColor.systemGray6.setFill()
+        UIColor.black.setFill()
         UIBezierPath(
             roundedRect: headerRect,
             cornerRadius: 4
@@ -496,7 +508,7 @@ struct EstimatePDFRenderer {
                 height: 16
             ),
             font: .boldSystemFont(ofSize: 9),
-            color: .darkGray
+            color: .white
         )
 
         drawText(
@@ -508,7 +520,7 @@ struct EstimatePDFRenderer {
                 height: 16
             ),
             font: .boldSystemFont(ofSize: 9),
-            color: .darkGray,
+            color: .white,
             alignment: .right
         )
 
@@ -521,7 +533,7 @@ struct EstimatePDFRenderer {
                 height: 16
             ),
             font: .boldSystemFont(ofSize: 9),
-            color: .darkGray,
+            color: .white,
             alignment: .right
         )
 
@@ -534,7 +546,7 @@ struct EstimatePDFRenderer {
                 height: 16
             ),
             font: .boldSystemFont(ofSize: 9),
-            color: .darkGray,
+            color: .white,
             alignment: .right
         )
     }
@@ -554,6 +566,10 @@ struct EstimatePDFRenderer {
 
         if !item.description.isEmpty {
             descriptionText += "\n\(item.description)"
+        }
+
+        if let discountText = itemDiscountText(item) {
+            descriptionText += "\n\(discountText)"
         }
 
         drawText(
@@ -627,9 +643,27 @@ struct EstimatePDFRenderer {
     }
 
     private static func lineItemHeight(
-        for item: ServiceLineItem
+        for item: ServiceLineItem,
+        catalogItems: [ServiceCatalogItem]
     ) -> CGFloat {
-        item.description.isEmpty ? 34 : 50
+        let itemName = lineItemName(
+            for: item,
+            catalogItems: catalogItems
+        )
+        var descriptionText = item.description.isEmpty
+            ? itemName
+            : "\(itemName)\n\(item.description)"
+        if let discountText = itemDiscountText(item) {
+            descriptionText += "\n\(discountText)"
+        }
+        let textHeight = (descriptionText as NSString).boundingRect(
+            with: CGSize(width: 270, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: UIFont.systemFont(ofSize: 9)],
+            context: nil
+        ).height
+
+        return max(34, ceil(textHeight) + 16)
     }
 
     // MARK: - Financial Summary
@@ -659,7 +693,9 @@ struct EstimatePDFRenderer {
 
         if estimate.discount != 0 {
             drawSummaryRow(
-                label: "Discount",
+                label: estimate.discountMethod == .percentage
+                    ? "Discount (\(formattedQuantity(estimate.discountInputValue))%)"
+                    : "Discount",
                 value: "-\(currency(abs(estimate.discount)))",
                 labelX: labelX,
                 valueX: valueX,
@@ -678,7 +714,7 @@ struct EstimatePDFRenderer {
             height: 32
         )
 
-        UIColor.systemGray6.setFill()
+        UIColor.black.setFill()
 
         UIBezierPath(
             roundedRect: totalRect,
@@ -693,10 +729,25 @@ struct EstimatePDFRenderer {
             y: currentY,
             labelWidth: labelWidth,
             valueWidth: valueWidth,
-            bold: true
+            bold: true,
+            color: .white
         )
 
         return currentY + 38
+    }
+
+    private static func itemDiscountText(_ item: ServiceLineItem) -> String? {
+        let grossTotal = max(item.quantity * item.unitPrice, 0)
+        let amount = DiscountCalculator.amount(
+            subtotal: grossTotal,
+            method: item.discountMethod,
+            inputValue: item.discountInputValue
+        )
+        guard amount > 0 else { return nil }
+        if item.discountMethod == .percentage {
+            return "Item discount: \(formattedQuantity(item.discountInputValue))% (-\(currency(amount)))"
+        }
+        return "Item discount: -\(currency(amount))"
     }
 
     private static func drawSummaryRow(
@@ -707,7 +758,8 @@ struct EstimatePDFRenderer {
         y: CGFloat,
         labelWidth: CGFloat,
         valueWidth: CGFloat,
-        bold: Bool = false
+        bold: Bool = false,
+        color: UIColor = .black
     ) {
         let font: UIFont = bold
             ? .boldSystemFont(ofSize: 11)
@@ -722,7 +774,7 @@ struct EstimatePDFRenderer {
                 height: 20
             ),
             font: font,
-            color: .black,
+            color: color,
             alignment: .right
         )
 
@@ -735,7 +787,7 @@ struct EstimatePDFRenderer {
                 height: 20
             ),
             font: font,
-            color: .black,
+            color: color,
             alignment: .right
         )
     }
@@ -773,6 +825,49 @@ struct EstimatePDFRenderer {
             font: .systemFont(ofSize: 9),
             color: .black
         )
+    }
+
+    private static func drawTitledText(
+        title: String,
+        text: String,
+        startingAt: CGFloat
+    ) -> CGFloat {
+        var currentY = startingAt
+
+        drawText(
+            title,
+            in: CGRect(x: pageMargin, y: currentY, width: contentWidth, height: 20),
+            font: .boldSystemFont(ofSize: 10),
+            color: .darkGray
+        )
+
+        currentY += 20
+        let textHeight = measuredTextHeight(text, width: contentWidth, font: .systemFont(ofSize: 9))
+
+        return drawText(
+            text,
+            in: CGRect(x: pageMargin, y: currentY, width: contentWidth, height: textHeight),
+            font: .systemFont(ofSize: 9),
+            color: .black
+        )
+    }
+
+    private static func titledTextHeight(_ text: String, width: CGFloat) -> CGFloat {
+        20 + measuredTextHeight(text, width: width, font: .systemFont(ofSize: 9))
+    }
+
+    private static func measuredTextHeight(
+        _ text: String,
+        width: CGFloat,
+        font: UIFont
+    ) -> CGFloat {
+        let attributes: [NSAttributedString.Key: Any] = [.font: font]
+        let rect = NSAttributedString(string: text, attributes: attributes).boundingRect(
+            with: CGSize(width: width, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            context: nil
+        )
+        return max(14, ceil(rect.height) + 2)
     }
 
     private static func drawFooter(

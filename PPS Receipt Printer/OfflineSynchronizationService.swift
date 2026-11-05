@@ -72,6 +72,7 @@ final class OfflineSynchronizationService: ObservableObject {
     private var isProcessing = false
     private var processingTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
+    private var queueObservation: AnyCancellable?
     private var pendingProcessingRequest = false
     private var requiresAuthoritativePullBeforeUpload = false
 
@@ -90,6 +91,12 @@ final class OfflineSynchronizationService: ObservableObject {
     func start() {
         guard !isStarted else { return }
         isStarted = true
+        queueObservation = queue.$operations.sink { [weak self] operations in
+            guard operations.contains(where: { $0.isReadyToSynchronize }) else {
+                return
+            }
+            self?.scheduleProcessing(forceRetry: false)
+        }
         _ = try? queue.recoverInterruptedSynchronizations()
         connectivity.onStatusChanged = { [weak self] status in
             self?.connectivityChanged(to: status)
@@ -104,6 +111,8 @@ final class OfflineSynchronizationService: ObservableObject {
         connectivity.stop()
         processingTask?.cancel()
         retryTask?.cancel()
+        queueObservation?.cancel()
+        queueObservation = nil
         pendingProcessingRequest = false
         retryTask = nil
         state = .idle
@@ -149,7 +158,13 @@ final class OfflineSynchronizationService: ObservableObject {
         guard !isProcessing else { return }
 
         isProcessing = true
-        defer { isProcessing = false }
+        defer {
+            isProcessing = false
+            if pendingProcessingRequest && processingTask == nil {
+                pendingProcessingRequest = false
+                scheduleProcessing(forceRetry: false)
+            }
+        }
 
         retryTask?.cancel()
         retryTask = nil
@@ -231,7 +246,10 @@ final class OfflineSynchronizationService: ObservableObject {
             state = .waitingForRetry(earliestRetryDate)
             scheduleRetry(at: earliestRetryDate)
         } else {
-            state = queue.hasPendingChanges ? .failed : .idle
+            // A save can arrive while the current queue snapshot is uploading.
+            // It is pending work, not a synchronization failure; the queue
+            // observation schedules the next ordered drain immediately.
+            state = queue.hasPendingChanges ? .synchronizing : .idle
         }
     }
 
@@ -498,7 +516,7 @@ final class OfflineSynchronizationService: ObservableObject {
             state = .offline
             return
         }
-        guard processingTask == nil else {
+        guard processingTask == nil, !isProcessing else {
             pendingProcessingRequest = true
             return
         }

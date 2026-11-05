@@ -164,17 +164,19 @@ extension AppDataStore {
                 exception.kind == .skipped ? exception.occurrenceIndex : nil
             })
             if !skippedIndices.isEmpty {
-                let originalCount = materializedJobs.count
-                materializedJobs.removeAll { job in
+                let skippedJobIDs = Set(materializedJobs.filter { job in
                     job.recurringWorkTemplateID == template.id &&
                     skippedIndices.contains(job.recurrenceSequence) &&
                     job.workflowState == .notStarted &&
                     (job.status == .toBeScheduled ||
                      job.status == .scheduled ||
                      job.status == .assigned)
+                }.map(\.id))
+                if !skippedJobIDs.isEmpty {
+                    materializedJobs.removeAll { skippedJobIDs.contains($0.id) }
+                    removeAssignments(forJobIDs: skippedJobIDs)
+                    didChangeJobs = true
                 }
-                didChangeJobs = didChangeJobs ||
-                    materializedJobs.count != originalCount
             }
 
             guard let planned = try? engine.plan(
@@ -477,6 +479,7 @@ extension AppDataStore {
         )
         recurringWorkTemplates[templateIndex].revision += 1
         recurringWorkTemplates[templateIndex].updatedAt = date
+        removeAssignments(forJobIDs: [jobID])
         jobs.removeAll { $0.id == jobID }
         materializeRecurringWorkHorizon()
         synchronizeAssignmentsFromJobs()

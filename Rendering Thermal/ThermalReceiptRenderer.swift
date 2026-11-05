@@ -10,6 +10,32 @@ import Foundation
 struct ThermalReceiptRenderer {
     static let charactersPerLine = 48
 
+    static func renderPrintableDocument(
+        invoice: InvoiceRecord,
+        businessProfile: BusinessProfile,
+        customer: Customer?,
+        site: CustomerSite?,
+        catalogItems: [ServiceCatalogItem]
+    ) -> String {
+        if let receipt = ReceiptEngine.latestReceipt(in: invoice) {
+            return render(
+                receipt: receipt,
+                businessProfile: businessProfile,
+                customer: customer,
+                site: site,
+                catalogItems: catalogItems
+            )
+        }
+
+        return render(
+            invoice: invoice,
+            businessProfile: businessProfile,
+            customer: customer,
+            site: site,
+            catalogItems: catalogItems
+        )
+    }
+
     static func render(
         invoice: InvoiceRecord,
         businessProfile: BusinessProfile,
@@ -126,12 +152,6 @@ struct ThermalReceiptRenderer {
                 twoColumnLine(
                     left: "Payment",
                     right: currency(payment.paymentAmount)
-                )
-            )
-            lines.append(
-                twoColumnLine(
-                    left: "Method",
-                    right: payment.paymentMethod.rawValue
                 )
             )
             lines.append(
@@ -314,6 +334,24 @@ struct ThermalReceiptRenderer {
                 for line in wrappedLines(item.description) {
                     lines.append("  \(line)")
                 }
+            }
+
+            let grossTotal = max(item.quantity * item.unitPrice, 0)
+            let itemDiscount = DiscountCalculator.amount(
+                subtotal: grossTotal,
+                method: item.discountMethod,
+                inputValue: item.discountInputValue
+            )
+            if itemDiscount > 0 {
+                let discountLabel = item.discountMethod == .percentage
+                    ? "  Item discount \(formattedQuantity(item.discountInputValue))%"
+                    : "  Item discount"
+                lines.append(
+                    twoColumnLine(
+                        left: discountLabel,
+                        right: "-\(currency(itemDiscount))"
+                    )
+                )
             }
 
             let quantityText = formattedQuantity(item.quantity)

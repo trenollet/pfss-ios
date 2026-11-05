@@ -164,6 +164,8 @@ struct RevenueSummary: Hashable {
     var invoiced: Double
 
     var collected: Double
+
+    var outstanding: Double = 0
 }
 
 // MARK: - Recommendations

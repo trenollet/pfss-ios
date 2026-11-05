@@ -26,19 +26,79 @@ private struct PFSSCalendarDay: Identifiable {
 struct SalesFollowUpCalendarView: View {
     @EnvironmentObject private var store: AppDataStore
 
+    @AppStorage("pfss.calendar.sales.selectedEmployeeIDs")
+    private var selectedEmployeeIDsRaw = ""
+
     @State private var selectedDate = Date()
     @State private var span: PFSSCalendarSpan = .one
     @State private var selectedEmployeeID: UUID?
     @State private var isShowingDatePicker = false
+    @State private var isShowingCalendars = false
+    @State private var selectedCalendarEntry: PFSSCalendarEntry?
+    @State private var didApplyInitialSelection = false
+    private let initialEmployeeID: UUID?
+
+    init(initialEmployeeID: UUID? = nil) {
+        self.initialEmployeeID = initialEmployeeID
+    }
 
     private var salespeople: [EmployeeRecord] {
         store.activeEmployees
-            .filter { $0.hasRole(.salesperson) }
+            .filter {
+                $0.hasRole(.salesperson)
+                    || $0.hasRole(.manager)
+                    || $0.hasRole(.owner)
+            }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
     private var selectedEmployee: EmployeeRecord? {
         salespeople.first { $0.id == selectedEmployeeID }
+    }
+
+    private var selectedEmployeeIDs: Set<UUID> {
+        Set(
+            selectedEmployeeIDsRaw
+                .split(separator: ",")
+                .compactMap { UUID(uuidString: String($0)) }
+        )
+    }
+
+    private var selectedEmployeeIDsBinding: Binding<Set<UUID>> {
+        Binding(
+            get: { selectedEmployeeIDs },
+            set: { ids in
+                selectedEmployeeIDsRaw = ids
+                    .map(\.uuidString)
+                    .sorted()
+                    .joined(separator: ",")
+            }
+        )
+    }
+
+    private var calendarEntries: [PFSSCalendarEntry] {
+        let selected = salespeople.filter { selectedEmployeeIDs.contains($0.id) }
+        return store.activeLeads.compactMap { lead in
+            guard let employee = selected.first(where: {
+                normalized($0.displayName) == normalized(lead.assignedSalesperson)
+            }) else { return nil }
+            let title = lead.businessName.isEmpty ? lead.contactName : lead.businessName
+            return PFSSCalendarEntry(
+                id: "lead-\(lead.id.uuidString)-\(employee.id.uuidString)",
+                recordID: lead.id,
+                kind: .lead,
+                employeeID: employee.id,
+                title: title,
+                subtitle: lead.status.rawValue,
+                startDate: lead.followUpDate,
+                endDate: Calendar.current.date(
+                    byAdding: .minute,
+                    value: 30,
+                    to: lead.followUpDate
+                ) ?? lead.followUpDate,
+                color: pfssCalendarColor(named: employee.colorName)
+            )
+        }
     }
 
     private var days: [PFSSCalendarDay] {
@@ -58,38 +118,28 @@ struct SalesFollowUpCalendarView: View {
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 18) {
-                if store.canManageCompany {
-                    employeeSelector(
-                        title: "Viewing Follow-Ups For",
-                        employees: salespeople,
-                        selection: $selectedEmployeeID
-                    )
-                } else if let selectedEmployee {
-                    lockedEmployeeHeader(selectedEmployee)
-                }
-
-                calendarControls
-
-                if selectedEmployee == nil {
-                    ContentUnavailableView(
-                        "No Salesperson Available",
-                        systemImage: "person.crop.circle.badge.exclamationmark",
-                        description: Text("Assign Sales access to an active employee to view follow-ups.")
-                    )
-                    .padding(.top, 40)
-                } else {
-                    dayList
-                }
-            }
-            .padding()
-        }
-        .background(Color(.systemGroupedBackground))
+        PFSSMultiDayCalendarView(
+            entries: calendarEntries,
+            calendarTitle: "Sales",
+            displayModeStorageKey: "pfss.calendar.sales.displayMode.v1",
+            showsCalendarsButton: store.canManageCompany,
+            onSelectEntry: { selectedCalendarEntry = $0 },
+            onShowCalendars: { isShowingCalendars = true }
+        )
         .navigationTitle("Sales Calendar")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $isShowingDatePicker) {
-            calendarDatePicker
+        .sheet(isPresented: $isShowingCalendars) {
+            PFSSCalendarEmployeeSelectionView(
+                title: "Sales Calendars",
+                employees: salespeople,
+                selectedEmployeeIDs: selectedEmployeeIDsBinding
+            )
+        }
+        .navigationDestination(item: $selectedCalendarEntry) { entry in
+            if let lead = store.activeLeads.first(where: { $0.id == entry.recordID }) {
+                LeadDetailView(lead: lead)
+                    .environmentObject(store)
+            }
         }
         .onAppear(perform: repairSelection)
         .onChange(of: store.activeEmployees.map(\.id)) { _, _ in
@@ -168,32 +218,48 @@ struct SalesFollowUpCalendarView: View {
     }
 
     private func repairSelection() {
-        if store.canManageCompany,
-           let selectedEmployeeID,
-           salespeople.contains(where: { $0.id == selectedEmployeeID }) {
+        let validIDs = Set(salespeople.map(\.id))
+        if !didApplyInitialSelection,
+           let initialEmployeeID,
+           validIDs.contains(initialEmployeeID) {
+            didApplyInitialSelection = true
+            selectedEmployeeIDsBinding.wrappedValue = [initialEmployeeID]
             return
         }
+        didApplyInitialSelection = true
 
         if !store.canManageCompany,
            let authenticated = store.authenticatedCloudEmployee,
            authenticated.hasRole(.salesperson),
-           salespeople.contains(where: { $0.id == authenticated.id }) {
-            selectedEmployeeID = authenticated.id
-        } else {
-            selectedEmployeeID = salespeople.first?.id
+           validIDs.contains(authenticated.id) {
+            selectedEmployeeIDsBinding.wrappedValue = [authenticated.id]
+            return
         }
+
+        let repaired = selectedEmployeeIDs.intersection(validIDs)
+        selectedEmployeeIDsBinding.wrappedValue = repaired.isEmpty
+            ? Set(salespeople.first.map { [$0.id] } ?? [])
+            : repaired
     }
 }
 
 struct TechnicianCalendarView: View {
     @EnvironmentObject private var store: AppDataStore
 
+    @AppStorage("pfss.calendar.technician.selectedEmployeeIDs")
+    private var selectedEmployeeIDsRaw = ""
+
     @State private var selectedDate = Date()
     @State private var span: PFSSCalendarSpan = .one
     @State private var selectedEmployeeID: UUID?
     @State private var isShowingDatePicker = false
+    @State private var isShowingCalendars = false
+    @State private var selectedCalendarEntry: PFSSCalendarEntry?
+    @State private var didApplyInitialSelection = false
+    private let initialEmployeeID: UUID?
 
     init(initialEmployeeID: UUID? = nil) {
+        self.initialEmployeeID = initialEmployeeID
         _selectedEmployeeID = State(initialValue: initialEmployeeID)
     }
 
@@ -211,6 +277,71 @@ struct TechnicianCalendarView: View {
         technicians.first { $0.id == selectedEmployeeID }
     }
 
+    private var selectedEmployeeIDs: Set<UUID> {
+        Set(
+            selectedEmployeeIDsRaw
+                .split(separator: ",")
+                .compactMap { UUID(uuidString: String($0)) }
+        )
+    }
+
+    private var selectedEmployeeIDsBinding: Binding<Set<UUID>> {
+        Binding(
+            get: { selectedEmployeeIDs },
+            set: { ids in
+                selectedEmployeeIDsRaw = ids
+                    .map(\.uuidString)
+                    .sorted()
+                    .joined(separator: ",")
+            }
+        )
+    }
+
+    private var calendarEntries: [PFSSCalendarEntry] {
+        let selected = technicians.filter { selectedEmployeeIDs.contains($0.id) }
+        return selected.flatMap { employee in
+            let employeeJobs = store.activeJobs.flatMap { job -> [JobRecord] in
+                guard SchedulingCalculator.isEmployee(employee.id, assignedTo: job),
+                      job.status != .cancelled else { return [] }
+                return job.allScheduledWorkdaySchedules.map { schedule in
+                    var occurrence = job
+                    occurrence.scheduledDate = schedule.scheduledDate
+                    occurrence.assignmentSchedulingMode = schedule.schedulingMode
+                    occurrence.arrivalWindowEnd = schedule.arrivalWindowEnd
+                    occurrence.completionDeadline = schedule.completionDeadline
+                    return occurrence
+                }
+            }
+            return employeeJobs.map { job in
+                let customer = store.customers.first {
+                    $0.customerNumber == job.customerNumber
+                }
+                let title = customer.map {
+                    $0.businessName.isEmpty ? $0.contactName : $0.businessName
+                } ?? job.jobNumber
+                let minutes = max(SchedulingEngine.scheduledMinutes(for: job), 30)
+                let effectiveStart = job.scheduledDate
+                return PFSSCalendarEntry(
+                    id: "job-\(job.id.uuidString)-\(employee.id.uuidString)-\(job.scheduledDate.timeIntervalSince1970)",
+                    recordID: job.id,
+                    kind: .job,
+                    employeeID: employee.id,
+                    title: title,
+                    subtitle: job.serviceType == .other && !job.otherService.isEmpty
+                        ? job.otherService
+                        : job.serviceType.rawValue,
+                    startDate: effectiveStart,
+                    endDate: Calendar.current.date(
+                        byAdding: .minute,
+                        value: minutes,
+                        to: effectiveStart
+                    ) ?? effectiveStart,
+                    color: pfssCalendarColor(named: employee.colorName)
+                )
+            }
+        }
+    }
+
     private var calendarDays: [Date] {
         let start = Calendar.current.startOfDay(for: selectedDate)
         return (0..<span.rawValue).compactMap {
@@ -219,86 +350,28 @@ struct TechnicianCalendarView: View {
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 18) {
-                if store.canManageCompany {
-                    employeeSelector(
-                        title: "Viewing Jobs For",
-                        employees: technicians,
-                        selection: $selectedEmployeeID
-                    )
-                } else if let selectedEmployee {
-                    lockedEmployeeHeader(selectedEmployee)
-                }
-
-                VStack(spacing: 14) {
-                    Picker("Calendar Range", selection: $span) {
-                        ForEach(PFSSCalendarSpan.allCases) { option in
-                            Text(option.title).tag(option)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-
-                    PFSSCalendarDateNavigator(
-                        selectedDate: $selectedDate,
-                        isShowingDatePicker: $isShowingDatePicker
-                    )
-                }
-
-                if let employee = selectedEmployee {
-                    VStack(spacing: 12) {
-                        ForEach(calendarDays, id: \.self) { date in
-                            let jobs = jobs(for: employee, on: date)
-                            NavigationLink {
-                                TechnicianJobsDayView(
-                                    date: date,
-                                    employeeID: employee.id
-                                )
-                                .environmentObject(store)
-                            } label: {
-                                PFSSCalendarDayCard(
-                                    date: date,
-                                    count: jobs.count,
-                                    singularName: "Job",
-                                    pluralName: "Jobs",
-                                    accentColor: .orange
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                } else {
-                    ContentUnavailableView(
-                        "No Technician Available",
-                        systemImage: "person.crop.circle.badge.exclamationmark",
-                        description: Text("Assign Technician access to an active employee to view scheduled jobs.")
-                    )
-                    .padding(.top, 40)
-                }
-            }
-            .padding()
-        }
-        .background(Color(.systemGroupedBackground))
+        PFSSMultiDayCalendarView(
+            entries: calendarEntries,
+            calendarTitle: "My Day",
+            displayModeStorageKey: "pfss.calendar.jobs.displayMode.v1",
+            showsCalendarsButton: store.canManageCompany,
+            onSelectEntry: { selectedCalendarEntry = $0 },
+            onShowCalendars: { isShowingCalendars = true }
+        )
         .navigationTitle("Job Calendar")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $isShowingDatePicker) {
-            NavigationStack {
-                DatePicker(
-                    "Select Day",
-                    selection: $selectedDate,
-                    displayedComponents: .date
-                )
-                .datePickerStyle(.graphical)
-                .padding()
-                .navigationTitle("Choose a Date")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { isShowingDatePicker = false }
-                    }
-                }
+        .sheet(isPresented: $isShowingCalendars) {
+            PFSSCalendarEmployeeSelectionView(
+                title: "My Day Calendars",
+                employees: technicians,
+                selectedEmployeeIDs: selectedEmployeeIDsBinding
+            )
+        }
+        .navigationDestination(item: $selectedCalendarEntry) { entry in
+            if let job = store.activeJobs.first(where: { $0.id == entry.recordID }) {
+                JobDetailView(job: job)
+                    .environmentObject(store)
             }
-            .presentationDetents([.medium])
         }
         .onAppear(perform: repairSelection)
         .onChange(of: store.activeEmployees.map(\.id)) { _, _ in
@@ -317,20 +390,53 @@ struct TechnicianCalendarView: View {
         ).jobs
     }
 
+    private func plannedStartByJobID(
+        for employee: EmployeeRecord,
+        jobs: [JobRecord]
+    ) -> [UUID: Date] {
+        let days = Set(jobs.map { Calendar.current.startOfDay(for: $0.scheduledDate) })
+        var plannedStarts: [UUID: Date] = [:]
+
+        for day in days.sorted() {
+            for item in store.dailyPlan(for: employee, on: day).assignmentItems {
+                guard let jobID = item.jobID else { continue }
+                if let existingStart = plannedStarts[jobID] {
+                    plannedStarts[jobID] = min(existingStart, item.serviceStart)
+                } else {
+                    plannedStarts[jobID] = item.serviceStart
+                }
+            }
+        }
+
+        return plannedStarts
+    }
+
     private func repairSelection() {
-        if store.canManageCompany,
-           let selectedEmployeeID,
-           technicians.contains(where: { $0.id == selectedEmployeeID }) {
+        let validIDs = Set(technicians.map(\.id))
+        if !didApplyInitialSelection,
+           let initialEmployeeID,
+           validIDs.contains(initialEmployeeID) {
+            didApplyInitialSelection = true
+            selectedEmployeeIDsBinding.wrappedValue = [initialEmployeeID]
             return
         }
+        didApplyInitialSelection = true
 
         if !store.canManageCompany,
            let authenticated = store.authenticatedCloudEmployee,
-           technicians.contains(where: { $0.id == authenticated.id }) {
-            selectedEmployeeID = authenticated.id
-        } else if selectedEmployeeID == nil
-                    || !technicians.contains(where: { $0.id == selectedEmployeeID }) {
-            selectedEmployeeID = technicians.first?.id
+           validIDs.contains(authenticated.id) {
+            selectedEmployeeIDsBinding.wrappedValue = [authenticated.id]
+            return
+        }
+
+        let repaired = selectedEmployeeIDs.intersection(validIDs)
+        if !repaired.isEmpty {
+            selectedEmployeeIDsBinding.wrappedValue = repaired
+        } else if let initialEmployeeID, validIDs.contains(initialEmployeeID) {
+            selectedEmployeeIDsBinding.wrappedValue = [initialEmployeeID]
+        } else {
+            selectedEmployeeIDsBinding.wrappedValue =
+                Set(technicians.first.map { [$0.id] } ?? [])
         }
     }
 }
@@ -395,6 +501,8 @@ private struct TechnicianJobsDayView: View {
     let employeeID: UUID
     @State private var declineJob: JobRecord?
     @State private var moveJob: JobRecord?
+    @State private var skipJob: JobRecord?
+    @State private var continuationJob: JobRecord?
     @State private var declineReason = ""
     @State private var declineErrorMessage = ""
     @State private var showingDeclineError = false
@@ -450,37 +558,45 @@ private struct TechnicianJobsDayView: View {
                                 }
                             }
 
-                            if canDecline(job) || canMove(job) {
-                                HStack(spacing: 12) {
+                            if canDecline(job) || canMove(job) || canSkip(job) || canAddWorkday(job) {
+                                Menu {
                                     if canDecline(job) {
                                         if let assignment = store.assignment(forJobID: job.id),
                                            declineCenter.hasPendingReview(assignmentID: assignment.id) {
-                                            Label("Review Pending", systemImage: "flag.fill")
-                                                .font(.subheadline.weight(.semibold))
-                                                .foregroundStyle(.orange)
-                                                .frame(maxWidth: .infinity)
+                                            Text("Decline Review Pending")
                                         } else {
                                             Button(role: .destructive) {
                                                 declineReason = ""
                                                 declineJob = job
-                                            } label: {
-                                                Label("Decline", systemImage: "flag.fill")
-                                                    .frame(maxWidth: .infinity)
-                                            }
-                                            .buttonStyle(.bordered)
+                                            } label: { Label("Decline Job", systemImage: "flag.fill") }
                                         }
                                     }
 
                                     if canMove(job) {
                                         Button {
                                             moveJob = job
-                                        } label: {
-                                            Label("Move", systemImage: "calendar.badge.clock")
-                                                .frame(maxWidth: .infinity)
-                                        }
-                                        .buttonStyle(.borderedProminent)
+                                        } label: { Label("Move Scheduled Day", systemImage: "calendar.badge.clock") }
                                     }
+
+                                    if canAddWorkday(job) {
+                                        Button {
+                                            continuationJob = job
+                                        } label: { Label("Add Another Workday", systemImage: "calendar.badge.plus") }
+                                    }
+
+                                    if canSkip(job) {
+                                        Button(role: .destructive) {
+                                            skipJob = job
+                                        } label: { Label("Skip This Visit", systemImage: "forward.end.circle.fill") }
+                                    }
+                                } label: {
+                                    Label("Modify", systemImage: "ellipsis.circle.fill")
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundStyle(.white)
+                                        .frame(maxWidth: .infinity, minHeight: 34)
                                 }
+                                .buttonStyle(.borderedProminent)
+                                .tint(Color(uiColor: .systemGray3))
                             }
                         }
                         .padding(.vertical, 4)
@@ -500,6 +616,31 @@ private struct TechnicianJobsDayView: View {
         .sheet(item: $moveJob) { job in
             JobOccurrenceMoveView(job: job)
                 .environmentObject(store)
+        }
+        .sheet(item: $continuationJob) { job in
+            JobContinuationScheduleView(job: job)
+                .environmentObject(store)
+        }
+        .confirmationDialog(
+            "Skip only this visit?",
+            isPresented: Binding(
+                get: { skipJob != nil },
+                set: { if !$0 { skipJob = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Skip This Visit", role: .destructive) {
+                if let skipJob {
+                    store.skipRecurringOccurrence(
+                        jobID: skipJob.id,
+                        reason: "Skipped from the calendar by an Owner or Manager."
+                    )
+                }
+                skipJob = nil
+            }
+            Button("Cancel", role: .cancel) { skipJob = nil }
+        } message: {
+            Text("This visit will be removed. Future jobs in the recurring series will stay on their current schedule.")
         }
         .alert("Unable to Decline Job", isPresented: $showingDeclineError) {
             Button("OK", role: .cancel) { }
@@ -538,12 +679,43 @@ private struct TechnicianJobsDayView: View {
     }
 
     private func canMove(_ job: JobRecord) -> Bool {
-        guard let assignment = store.assignment(forJobID: job.id),
-              assignment.status == .scheduled || assignment.status == .dispatched else {
+        guard job.lifecycleStatus == .active,
+              job.status != .completed,
+              job.status != .cancelled else { return false }
+        let isAdditionalWorkday = store.isAdditionalJobWorkday(
+            jobID: job.id,
+            scheduledDate: job.scheduledDate
+        )
+        if !isAdditionalWorkday {
+            guard job.workflowState == .notStarted,
+                  job.status == .toBeScheduled ||
+                  job.status == .scheduled ||
+                  job.status == .assigned else { return false }
+        }
+        if store.canManageCompany {
+            return true
+        }
+        guard let assignment = store.assignment(forJobID: job.id) else {
             return false
         }
-        return store.canManageCompany ||
-            (store.cloudEmployeeID == employeeID && assignment.primaryTechnicianID == employeeID)
+        return store.cloudEmployeeID == employeeID &&
+            assignment.primaryTechnicianID == employeeID &&
+            (isAdditionalWorkday ||
+             assignment.status == .scheduled || assignment.status == .dispatched)
+    }
+
+    private func canSkip(_ job: JobRecord) -> Bool {
+        store.canManageCompany &&
+            job.recurringWorkTemplateID != nil &&
+            job.lifecycleStatus == .active &&
+            job.workflowState == .notStarted &&
+            (job.status == .toBeScheduled ||
+             job.status == .scheduled ||
+             job.status == .assigned)
+    }
+
+    private func canAddWorkday(_ job: JobRecord) -> Bool {
+        job.lifecycleStatus == .active && job.status != .completed && job.status != .cancelled
     }
 
     private func declineSheet(for job: JobRecord) -> some View {
@@ -700,9 +872,19 @@ struct JobOccurrenceMoveView: View {
     @EnvironmentObject private var store: AppDataStore
     @Environment(\.dismiss) private var dismiss
     @State private var job: JobRecord
+    private let originalScheduledDate: Date
 
     init(job: JobRecord) {
         _job = State(initialValue: job)
+        originalScheduledDate = job.scheduledDate
+    }
+
+    private var conflictsWithAnotherWorkday: Bool {
+        guard let storedJob = store.jobs.first(where: { $0.id == job.id }) else { return false }
+        return storedJob.allScheduledWorkDates.contains { date in
+            !Calendar.current.isDate(date, inSameDayAs: originalScheduledDate) &&
+                Calendar.current.isDate(date, inSameDayAs: job.scheduledDate)
+        }
     }
 
     var body: some View {
@@ -719,11 +901,20 @@ struct JobOccurrenceMoveView: View {
 
                 Section {
                     Label(
-                        "Only this visit will move. Future jobs in the series will keep their current schedule.",
-                        systemImage: "repeat"
+                        "Only this scheduled workday will move. The Job's other workdays and any future recurring visits will keep their current schedule.",
+                        systemImage: "calendar.badge.clock"
                     )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                    if conflictsWithAnotherWorkday {
+                        Label(
+                            "This Job already has work scheduled on the selected day.",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                    }
                 }
             }
             .navigationTitle("Move Job")
@@ -738,11 +929,16 @@ struct JobOccurrenceMoveView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Move") {
                         normalizeForSave()
-                        if store.updateSingleJobOccurrenceSchedule(job) {
+                        if store.updateJobWorkdaySchedule(
+                            jobID: job.id,
+                            originalDate: originalScheduledDate,
+                            updatedJob: job
+                        ) {
                             dismiss()
                         }
                     }
                     .fontWeight(.semibold)
+                    .disabled(conflictsWithAnotherWorkday)
                 }
             }
         }

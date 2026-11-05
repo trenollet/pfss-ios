@@ -458,18 +458,295 @@ struct OperationsDispatchQueueView: View {
 // MARK: - Revenue
 
 struct OperationsRevenueView: View {
-    let summary: RevenueSummary
+    private enum DrillDown: Hashable, Identifiable {
+        case scheduled(RevenueSummaryPeriod)
+        case invoiced(RevenueSummaryPeriod)
+        case outstanding(RevenueSummaryPeriod)
+
+        var id: String {
+            switch self {
+            case let .scheduled(period): "scheduled-\(period)"
+            case let .invoiced(period): "invoiced-\(period)"
+            case let .outstanding(period): "outstanding-\(period)"
+            }
+        }
+    }
+
+    @EnvironmentObject private var store: AppDataStore
+    private let calendar = Calendar.current
+    private let now = Date()
+    @State private var drillDown: DrillDown?
+    @State private var emptyNotice: String?
+    @State private var emptyNoticeTask: Task<Void, Never>?
 
     var body: some View {
         ScrollView {
-            RevenueSummaryCard(
-                summary: summary,
-                subtitle: "Today"
-            )
+            LazyVStack(spacing: 16) {
+                NavigationLink {
+                    OperationsRevenueForecastsView()
+                } label: {
+                    Text("Forecasts")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 13)
+                        .background(.green, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+
+                ForEach(RevenueSummaryPeriod.allCases, id: \.self) { period in
+                    let summary = RevenueSummaryEngine.summary(
+                        for: period,
+                        jobs: store.activeJobs,
+                        invoices: store.invoices,
+                        now: now,
+                        calendar: calendar
+                    )
+                    RevenueSummaryCard(
+                        summary: summary,
+                        title: period.title,
+                        subtitle: period.subtitle(now: now, calendar: calendar),
+                        showsScheduledRevenue: period != .annual,
+                        onSelectInvoiced: period == .annual ? nil : {
+                            open(
+                                .invoiced(period),
+                                value: summary.invoiced,
+                                emptyMessage: "There are no invoices to display for this period."
+                            )
+                        },
+                        onSelectScheduled: period == .annual ? nil : {
+                            open(
+                                .scheduled(period),
+                                value: summary.scheduled,
+                                emptyMessage: "There are no scheduled jobs to display for this period."
+                            )
+                        },
+                        onSelectOutstanding: {
+                            open(
+                                .outstanding(period),
+                                value: summary.outstanding,
+                                emptyMessage: "There are no outstanding invoices to display for this period."
+                            )
+                        }
+                    )
+                }
+            }
             .padding()
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Revenue")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(item: $drillDown) { destination in
+            drillDownView(destination)
+        }
+        .overlay(alignment: .top) {
+            if let emptyNotice {
+                HStack(spacing: 10) {
+                    Image(systemName: "info.circle.fill")
+                    Text(emptyNotice)
+                        .font(.subheadline.weight(.semibold))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(.regularMaterial, in: Capsule())
+                .shadow(radius: 8, y: 4)
+                .padding(.horizontal)
+                .padding(.top, 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .gesture(
+                    DragGesture(minimumDistance: 12)
+                        .onEnded { value in
+                            if value.translation.width > 20
+                                || value.translation.height < -20 {
+                                dismissEmptyNotice()
+                            }
+                        }
+                )
+            }
+        }
+        .onDisappear {
+            emptyNoticeTask?.cancel()
+        }
+    }
+
+    @ViewBuilder
+    private func drillDownView(_ destination: DrillDown) -> some View {
+        switch destination {
+        case let .scheduled(period):
+            JobRecordsListView(
+                title: "Scheduled Jobs",
+                jobFilter: { job in
+                    period.dateInterval(now: now, calendar: calendar)
+                        .contains(job.scheduledDate)
+                        && job.status != .cancelled
+                        && job.status != .completed
+                }
+            )
+        case let .invoiced(period):
+            InvoiceRecordsListView(
+                title: "Invoices",
+                invoiceFilter: { invoice in
+                    period.dateInterval(now: now, calendar: calendar)
+                        .contains(invoice.issueDate)
+                        && invoice.status != .void
+                }
+            )
+        case let .outstanding(period):
+            InvoiceRecordsListView(
+                title: "Outstanding Invoices",
+                invoiceFilter: { invoice in
+                    period.dateInterval(now: now, calendar: calendar)
+                        .contains(invoice.issueDate)
+                        && invoice.status != .void
+                        && invoice.balanceDue > 0
+                }
+            )
+        }
+    }
+
+    private func open(
+        _ destination: DrillDown,
+        value: Double,
+        emptyMessage: String
+    ) {
+        guard value > 0 else {
+            showEmptyNotice(emptyMessage)
+            return
+        }
+        drillDown = destination
+    }
+
+    private func showEmptyNotice(_ message: String) {
+        emptyNoticeTask?.cancel()
+        withAnimation(.snappy) {
+            emptyNotice = message
+        }
+        emptyNoticeTask = Task {
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                dismissEmptyNotice()
+            }
+        }
+    }
+
+    private func dismissEmptyNotice() {
+        emptyNoticeTask?.cancel()
+        emptyNoticeTask = nil
+        withAnimation(.snappy) {
+            emptyNotice = nil
+        }
+    }
+}
+
+private struct OperationsRevenueForecastsView: View {
+    @EnvironmentObject private var store: AppDataStore
+    @State private var selectedPeriod: RevenueForecastPeriod?
+    private let calendar = Calendar.current
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 16) {
+                Text("Projected job value from today through the end of each period. Scheduled and assigned jobs only; completed, canceled, archived, unscheduled, and already-started jobs are excluded. This is not collected revenue.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                ForEach(RevenueForecastPeriod.allCases) { period in
+                    let now = Date()
+                    let forecast = RevenueForecastEngine.forecast(
+                        for: period,
+                        jobs: store.activeJobs,
+                        now: now,
+                        calendar: calendar
+                    )
+                    Button {
+                        selectedPeriod = period
+                    } label: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(alignment: .top) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(period.title).font(.headline)
+                                    Text("\(period.label(offset: 0, now: now, calendar: calendar)) · \(period.subtitle(now: now, calendar: calendar))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(forecast.amount, format: .currency(code: "USD"))
+                                .font(.system(size: 30, weight: .bold))
+                                .monospacedDigit()
+                                .foregroundStyle(.primary)
+                            Text("\(forecast.jobs.count) scheduled \(forecast.jobs.count == 1 ? "job" : "jobs")")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Shows forecast totals for upcoming periods")
+                }
+            }
+            .padding()
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle("Forecasts")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(item: $selectedPeriod) { period in
+            OperationsRevenueForecastDetailView(period: period)
+        }
+    }
+}
+
+private struct OperationsRevenueForecastDetailView: View {
+    @EnvironmentObject private var store: AppDataStore
+    let period: RevenueForecastPeriod
+    private let calendar = Calendar.current
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 14) {
+                Text("Projected value of scheduled and assigned jobs. The current period starts with today; later periods show their full calendar range.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                ForEach(0..<period.numberOfPeriods, id: \.self) { offset in
+                    let now = Date()
+                    let forecast = RevenueForecastEngine.forecast(
+                        for: period,
+                        jobs: store.activeJobs,
+                        now: now,
+                        calendar: calendar,
+                        offset: offset
+                    )
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(period.label(offset: offset, now: now, calendar: calendar))
+                            .font(.headline)
+                        Text(period.subtitle(now: now, calendar: calendar, offset: offset))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(forecast.amount, format: .currency(code: "USD"))
+                            .font(.system(size: 28, weight: .bold))
+                            .monospacedDigit()
+                        Text("\(forecast.jobs.count) scheduled \(forecast.jobs.count == 1 ? "job" : "jobs")")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+                }
+            }
+            .padding()
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle(period.title)
         .navigationBarTitleDisplayMode(.inline)
     }
 }

@@ -59,24 +59,33 @@ struct InvoiceRecordsListView: View {
     let bucket: InvoiceRecordBucket?
     let title: String
     let customerNumber: String?
+    let invoiceFilter: ((InvoiceRecord) -> Bool)?
     @State private var showArchived = false
     @State private var searchText: String
     @State private var showingFilters = false
     @State private var selectedStatus: InvoiceStatus?
     @State private var dateFilter: RecordDateFilter = .all
     @State private var sortOrder: RecordListSortOrder = .dateDescending
+    @State private var sharedPDFURL: URL?
+    @State private var pdfErrorMessage: String?
+    @State private var isShowingPDFError = false
+    @State private var invoiceToView: InvoiceRecord?
+    @State private var combinationSelection = InvoiceCombinationSelection()
+    @State private var combinationSources: [InvoiceRecord]?
 
     init(
         statuses: Set<InvoiceStatus>? = nil,
         bucket: InvoiceRecordBucket? = nil,
         title: String = "All Invoices",
         initialSearchText: String = "",
-        customerNumber: String? = nil
+        customerNumber: String? = nil,
+        invoiceFilter: ((InvoiceRecord) -> Bool)? = nil
     ) {
         self.statuses = statuses
         self.bucket = bucket
         self.title = title
         self.customerNumber = customerNumber
+        self.invoiceFilter = invoiceFilter
         _searchText = State(initialValue: initialSearchText)
         _sortOrder = State(
             initialValue: customerNumber == nil ? .dateDescending : .dateAscending
@@ -96,9 +105,12 @@ struct InvoiceRecordsListView: View {
             source = lifecycleSource
         }
 
-        let customerScoped = customerNumber.map { number in
-            source.filter { $0.customerNumber == number }
+        let customFiltered = invoiceFilter.map { filter in
+            source.filter(filter)
         } ?? source
+        let customerScoped = customerNumber.map { number in
+            customFiltered.filter { $0.customerNumber == number }
+        } ?? customFiltered
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let matchingInvoices: [InvoiceRecord]
 
@@ -111,7 +123,7 @@ struct InvoiceRecordsListView: View {
                     || customerDisplayName(for: invoice.customerNumber)
                         .localizedCaseInsensitiveContains(query)
                     || invoice.jobNumber.localizedCaseInsensitiveContains(query)
-                    || invoice.status.rawValue.localizedCaseInsensitiveContains(query)
+                    || invoice.displayedStatus.localizedCaseInsensitiveContains(query)
             }
         }
 
@@ -136,11 +148,52 @@ struct InvoiceRecordsListView: View {
 
     var body: some View {
         List {
+                if supportsCombination {
+                    Section {
+                        HStack {
+                            if combinationSelection.isSelecting {
+                                Button("Cancel") { combinationSelection.cancel() }
+                                Spacer()
+                                Text("\(combinationSelection.selectedIDs.count) selected")
+                                    .font(.subheadline).foregroundStyle(.secondary)
+                            } else {
+                                Text("Combine invoices").font(.headline)
+                                Spacer()
+                            }
+                            Button {
+                                if !combinationSelection.isSelecting {
+                                    showArchived = false
+                                    selectedStatus = nil
+                                    dateFilter = .all
+                                    searchText = ""
+                                    combinationSelection.begin()
+                                } else if combinationSelection.canContinue {
+                                    combinationSources = store.activeInvoices.filter {
+                                        combinationSelection.selectedIDs.contains($0.id)
+                                    }.sorted { $0.invoiceNumber < $1.invoiceNumber }
+                                }
+                            } label: {
+                                Text("Combine").font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 16).padding(.vertical, 10)
+                                    .background(combineColor, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(combinationSelection.isSelecting && !combinationSelection.canContinue)
+                            .accessibilityIdentifier("invoiceCombineButton")
+                        }
+                        if combinationSelection.isSelecting {
+                            Text("Select at least 2 invoices. Paid and unpaid invoices can be selected.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
                 Section {
                     Toggle(
                         "Show Archived",
                         isOn: $showArchived
                     )
+                    .disabled(combinationSelection.isSelecting)
                 }
 
                 Section("Invoices") {
@@ -153,59 +206,93 @@ struct InvoiceRecordsListView: View {
                         .foregroundStyle(.secondary)
                     } else {
                         ForEach(filteredInvoices) { invoice in
-                            NavigationLink {
-                                InvoiceDetailView(invoice: invoice)
-                            } label: {
-                                VStack(
-                                    alignment: .leading,
-                                    spacing: 6
-                                ) {
-                                    HStack {
-                                        Text(invoice.invoiceNumber)
-                                            .font(.headline)
-                                        
-                                        Spacer()
-                                        
-                                        Text(invoice.status.rawValue)
-                                            .font(.caption)
-                                            .fontWeight(.semibold)
-                                    }
-                                    
+                            HStack(spacing: 12) {
+                            if combinationSelection.isSelecting {
+                                Button {
+                                    combinationSelection.toggle(invoice.id)
+                                } label: {
+                                    Image(systemName: combinationSelection.selectedIDs.contains(invoice.id)
+                                          ? "checkmark.circle.fill" : "circle")
+                                        .font(.title2).foregroundStyle(.blue)
+                                        .frame(width: 44, height: 44)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(invoice.status == .void || invoice.lifecycleStatus != .active
+                                          || invoice.combination != nil || invoice.combinedIntoInvoiceID != nil || invoice.paymentCorrection != nil)
+                                .accessibilityLabel("Select invoice \(invoice.invoiceNumber)")
+                                .accessibilityValue(combinationSelection.selectedIDs.contains(invoice.id) ? "Selected" : "Not selected")
+                            }
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack(spacing: 10) {
                                     Text(
-                                        "Customer: \(customerDisplayName(for: invoice.customerNumber))"
+                                        customerDisplayName(
+                                            for: invoice.customerNumber
+                                        )
                                     )
-                                    .font(.caption)
-                                    
-                                    if !invoice.jobNumber.isEmpty {
-                                        Text("Job: \(invoice.jobNumber)")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
+                                    .font(.headline)
+                                    .fontWeight(.bold)
+                                    .lineLimit(1)
+
+                                    Spacer(minLength: 8)
+
+                                    if !combinationSelection.isSelecting {
+                                    Button {
+                                        createAndSharePDF(for: invoice)
+                                    } label: {
+                                        Image(systemName: "square.and.arrow.up")
+                                            .font(.body.weight(.semibold))
+                                            .foregroundStyle(.white)
+                                            .frame(width: 44, height: 44)
+                                            .background(.green, in: Circle())
                                     }
-                                    
-                                    HStack {
-                                        Text(
-                                            invoice.issueDate,
-                                            format: .dateTime
-                                                .month()
-                                                .day()
-                                                .year()
-                                        )
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        
-                                        Spacer()
-                                        
-                                        Text(
-                                            invoice.balanceDue,
-                                            format: .currency(code: "USD")
-                                        )
-                                        .fontWeight(.semibold)
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Share invoice")
+
+                                    Button {
+                                        invoiceToView = store.invoiceDestination(for: invoice)
+                                    } label: {
+                                        Image(systemName: "pencil")
+                                            .font(.body.weight(.semibold))
+                                            .foregroundStyle(.white)
+                                            .frame(width: 44, height: 44)
+                                            .background(.blue, in: Circle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("View or edit invoice")
                                     }
                                 }
-                                .padding(.vertical, 4)
+
+                                HStack(spacing: 10) {
+                                    Text(
+                                        invoice.issueDate,
+                                        format: .dateTime
+                                            .month()
+                                            .day()
+                                            .year()
+                                    )
+                                    .lineLimit(1)
+
+                                    Spacer(minLength: 8)
+
+                                    Text(
+                                        invoice.total,
+                                        format: .currency(code: "USD")
+                                    )
+                                    .fontWeight(.semibold)
+                                    .lineLimit(1)
+
+                                    Spacer(minLength: 8)
+
+                                    Text(invoice.displayedStatus)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                .font(.subheadline)
                             }
+                            }
+                            .padding(.vertical, 1)
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                if invoice.lifecycleStatus != .archived {
+                                if invoice.lifecycleStatus != .archived && !combinationSelection.isSelecting {
                                     Button(role: .destructive) {
                                         store.archiveInvoice(invoice)
                                     } label: {
@@ -219,7 +306,38 @@ struct InvoiceRecordsListView: View {
             }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(
+            isPresented: Binding(
+                get: { invoiceToView != nil },
+                set: { isPresented in
+                    if !isPresented { invoiceToView = nil }
+                }
+            )
+        ) {
+            if let invoiceToView {
+                InvoiceDetailView(invoice: invoiceToView)
+            }
+        }
         .searchable(text: $searchText, prompt: "Search invoices")
+        .onChange(of: Set(store.activeInvoices.filter {
+            $0.status != .void && $0.combination == nil && $0.combinedIntoInvoiceID == nil && $0.paymentCorrection == nil
+        }.map(\.id))) { _, eligibleIDs in
+            combinationSelection.reconcile(eligibleIDs: eligibleIDs)
+        }
+        .sheet(isPresented: Binding(
+            get: { combinationSources != nil },
+            set: { if !$0 { combinationSources = nil } }
+        )) {
+            if let combinationSources {
+                NavigationStack {
+                    InvoiceCombinationReviewView(sources: combinationSources) { saved in
+                        self.combinationSources = nil
+                        combinationSelection.cancel()
+                        invoiceToView = saved
+                    }
+                }
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showingFilters = true } label: {
@@ -262,10 +380,35 @@ struct InvoiceRecordsListView: View {
                 }
             }
         }
+        .sheet(
+            isPresented: Binding(
+                get: { sharedPDFURL != nil },
+                set: { isPresented in
+                    if !isPresented { sharedPDFURL = nil }
+                }
+            )
+        ) {
+            if let sharedPDFURL {
+                ActivityView(activityItems: [sharedPDFURL])
+            }
+        }
+        .alert("Unable to Share Invoice", isPresented: $isShowingPDFError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(pdfErrorMessage ?? "The invoice PDF could not be created.")
+        }
     }
 
     private var hasActiveFilters: Bool {
         selectedStatus != nil || dateFilter != .all || sortOrder != defaultSortOrder
+    }
+
+    private var supportsCombination: Bool {
+        statuses == nil && bucket == nil && customerNumber == nil && invoiceFilter == nil
+    }
+
+    private var combineColor: Color {
+        !combinationSelection.isSelecting ? .blue : (combinationSelection.canContinue ? .green : .gray)
     }
 
     private var defaultSortOrder: RecordListSortOrder {
@@ -290,5 +433,28 @@ struct InvoiceRecordsListView: View {
         }
 
         return customerNumber
+    }
+
+    private func createAndSharePDF(for invoice: InvoiceRecord) {
+        let invoice = store.invoiceDestination(for: invoice)
+        let customer = store.customers.first {
+            $0.customerNumber == invoice.customerNumber
+        }
+        let site = invoice.siteID.flatMap { siteID in
+            store.sites.first { $0.id == siteID }
+        }
+
+        do {
+            sharedPDFURL = try InvoicePDFRenderer.createPDF(
+                invoice: invoice,
+                businessProfile: store.businessProfile,
+                customer: customer,
+                site: site,
+                catalogItems: store.serviceCatalogItems
+            )
+        } catch {
+            pdfErrorMessage = error.localizedDescription
+            isShowingPDFError = true
+        }
     }
 }

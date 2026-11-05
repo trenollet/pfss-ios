@@ -6,11 +6,71 @@
 //
 
 import Foundation
+import Combine
 import XCTest
 @testable import PPS_Receipt_Printer
 
 @MainActor
 final class PFSSCloudflareBetaServiceTests: XCTestCase {
+    func testRepeatedSynchronizationIdentityDoesNotRepublishUnchangedState() {
+        let store = AppDataStore(persistenceEnabled: false)
+        let employeeID = UUID()
+        store.updateCloudIdentity(
+            role: .manager,
+            employeeID: employeeID.uuidString
+        )
+        store.updateCloudSynchronizationAccessStatus(.available)
+
+        var publicationCount = 0
+        let observation = store.objectWillChange.sink {
+            publicationCount += 1
+        }
+
+        store.updateCloudIdentity(
+            role: .manager,
+            employeeID: employeeID.uuidString
+        )
+        store.updateCloudSynchronizationAccessStatus(.available)
+
+        XCTAssertEqual(publicationCount, 0)
+        withExtendedLifetime(observation) {}
+    }
+
+    func testQueueProgressDoesNotRepublishTheEntireAppDataStore() throws {
+        let queue = OfflineOperationQueue(
+            persistence: TransientOfflineOperationQueuePersistence()
+        )
+        let store = AppDataStore(
+            offlineOperationQueue: queue,
+            persistenceEnabled: false
+        )
+        var storePublicationCount = 0
+        var queuePublicationCount = 0
+        let storeObservation = store.objectWillChange.sink {
+            storePublicationCount += 1
+        }
+        let queueObservation = queue.objectWillChange.sink {
+            queuePublicationCount += 1
+        }
+
+        try queue.enqueue(
+            PendingOfflineOperation(
+                type: .recordMutation,
+                entityType: .job,
+                entityID: UUID(),
+                actionName: "scrollPerformanceProbe",
+                payload: OfflineOperationPayload(
+                    contentType: "application/json",
+                    body: Data("{}".utf8)
+                )
+            )
+        )
+
+        XCTAssertGreaterThan(queuePublicationCount, 0)
+        XCTAssertEqual(storePublicationCount, 0)
+        withExtendedLifetime((storeObservation, queueObservation)) {}
+    }
+
     func testEmployeeApplicationRolesDetermineInvitationAccess() {
         let technician = EmployeeRecord(
             firstName: "Field",
@@ -519,6 +579,44 @@ final class PFSSCloudflareBetaServiceTests: XCTestCase {
 
         XCTAssertTrue(target.offlineOperationQueue.operations.isEmpty)
         XCTAssertEqual(target.customers.map(\.customerNumber), ["PPS-000888"])
+    }
+
+    func testRemoteRecordPageCompletesDeferredPersistenceAsOneBatch() throws {
+        let target = AppDataStore(
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
+        )
+        let customers = [
+            makeSynchronizationCustomer(number: "PPS-BATCH-1", name: "First"),
+            makeSynchronizationCustomer(number: "PPS-BATCH-2", name: "Second"),
+        ]
+        let operations = try customers.map { customer in
+            let operationID = UUID()
+            return PendingOfflineOperation(
+                id: operationID,
+                type: .recordMutation,
+                entityType: .customer,
+                entityID: customer.id,
+                actionName: "upsertRecord",
+                payload: try OfflineRecordMutationCodec.envelopePayload(
+                    operationID: operationID,
+                    entityType: .customer,
+                    entityID: customer.id,
+                    recordData: AppDataStore.recordSynchronizationEncoder.encode(customer),
+                    modifiedAt: Date(),
+                    baseRevision: "batch-r1",
+                    encoder: AppDataStore.recordSynchronizationEncoder
+                ),
+                metadata: ["remoteRevision": "batch-r1"]
+            )
+        }
+
+        target.applyRemoteRecordOperations(operations)
+        target.synchronizeChangedRecordsIfNeeded()
+
+        XCTAssertEqual(Set(target.customers.map(\.id)), Set(customers.map(\.id)))
+        XCTAssertFalse(target.isDeferringRemoteBatchPersistence)
+        XCTAssertTrue(target.offlineOperationQueue.operations.isEmpty)
     }
 
     func testCanonicalBaselineRemovesArchiveOnlySynchronizedRecords() throws {

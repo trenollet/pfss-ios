@@ -50,6 +50,43 @@ final class InvoiceEngineTests: XCTestCase {
         XCTAssertEqual(invoice.paidDate, paidAt)
     }
 
+    func testExplicitPaidSelectionFillsRecalculatedInvoiceTotal() {
+        var invoice = draft(total: 100)
+        invoice.status = .paid
+        invoice.amountPaid = 0
+        invoice.lineItems = [line(quantity: 1, unitPrice: 125, treatment: .nonTaxable)]
+        let paidAt = Date(timeIntervalSince1970: 100)
+
+        let result = InvoiceEngine.recalculatedForEditorSave(
+            invoice,
+            explicitlyMarkedPaid: true,
+            at: paidAt
+        )
+
+        XCTAssertEqual(result.total, 125)
+        XCTAssertEqual(result.amountPaid, 125)
+        XCTAssertEqual(result.balanceDue, 0)
+        XCTAssertEqual(result.status, .paid)
+        XCTAssertEqual(result.paidDate, paidAt)
+    }
+
+    func testEditorSaveDoesNotInventPaymentWithoutNewPaidSelection() {
+        var invoice = draft(total: 100)
+        invoice.status = .paid
+        invoice.amountPaid = 100
+        invoice.lineItems = [line(quantity: 1, unitPrice: 125, treatment: .nonTaxable)]
+
+        let result = InvoiceEngine.recalculatedForEditorSave(
+            invoice,
+            explicitlyMarkedPaid: false
+        )
+
+        XCTAssertEqual(result.total, 125)
+        XCTAssertEqual(result.amountPaid, 100)
+        XCTAssertEqual(result.balanceDue, 25)
+        XCTAssertEqual(result.status, .partiallyPaid)
+    }
+
     func testVoidInvoiceHasNoCollectibleBalance() {
         var invoice = draft(total: 100)
         invoice.status = .void
@@ -59,6 +96,26 @@ final class InvoiceEngineTests: XCTestCase {
         XCTAssertEqual(invoice.amountPaid, 20)
         XCTAssertEqual(invoice.balanceDue, 0)
         XCTAssertNil(invoice.paidDate)
+    }
+
+    func testZeroDollarInvoiceCanBeExplicitlyClosedWithoutCollectingMoney() {
+        var invoice = draft(total: 0)
+        invoice.status = .paid
+        let closedAt = Date(timeIntervalSince1970: 100)
+        let result = InvoiceEngine.recalculated(invoice, at: closedAt)
+        XCTAssertEqual(result.status, .paid)
+        XCTAssertEqual(result.total, 0)
+        XCTAssertEqual(result.amountPaid, 0)
+        XCTAssertEqual(result.balanceDue, 0)
+        XCTAssertEqual(result.paidDate, closedAt)
+        XCTAssertNil(result.receipts)
+        XCTAssertFalse(ReceiptEngine.requiresReceipt(previous: draft(total: 0), proposed: result))
+        XCTAssertEqual(InvoiceEngine.normalizedPaymentState(for: result).status, .paid)
+        XCTAssertEqual(InvoiceEngine.normalizedAfterInvoiceEdit(result).paidDate, closedAt)
+    }
+
+    func testZeroDollarDraftRemainsOpenUntilExplicitlyClosed() {
+        XCTAssertEqual(InvoiceEngine.normalizedAfterInvoiceEdit(draft(total: 0)).status, .draft)
     }
 
     func testPaymentNormalizationDoesNotSilentlyRepriceLegacyInvoice() {

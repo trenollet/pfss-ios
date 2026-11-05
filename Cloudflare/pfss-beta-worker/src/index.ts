@@ -7,6 +7,7 @@ import {
   managedIdentityConfigurationFromBindings,
 } from "./account-identity-provider";
 import { resolveAccountEntitlements } from "./account-entitlements";
+import { saveInvoiceCombination, correctInvoicePayments, invoiceCombinationMutationError } from "./invoice-combination";
 import synchronizationPolicyContract from
   "../../../PPS Receipt Printer/SynchronizationPolicyContract.json";
 
@@ -5729,6 +5730,13 @@ async function acceptOperation(
       updatedByDeviceID: string;
       updatedAt: string;
     }>();
+    if (entityType === "invoice") {
+      const combinationError = invoiceCombinationMutationError(
+        current ? recordPayloadFromOperation(JSON.parse(current.operationJSON)) : null,
+        recordPayloadFromOperation(operation),
+      );
+      if (combinationError) return json({ error: combinationError }, 409);
+    }
     const baseRevision = operation.baseRevision == null
       ? null
       : String(operation.baseRevision);
@@ -6233,33 +6241,69 @@ function apnsEnvironment(env: Env): "sandbox" | "production" {
   return env.APNS_ENVIRONMENT === "production" ? "production" : "sandbox";
 }
 
+const apnsProviderTokenReuseSeconds = 50 * 60;
+
+interface APNSProviderTokenCache {
+  credentialKey: string;
+  issuedAt: number;
+  token: string;
+}
+
+let cachedAPNSProviderToken: APNSProviderTokenCache | null = null;
+let pendingAPNSProviderToken: Promise<APNSProviderTokenCache> | null = null;
+
 async function apnsProviderToken(env: Env): Promise<string | null> {
   const keyID = env.APNS_KEY_ID?.trim();
   const teamID = env.APNS_TEAM_ID?.trim();
   const privateKey = env.APNS_PRIVATE_KEY?.replace(/\\n/g, "\n").trim();
   if (!keyID || !teamID || !privateKey) return null;
-  const encodedKey = privateKey
-    .replace("-----BEGIN PRIVATE KEY-----", "")
-    .replace("-----END PRIVATE KEY-----", "")
-    .replace(/\s/g, "");
-  const keyBytes = Uint8Array.from(atob(encodedKey), (character) =>
-    character.charCodeAt(0));
-  const key = await crypto.subtle.importKey(
-    "pkcs8",
-    keyBytes,
-    { name: "ECDSA", namedCurve: "P-256" },
-    false,
-    ["sign"],
-  );
-  const header = base64URLJSON({ alg: "ES256", kid: keyID });
-  const claims = base64URLJSON({ iss: teamID, iat: Math.floor(Date.now() / 1000) });
-  const signingInput = `${header}.${claims}`;
-  const signature = new Uint8Array(await crypto.subtle.sign(
-    { name: "ECDSA", hash: "SHA-256" },
-    key,
-    new TextEncoder().encode(signingInput),
-  ));
-  return `${signingInput}.${base64URL(signature)}`;
+  const now = Math.floor(Date.now() / 1000);
+  const credentialKey = `${teamID}:${keyID}`;
+  if (cachedAPNSProviderToken?.credentialKey === credentialKey &&
+      now - cachedAPNSProviderToken.issuedAt < apnsProviderTokenReuseSeconds) {
+    return cachedAPNSProviderToken.token;
+  }
+  if (pendingAPNSProviderToken) {
+    const pending = await pendingAPNSProviderToken;
+    if (pending.credentialKey === credentialKey &&
+        now - pending.issuedAt < apnsProviderTokenReuseSeconds) {
+      return pending.token;
+    }
+  }
+  pendingAPNSProviderToken = (async () => {
+    const encodedKey = privateKey
+      .replace("-----BEGIN PRIVATE KEY-----", "")
+      .replace("-----END PRIVATE KEY-----", "")
+      .replace(/\s/g, "");
+    const keyBytes = Uint8Array.from(atob(encodedKey), (character) =>
+      character.charCodeAt(0));
+    const key = await crypto.subtle.importKey(
+      "pkcs8",
+      keyBytes,
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["sign"],
+    );
+    const header = base64URLJSON({ alg: "ES256", kid: keyID });
+    const claims = base64URLJSON({ iss: teamID, iat: now });
+    const signingInput = `${header}.${claims}`;
+    const signature = new Uint8Array(await crypto.subtle.sign(
+      { name: "ECDSA", hash: "SHA-256" },
+      key,
+      new TextEncoder().encode(signingInput),
+    ));
+    return {
+      credentialKey,
+      issuedAt: now,
+      token: `${signingInput}.${base64URL(signature)}`,
+    };
+  })();
+  try {
+    cachedAPNSProviderToken = await pendingAPNSProviderToken;
+    return cachedAPNSProviderToken.token;
+  } finally {
+    pendingAPNSProviderToken = null;
+  }
 }
 
 async function registerSynchronizationPush(
@@ -6576,6 +6620,8 @@ interface SynchronizationAlertCandidate {
   thresholdValue: number;
 }
 
+const synchronizationActionRequiredAgeSeconds = 5 * 24 * 60 * 60;
+
 async function evaluateSynchronizationHealthAlerts(
   env: Env,
   tenantID: string,
@@ -6590,8 +6636,11 @@ async function evaluateSynchronizationHealthAlerts(
       ).bind(tenantID),
       env.DB.prepare(
         `SELECT devices.id, devices.display_name AS displayName,
+                devices.last_seen_at AS lastSeenAt,
                 COALESCE(cursors.acknowledged_sequence, 0) AS acknowledgedCursor,
-                cursors.updated_at AS cursorUpdatedAt
+                cursors.updated_at AS cursorUpdatedAt,
+                reminders.mode AS reminderMode,
+                reminders.suppressed_until AS reminderSuppressedUntil
            FROM devices
            JOIN tenant_members AS members
              ON members.tenant_id = devices.tenant_id
@@ -6599,6 +6648,9 @@ async function evaluateSynchronizationHealthAlerts(
            LEFT JOIN synchronization_device_cursors AS cursors
              ON cursors.tenant_id = devices.tenant_id
             AND cursors.device_id = devices.id
+           LEFT JOIN synchronization_device_reminder_preferences AS reminders
+             ON reminders.tenant_id = devices.tenant_id
+            AND reminders.device_id = devices.id
           WHERE devices.tenant_id = ?1 AND devices.revoked_at IS NULL
             AND members.status = 'active'`,
       ).bind(tenantID),
@@ -6631,18 +6683,26 @@ async function evaluateSynchronizationHealthAlerts(
       0,
       serverCursor - Number(row.acknowledgedCursor ?? 0),
     );
-    const cursorAge = ageSeconds(row.cursorUpdatedAt as string | null, now.getTime());
-    if (behindBy >= 50 || (behindBy > 0 && (cursorAge ?? 0) >= 1800)) {
+    const cursorAge = ageSeconds(
+      (row.cursorUpdatedAt ?? row.lastSeenAt) as string | null,
+      now.getTime(),
+    );
+    const reminderSuppressed = row.reminderMode === "disabled" ||
+      (row.reminderMode === "snoozed" &&
+       Date.parse(String(row.reminderSuppressedUntil ?? "")) > now.getTime());
+    if (!reminderSuppressed && behindBy > 0 &&
+        (cursorAge ?? 0) > synchronizationActionRequiredAgeSeconds) {
       candidates.push({
         fingerprint: `tenantDivergence:${deviceID}`,
         kind: "tenantDivergence",
-        severity: behindBy >= 100 ? "critical" : "warning",
+        severity: (cursorAge ?? 0) > 10 * 24 * 60 * 60
+          ? "critical" : "warning",
         deviceID,
         title: `${displayName} is behind`,
         detail: `${displayName} is ${behindBy} company changes behind.`,
         recommendation: "Connect the device to the internet, open PFSS, and check Sync Status.",
         observedValue: behindBy,
-        thresholdValue: 50,
+        thresholdValue: synchronizationActionRequiredAgeSeconds,
       });
     }
   }
@@ -6782,7 +6842,9 @@ async function synchronizationHealth(
               deliveries.received_at AS pushReceivedAt,
               deliveries.sync_completed_at AS pushCompletedAt,
               deliveries.sync_failed_at AS pushFailedAt,
-              deliveries.failure_code AS pushFailure
+              deliveries.failure_code AS pushFailure,
+              reminders.mode AS reminderMode,
+              reminders.suppressed_until AS reminderSuppressedUntil
          FROM devices
          JOIN tenant_members AS members
            ON members.tenant_id = devices.tenant_id
@@ -6800,6 +6862,9 @@ async function synchronizationHealth(
                 AND latest.device_id = devices.id
               ORDER BY latest.requested_at DESC LIMIT 1
            )
+         LEFT JOIN synchronization_device_reminder_preferences AS reminders
+           ON reminders.tenant_id = devices.tenant_id
+          AND reminders.device_id = devices.id
         WHERE devices.tenant_id = ?1
           AND devices.revoked_at IS NULL
           AND members.status = 'active'
@@ -6867,20 +6932,29 @@ async function synchronizationHealth(
       const acknowledgedCursor = Number(row.acknowledgedCursor ?? 0);
       const behindBy = Math.max(0, serverCursor - acknowledgedCursor);
       const cursorAgeSeconds = ageSeconds(
-        row.cursorUpdatedAt as string | null,
+        (row.cursorUpdatedAt ?? row.lastSeenAt) as string | null,
         nowMilliseconds,
       );
+      const reminderMode = row.reminderMode === "disabled" ? "disabled"
+        : row.reminderMode === "snoozed" ? "snoozed" : "active";
+      const reminderSuppressedUntil = row.reminderSuppressedUntil == null
+        ? null : String(row.reminderSuppressedUntil);
+      const reminderSuppressed = reminderMode === "disabled" ||
+        (reminderMode === "snoozed" &&
+         Date.parse(reminderSuppressedUntil ?? "") > nowMilliseconds);
       const pushAgeSeconds = ageSeconds(
         row.pushRequestedAt as string | null,
         nowMilliseconds,
       );
       const reasons: string[] = [];
       let status: SynchronizationHealthLevel = "healthy";
-      if (row.registrationFailure || row.pushFailure || row.pushFailedAt) {
-        status = "actionRequired";
+      if (behindBy > 0 &&
+          (row.registrationFailure || row.pushFailure || row.pushFailedAt)) {
+        status = highestSynchronizationHealthLevel([status, "delayed"]);
         reasons.push("The latest background delivery or synchronization failed.");
       }
-      if (behindBy >= 50 || (behindBy > 0 && (cursorAgeSeconds ?? 0) >= 1800)) {
+      if (!reminderSuppressed && behindBy > 0 &&
+          (cursorAgeSeconds ?? 0) > synchronizationActionRequiredAgeSeconds) {
         status = "actionRequired";
         reasons.push(`This device is ${behindBy} company changes behind.`);
       } else if (behindBy > 0) {
@@ -6914,6 +6988,9 @@ async function synchronizationHealth(
           failedAt: row.pushFailedAt,
           failureCode: row.pushFailure ?? row.registrationFailure,
         } : null,
+        divergenceReminder: reminderMode,
+        divergenceReminderSuppressedUntil: reminderSuppressedUntil,
+        divergenceReminderSuppressed: reminderSuppressed,
       };
     },
   );
@@ -6970,9 +7047,10 @@ async function synchronizationHealth(
     unresolvedConflicts.length > 0 || unresolvedQuarantines.length > 0
       ? "actionRequired"
       : "healthy";
-  const pushLevel: SynchronizationHealthLevel = pushSummary.failed > 0
-    ? "actionRequired"
-    : pushSummary.deferred > 0 ? "delayed" : "healthy";
+  // Delivery totals are historical telemetry. Device state above determines
+  // whether the latest delivery still matters after a successful pull.
+  const pushLevel: SynchronizationHealthLevel = pushSummary.deferred > 0
+    ? "delayed" : "healthy";
   const status = highestSynchronizationHealthLevel([
     queueLevel,
     pushLevel,
@@ -7013,10 +7091,77 @@ async function synchronizationHealth(
     },
     thresholds: {
       delayedBehindChanges: 1,
-      actionRequiredBehindChanges: 50,
-      actionRequiredCursorAgeSeconds: 1800,
+      actionRequiredBehindChanges: null,
+      actionRequiredCursorAgeSeconds: synchronizationActionRequiredAgeSeconds,
       deferredPushAgeSeconds: 120,
     },
+  });
+}
+
+async function updateSynchronizationDeviceReminder(
+  request: Request,
+  env: Env,
+  identity: DeviceIdentity,
+  deviceID: string,
+): Promise<Response> {
+  if (!canManageMembers(identity)) return json({ error: "forbidden" }, 403);
+  const device = await env.DB.prepare(
+    `SELECT id FROM devices
+      WHERE tenant_id = ?1 AND id = ?2 AND revoked_at IS NULL`,
+  ).bind(identity.tenantID, deviceID).first<{ id: string }>();
+  if (!device) return json({ error: "device_not_found" }, 404);
+  const body = await request.json<{ mode?: string }>();
+  const mode = String(body.mode ?? "");
+  if (!(["snooze5Days", "disabled", "enabled"] as string[]).includes(mode)) {
+    return json({ error: "invalid_reminder_mode" }, 400);
+  }
+  const now = new Date();
+  const nowISO = now.toISOString();
+  let suppressedUntil: string | null = null;
+  if (mode === "enabled") {
+    await env.DB.prepare(
+      `DELETE FROM synchronization_device_reminder_preferences
+        WHERE tenant_id = ?1 AND device_id = ?2`,
+    ).bind(identity.tenantID, deviceID).run();
+  } else {
+    const storedMode = mode === "disabled" ? "disabled" : "snoozed";
+    suppressedUntil = mode === "snooze5Days"
+      ? new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000).toISOString()
+      : null;
+    await env.DB.prepare(
+      `INSERT INTO synchronization_device_reminder_preferences
+        (tenant_id, device_id, mode, suppressed_until, updated_by_member_id,
+         updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+       ON CONFLICT (tenant_id, device_id) DO UPDATE SET
+         mode = excluded.mode,
+         suppressed_until = excluded.suppressed_until,
+         updated_by_member_id = excluded.updated_by_member_id,
+         updated_at = excluded.updated_at`,
+    ).bind(
+      identity.tenantID, deviceID, storedMode, suppressedUntil,
+      identity.memberID, nowISO,
+    ).run();
+  }
+  await env.DB.batch([
+    accessAuditStatement(
+      env,
+      identity.tenantID,
+      "sync.device_divergence_reminder_updated",
+      {
+        actorMemberID: identity.memberID,
+        actorDeviceID: identity.deviceID,
+        metadata: { deviceID, mode, suppressedUntil: suppressedUntil ?? "" },
+        createdAt: nowISO,
+      },
+    ),
+  ]);
+  await evaluateSynchronizationHealthAlerts(env, identity.tenantID);
+  return json({
+    deviceID,
+    mode: mode === "snooze5Days" ? "snoozed" : mode,
+    suppressedUntil,
+    updatedAt: nowISO,
   });
 }
 
@@ -8545,6 +8690,23 @@ export default {
       if (request.method === "POST" && url.pathname === "/v1/operations") {
         return acceptOperation(request, env, identity);
       }
+      if (request.method === "POST" && url.pathname === "/v1/invoices/combine") {
+        const result = await saveInvoiceCombination(request, env, identity,
+          () => enforceNewRecordLimit(env, identity.tenantID, "invoice"));
+        if (result.ok) {
+          try { await dispatchSynchronizationWake(env, identity.tenantID, identity.deviceID,
+            await tenantSynchronizationCursor(env, identity.tenantID)); } catch { /* Commit remains authoritative. */ }
+        }
+        return result;
+      }
+      if (request.method === "POST" && url.pathname === "/v1/invoices/correct-payments") {
+        const result = await correctInvoicePayments(request, env, identity);
+        if (result.ok) {
+          try { await dispatchSynchronizationWake(env, identity.tenantID, identity.deviceID,
+            await tenantSynchronizationCursor(env, identity.tenantID)); } catch { /* Commit remains authoritative. */ }
+        }
+        return result;
+      }
       if (request.method === "GET" && url.pathname === "/v1/sync/changes") {
         return synchronizationChanges(url, env, identity);
       }
@@ -8565,6 +8727,17 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/v1/sync/health") {
         return synchronizationHealth(env, identity);
+      }
+      const synchronizationReminderMatch = url.pathname.match(
+        /^\/v1\/sync\/devices\/([^/]+)\/divergence-reminder$/,
+      );
+      if (request.method === "POST" && synchronizationReminderMatch) {
+        return updateSynchronizationDeviceReminder(
+          request,
+          env,
+          identity,
+          decodeURIComponent(synchronizationReminderMatch[1]),
+        );
       }
       if (request.method === "POST" && url.pathname === "/v1/mileage/sync") {
         return synchronizeMileageTrips(request, env, identity);

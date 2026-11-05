@@ -401,6 +401,129 @@ describe("synchronization health monitoring", () => {
     expect(resolved?.status).toBe("resolved");
     expect(resolved?.resolvedAt).toBeTruthy();
   });
+
+  it("keeps an inactive device delayed for five days and ignores superseded push failures", async () => {
+    const owner = await seedIdentity("Five Day Health Owner");
+    const peer = await seedAdditionalDevice(owner, "Occasional iPad");
+    const now = new Date();
+    const twoDaysAgo = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000)
+      .toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO synchronization_change_log
+          (tenant_id, tenant_sequence, operation_id, device_id, revision,
+           payload_json, accepted_at)
+         VALUES (?1, 1, ?2, ?3, ?4, '{}', ?5)`,
+      ).bind(owner.tenantID, crypto.randomUUID(), owner.deviceID,
+        crypto.randomUUID(), now.toISOString()),
+      env.DB.prepare(
+        `INSERT INTO synchronization_device_cursors
+          (tenant_id, device_id, acknowledged_sequence, updated_at)
+         VALUES (?1, ?2, 1, ?3), (?1, ?4, 0, ?5)`,
+      ).bind(owner.tenantID, owner.deviceID, now.toISOString(), peer.deviceID,
+        twoDaysAgo),
+      env.DB.prepare(
+        `INSERT INTO synchronization_push_deliveries
+          (id, tenant_id, device_id, source_device_id, cursor, environment,
+           apns_request_id, requested_at, failure_code)
+         VALUES (?1, ?2, ?3, ?4, 1, 'sandbox', ?5, ?6,
+                 'TooManyProviderTokenUpdates')`,
+      ).bind(crypto.randomUUID(), owner.tenantID, owner.deviceID, peer.deviceID,
+        crypto.randomUUID(), twoDaysAgo),
+    ]);
+
+    let response = await worker.fetch(request(owner, "/v1/sync/health"), env);
+    let body = await response.json<{
+      status: string;
+      devices: Array<{ deviceID: string; status: string }>;
+      summary: { activeAlerts: number };
+    }>();
+    expect(body.status).toBe("delayed");
+    expect(body.devices.find((device) => device.deviceID === owner.deviceID)?.status)
+      .toBe("healthy");
+    expect(body.devices.find((device) => device.deviceID === peer.deviceID)?.status)
+      .toBe("delayed");
+    expect(body.summary.activeAlerts).toBe(0);
+
+    await env.DB.prepare(
+      `UPDATE synchronization_device_cursors SET updated_at = ?1
+        WHERE tenant_id = ?2 AND device_id = ?3`,
+    ).bind(
+      new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000).toISOString(),
+      owner.tenantID,
+      peer.deviceID,
+    ).run();
+    response = await worker.fetch(request(owner, "/v1/sync/health"), env);
+    body = await response.json();
+    expect(body.status).toBe("actionRequired");
+    expect(body.devices.find((device) => device.deviceID === peer.deviceID)?.status)
+      .toBe("actionRequired");
+    expect(body.summary.activeAlerts).toBe(1);
+  });
+
+  it("lets managers snooze, disable, and restore divergence reminders", async () => {
+    const owner = await seedIdentity("Reminder Owner");
+    const employee = await seedMemberInTenant(owner, "Reminder Employee", "member");
+    const stale = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000).toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO synchronization_change_log
+          (tenant_id, tenant_sequence, operation_id, device_id, revision,
+           payload_json, accepted_at)
+         VALUES (?1, 1, ?2, ?3, ?4, '{}', ?5)`,
+      ).bind(owner.tenantID, crypto.randomUUID(), owner.deviceID,
+        crypto.randomUUID(), new Date().toISOString()),
+      env.DB.prepare(
+        `INSERT INTO synchronization_device_cursors
+          (tenant_id, device_id, acknowledged_sequence, updated_at)
+         VALUES (?1, ?2, 1, ?3), (?1, ?4, 0, ?5)`,
+      ).bind(owner.tenantID, owner.deviceID, new Date().toISOString(),
+        employee.deviceID, stale),
+    ]);
+    const path = `/v1/sync/devices/${employee.deviceID}/divergence-reminder`;
+    const update = (identity: SeededIdentity, mode: string) => worker.fetch(
+      request(identity, path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode }),
+      }),
+      env,
+    );
+    expect((await update(employee, "disabled")).status).toBe(403);
+    expect((await update(owner, "snooze5Days")).status).toBe(200);
+
+    let health = await (await worker.fetch(
+      request(owner, "/v1/sync/health"), env,
+    )).json<{
+      devices: Array<{
+        deviceID: string;
+        status: string;
+        divergenceReminder: string;
+        divergenceReminderSuppressed: boolean;
+      }>;
+      summary: { activeAlerts: number };
+    }>();
+    let device = health.devices.find((item) => item.deviceID === employee.deviceID);
+    expect(device).toMatchObject({
+      status: "delayed",
+      divergenceReminder: "snoozed",
+      divergenceReminderSuppressed: true,
+    });
+    expect(health.summary.activeAlerts).toBe(0);
+
+    expect((await update(owner, "disabled")).status).toBe(200);
+    expect((await update(owner, "enabled")).status).toBe(200);
+    health = await (await worker.fetch(
+      request(owner, "/v1/sync/health"), env,
+    )).json();
+    device = health.devices.find((item) => item.deviceID === employee.deviceID);
+    expect(device).toMatchObject({
+      status: "actionRequired",
+      divergenceReminder: "active",
+      divergenceReminderSuppressed: false,
+    });
+    expect(health.summary.activeAlerts).toBe(1);
+  });
 });
 
 async function sendVersionedMutation(
@@ -4714,5 +4837,362 @@ describe("membership authorization", () => {
     expect(summary.accounts.total).toBeGreaterThan(0);
     expect(summary.users.active).toBeGreaterThan(0);
     expect(summary.devices.active).toBeGreaterThan(0);
+  });
+});
+
+describe("atomic invoice combinations", () => {
+  async function fixture(role: "owner" | "manager" | "member" = "member") {
+    const identity = await seedIdentity(`combine-${crypto.randomUUID()}`, role);
+    const timestamp = new Date().toISOString();
+    const customerID = crypto.randomUUID();
+    const customer = { id: customerID, customerNumber: "CUS-UMBRELLA", lifecycleStatus: "Active" };
+    expect((await sendVersionedMutation(identity, { entityType: "customer", entityID: customerID,
+      baseRevision: null, mutationKind: "wholeRecord", changedFields: [], record: customer, sequenceNumber: 1 })).status).toBe(201);
+    const originals = [100, 200].map((total, index) => ({ id: crypto.randomUUID(), invoiceNumber: `INV-${index}`,
+      customerNumber: `CUS-${index}`, jobNumber: `JOB-${index}`, lineItems: [], subtotal: total, discount: 0, total,
+      amountPaid: index === 0 ? 25 : 0, balanceDue: index === 0 ? total - 25 : total,
+      status: index === 0 ? "Partially Paid" : "Draft", issueDate: timestamp, dueDate: timestamp,
+      notes: "Original scope", lifecycleStatus: "Active" }));
+    const references = [];
+    for (const invoice of originals) {
+      const accepted = await sendVersionedMutation(identity, { entityType: "invoice", entityID: invoice.id,
+        baseRevision: null, mutationKind: "wholeRecord", changedFields: [], record: invoice, sequenceNumber: 2 });
+      expect(accepted.status).toBe(201);
+      references.push({ id: invoice.id, revision: (await accepted.json<{ revision: string }>()).revision,
+        snapshotData: Buffer.from(JSON.stringify(invoice)).toString("base64") });
+    }
+    const id = crypto.randomUUID();
+    const invoiceNumber = `INV-${crypto.randomUUID()}-C`;
+    const check = { id: crypto.randomUUID(), sourceInvoiceID: originals[0].id, recordedAmount: 25,
+      collectedAmount: 25, receiptIDs: [], paymentEventIDs: [], verifiedBy: "Operator", verifiedAt: timestamp, note: "Checked collection" };
+    const combination = { id, invoiceNumber, billingCustomerNumber: "CUS-UMBRELLA", sourceInvoices: originals,
+      lines: [], createdAt: timestamp, paymentRedistribution: { id: crypto.randomUUID(),
+        pool: { id: crypto.randomUUID(), verifications: [check], adjustments: [] },
+        allocations: [{ invoiceID: id, invoiceTotal: 300, appliedAmount: 25 }],
+        preparedBy: "Operator", preparedAt: timestamp, reason: "Combine selected invoices" } };
+    const invoice = { id, invoiceNumber, customerNumber: "CUS-UMBRELLA", jobNumber: "JOB-0",
+      associatedJobNumbers: ["JOB-0", "JOB-1"], lineItems: [], subtotal: 300, discount: 0, total: 300,
+      amountPaid: 25, balanceDue: 275, status: "Partially Paid", issueDate: timestamp, dueDate: timestamp,
+      notes: "Combined from original bills", lifecycleStatus: "Active", combination };
+    return { identity, originals, body: { requestID: id, billingCustomerID: customerID, sources: references, invoice } };
+  }
+  async function save(identity: SeededIdentity, body: unknown) {
+    return worker.fetch(request(identity, "/v1/invoices/combine", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify(body) }), env);
+  }
+  async function canonicalInvoices(identity: SeededIdentity) {
+    const rows = await env.DB.prepare("SELECT operation_json AS operationJSON FROM synchronized_records WHERE tenant_id = ?1 AND entity_type = 'invoice'")
+      .bind(identity.tenantID).all<{ operationJSON: string }>();
+    return rows.results.map(row => {
+      const operation = JSON.parse(row.operationJSON);
+      const envelope = JSON.parse(Buffer.from(operation.payload.body, "base64").toString("utf8"));
+      return JSON.parse(Buffer.from(envelope.recordData, "base64").toString("utf8"));
+    });
+  }
+
+  it("commits sources, verified funds, bill, and change feed for a member", async () => {
+    const f = await fixture();
+    const saved = await save(f.identity, f.body);
+    expect(saved.status).toBe(201);
+    const result = await saved.json<any>();
+    expect(result.records).toHaveLength(3);
+    const bills = await canonicalInvoices(f.identity);
+    expect(bills.filter(b => b.status === "Void")).toHaveLength(2);
+    expect(bills.find(b => b.id === f.body.invoice.id)).toMatchObject({ amountPaid: 25, balanceDue: 275 });
+    expect(bills.find(b => b.id === f.body.invoice.id)?.receipts).toBeUndefined();
+    expect(bills.filter(b => b.status !== "Void").reduce((sum, b) => sum + b.total, 0)).toBe(300);
+    expect(result.records[2].invoice.combination.paymentRedistribution.pool.verifications[0].verifiedBy).toBe(f.identity.memberID);
+    const changes = await env.DB.prepare("SELECT COUNT(*) AS count FROM synchronization_change_log WHERE tenant_id = ?1")
+      .bind(f.identity.tenantID).first<{ count: number }>();
+    expect(changes?.count).toBe(6); // Customer + originals + the three atomic changes.
+  });
+  it("retries the same save without another invoice or another payment", async () => {
+    const f = await fixture();
+    const first = await save(f.identity, f.body);
+    const result = await first.json();
+    const retry = await save(f.identity, f.body);
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toEqual(result);
+    expect(await canonicalInvoices(f.identity)).toHaveLength(3);
+    const changed = structuredClone(f.body); changed.invoice.notes = "Changed retry";
+    expect((await save(f.identity, changed)).status).toBe(409);
+  });
+  it("accepts Swift's decoded legacy item defaults without accepting changed discounts or charges", async () => {
+    const f = await fixture();
+    const legacyLine = { id: crypto.randomUUID().toUpperCase(), serviceType: "Other", otherService: "Painting",
+      description: "Legacy service", quantity: 1, unitPrice: 100, lineTotal: 100 };
+    const original: any = { ...f.originals[0], lineItems: [legacyLine] };
+    const accepted = await sendVersionedMutation(f.identity, { entityType: "invoice", entityID: original.id,
+      baseRevision: f.body.sources[0].revision, mutationKind: "wholeRecord", changedFields: [],
+      baseRecord: f.originals[0], record: original, sequenceNumber: 3 });
+    expect(accepted.status).toBe(201);
+    // ServiceLineItem.init(from:) supplies these exact values; Swift then encodes them.
+    const decoded = { ...original, lineItems: [{ ...legacyLine, discountMethod: "Dollar Amount",
+      discountInputValue: 0, estimatedMinutesPerUnit: 0 }] };
+    f.body.sources[0].revision = (await accepted.json<{ revision: string }>()).revision;
+    f.body.sources[0].snapshotData = Buffer.from(JSON.stringify(decoded)).toString("base64");
+    (f.body.invoice.combination.sourceInvoices as any[])[0] = decoded;
+    const copy = { ...decoded.lineItems[0], id: crypto.randomUUID().toUpperCase() };
+    (f.body.invoice.lineItems as any[]) = [copy];
+    (f.body.invoice.combination.lines as any[]) = [{ sourceInvoiceID: original.id,
+      sourceLineItemID: legacyLine.id, item: copy }];
+    const alteredSnapshot = structuredClone(f.body);
+    alteredSnapshot.invoice.combination.sourceInvoices[0].lineItems[0].unitPrice = 101;
+    expect((await save(f.identity, alteredSnapshot)).status).toBe(409);
+    const alteredDiscount = structuredClone(f.body);
+    (alteredDiscount.invoice.lineItems as any[])[0].discountInputValue = 1;
+    (alteredDiscount.invoice.combination.lines as any[])[0].item.discountInputValue = 1;
+    expect((await save(f.identity, alteredDiscount)).status).toBe(400);
+    const saved = await save(f.identity, f.body);
+    expect(saved.status).toBe(201);
+    const result = await saved.json<any>();
+    expect(result.records[2].invoice.lineItems[0]).toMatchObject(copy);
+    expect(result.records[0].invoice.lineItems[0]).toEqual(legacyLine);
+  });
+  it("rejects a stale source without changing any bill", async () => {
+    const f = await fixture();
+    const source = f.originals[0];
+    expect((await sendVersionedMutation(f.identity, { entityType: "invoice", entityID: source.id,
+      baseRevision: f.body.sources[0].revision, mutationKind: "domainCommand", changedFields: ["notes"],
+      commandName: "invoice.edit", baseRecord: source, record: { ...source, notes: "Updated elsewhere" }, sequenceNumber: 3 })).status).toBe(201);
+    expect((await save(f.identity, f.body)).status).toBe(409);
+    const bills = await canonicalInvoices(f.identity);
+    expect(bills).toHaveLength(2);
+    expect(bills.every(b => !b.combinedIntoInvoiceID)).toBe(true);
+  });
+  it("prevents two devices from owning the same source invoices", async () => {
+    const f = await fixture();
+    const device = await seedAdditionalDevice(f.identity, "Second combiner");
+    const second = structuredClone(f.body);
+    const id = crypto.randomUUID(); second.requestID = id; second.invoice.id = id;
+    second.invoice.invoiceNumber = `INV-${id}-C`; second.invoice.combination.id = id;
+    second.invoice.combination.invoiceNumber = second.invoice.invoiceNumber;
+    second.invoice.combination.paymentRedistribution.allocations[0].invoiceID = id;
+    const results = await Promise.all([save(f.identity, f.body), save(device, second)]);
+    expect(results.filter(r => r.status === 201)).toHaveLength(1);
+    expect(results.filter(r => r.status === 409)).toHaveLength(1);
+    expect(await canonicalInvoices(f.identity)).toHaveLength(3);
+  });
+  it("rejects cross-tenant sources and bill-to customers", async () => {
+    const f = await fixture(), other = await fixture();
+    expect((await save(other.identity, f.body)).status).toBe(409);
+    const bad = structuredClone(f.body); bad.billingCustomerID = other.body.billingCustomerID;
+    expect((await save(f.identity, bad)).status).toBe(409);
+    expect(await canonicalInvoices(f.identity)).toHaveLength(2);
+  });
+  it("requires explicit payment verification and detects invented funds", async () => {
+    const f = await fixture();
+    const missing = structuredClone(f.body); missing.invoice.combination.paymentRedistribution.pool.verifications = [];
+    expect((await save(f.identity, missing)).status).toBe(400);
+    const invented = structuredClone(f.body); invented.invoice.combination.paymentRedistribution.pool.verifications[0].collectedAmount = 26;
+    expect((await save(f.identity, invented)).status).toBe(400);
+    expect(await canonicalInvoices(f.identity)).toHaveLength(2);
+  });
+  it("carries zero for a mistaken recorded payment without erasing evidence", async () => {
+    const f = await fixture();
+    f.body.invoice.combination.paymentRedistribution.pool.verifications[0].collectedAmount = 0;
+    f.body.invoice.combination.paymentRedistribution.pool.verifications[0].note = "Not collected";
+    f.body.invoice.combination.paymentRedistribution.allocations[0].appliedAmount = 0;
+    f.body.invoice.amountPaid = 0; f.body.invoice.balanceDue = 300; f.body.invoice.status = "Draft";
+    expect((await save(f.identity, f.body)).status).toBe(201);
+    const bill = (await canonicalInvoices(f.identity)).find(b => b.id === f.body.invoice.id);
+    expect(bill.combination.sourceInvoices[0].amountPaid).toBe(25);
+    expect(bill.amountPaid).toBe(0);
+  });
+  it("blocks direct provenance removal and source editing after save", async () => {
+    const f = await fixture();
+    const saved = await (await save(f.identity, f.body)).json<any>();
+    const source = saved.records[0];
+    expect((await sendVersionedMutation(f.identity, { entityType: "invoice", entityID: source.invoice.id,
+      baseRevision: source.revision, mutationKind: "domainCommand", changedFields: ["notes"], commandName: "invoice.edit",
+      baseRecord: source.invoice, record: { ...source.invoice, notes: "Reopen old bill" }, sequenceNumber: 4 })).status).toBe(409);
+    const combined = saved.records[2];
+    for (const edited of [
+      { ...combined.invoice, status: "Void" },
+      { ...combined.invoice, amountPaid: 0, balanceDue: 300 },
+    ]) {
+      expect((await sendVersionedMutation(f.identity, { entityType: "invoice", entityID: combined.invoice.id,
+        baseRevision: combined.revision, mutationKind: "wholeRecord", changedFields: [],
+        baseRecord: combined.invoice, record: edited, sequenceNumber: 5 })).status).toBe(409);
+    }
+    const stripped = { ...combined.invoice }; delete stripped.combination;
+    expect((await sendVersionedMutation(f.identity, { entityType: "invoice", entityID: combined.invoice.id,
+      baseRevision: combined.revision, mutationKind: "fieldPatch", changedFields: ["combination"],
+      baseRecord: combined.invoice, record: stripped, sequenceNumber: 5 })).status).toBe(409);
+  });
+  function correctionBody(saved: any, f: any, paidA = 25, paidB = 0) {
+    const root = saved.records.find((r: any) => r.invoice.id === saved.invoiceID).invoice;
+    const previous = root.paymentCorrection?.history.at(-1) ?? root.combination.paymentRedistribution;
+    return { requestID: crypto.randomUUID(), rootInvoiceID: root.id, billingCustomerID: f.body.billingCustomerID,
+      sources: saved.records.map((r: any) => ({ id: r.invoice.id, revision: r.revision, snapshotData: btoa(JSON.stringify(r.invoice)) })),
+      originalInvoices: root.paymentCorrection?.originalInvoices ?? root.combination.sourceInvoices,
+      retainedInvoiceIDs: [], lines: [],
+      redistribution: { ...structuredClone(previous), id: crypto.randomUUID(), replacesRedistributionID: previous.id,
+        allocations: [{ invoiceID: f.originals[0].id, invoiceTotal: 100, appliedAmount: paidA },
+          { invoiceID: f.originals[1].id, invoiceTotal: 200, appliedAmount: paidB }], reason: "Correct umbrella billing" } };
+  }
+  const correct = (identity: any, body: any) => worker.fetch(request(identity, "/v1/invoices/correct-payments", { method: "POST", body: JSON.stringify(body) }), env);
+
+  it("splits invoices for an ordinary member without new receipts and can rebuild the same bill", async () => {
+    const f = await fixture(), saved = await (await save(f.identity, f.body)).json<any>();
+    const body = correctionBody(saved, f);
+    const response = await correct(f.identity, body);
+    expect(response.status).toBe(201);
+    const split = await response.json<any>();
+    const root = split.records.find((r: any) => r.invoice.id === saved.invoiceID).invoice;
+    expect(root.status).toBe("Void"); expect(root.amountPaid).toBe(0);
+    expect(root.paymentCorrection.history).toHaveLength(2);
+    expect(root.paymentCorrection.history[1].preparedBy).toBe(f.identity.memberID);
+    const a = split.records.find((r: any) => r.invoice.id === f.originals[0].id).invoice;
+    expect(a.combinedIntoInvoiceID).toBeUndefined(); expect(a.balanceDue).toBe(75);
+    expect(a.receipts).toBeUndefined();
+    const rebuild = correctionBody(split, f);
+    rebuild.retainedInvoiceIDs = f.originals.map((s: any) => s.id);
+    rebuild.redistribution.allocations = [{ invoiceID: root.id, invoiceTotal: 300, appliedAmount: 25 }];
+    const rebuiltResponse = await correct(f.identity, rebuild);
+    expect(rebuiltResponse.status).toBe(201);
+    const rebuilt = await rebuiltResponse.json<any>();
+    const bill = rebuilt.records.find((r: any) => r.invoice.id === root.id).invoice;
+    expect(bill.invoiceNumber).toBe(root.invoiceNumber); expect(bill.total).toBe(300);
+    expect(bill.paymentCorrection.history).toHaveLength(3);
+    expect(bill.combination.paymentRedistribution.allocations[0].appliedAmount).toBe(25);
+    expect((await canonicalInvoices(f.identity)).filter(b => b.status !== "Void")).toHaveLength(1);
+  });
+  it("idempotently retries a correction and rejects changed retry bodies", async () => {
+    const f = await fixture(), saved = await (await save(f.identity, f.body)).json<any>();
+    const body = correctionBody(saved, f);
+    const first = await (await correct(f.identity, body)).json<any>();
+    const again = await correct(f.identity, body);
+    expect(again.status).toBe(200); expect(await again.json()).toEqual(first);
+    expect((await correct(f.identity, { ...body, retainedInvoiceIDs: f.originals.map((s: any) => s.id) })).status).toBe(409);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM invoice_payment_corrections WHERE tenant_id = ?1")
+      .bind(f.identity.tenantID).first("count")).toBe(1);
+  });
+  it("rejects changed pool evidence, overallocations, and a single retained invoice", async () => {
+    const f = await fixture(), saved = await (await save(f.identity, f.body)).json<any>();
+    const body = correctionBody(saved, f);
+    const changed = structuredClone(body); changed.redistribution.pool.verifications[0].collectedAmount = 10;
+    expect((await correct(f.identity, changed)).status).toBe(400);
+    const excess = correctionBody(saved, f, 26);
+    expect((await correct(f.identity, excess)).status).toBe(400);
+    expect((await correct(f.identity, { ...body, retainedInvoiceIDs: [f.originals[0].id] })).status).toBe(400);
+    expect((await canonicalInvoices(f.identity)).filter(b => b.status === "Void")).toHaveLength(2);
+  });
+  it("preserves verification history and calls out underpayment and unassigned refund funds", async () => {
+    const f = await fixture(), saved = await (await save(f.identity, f.body)).json<any>();
+    const body = correctionBody(saved, f, 10);
+    const original = structuredClone(body.redistribution.pool.verifications[0]);
+    body.redistribution.pool.adjustments.push({ id: crypto.randomUUID(), verificationID: original.id,
+      amountChange: -5, correctedBy: "Spoof", correctedAt: new Date().toISOString(), reason: "Only 20 was collected" });
+    const result = await (await correct(f.identity, body)).json<any>();
+    const correction = result.records[0].invoice.paymentCorrection;
+    expect(correction.history[1].pool.verifications[0]).toEqual(original);
+    expect(correction.history[1].pool.adjustments[0].correctedBy).toBe(f.identity.memberID);
+    const latest = correction.history[1];
+    const collected = latest.pool.verifications.reduce((sum: number, v: any) => sum + v.collectedAmount, 0)
+      + latest.pool.adjustments.reduce((sum: number, a: any) => sum + a.amountChange, 0);
+    expect(collected - latest.allocations.reduce((sum: number, a: any) => sum + a.appliedAmount, 0)).toBe(10);
+    expect(result.records.filter((r: any) => r.invoice.status !== "Void").reduce((sum: number, r: any) => sum + r.invoice.balanceDue, 0)).toBe(290);
+  });
+  it("one device wins simultaneous corrections while cross-tenant and stale corrections cannot mutate", async () => {
+    const f = await fixture(), saved = await (await save(f.identity, f.body)).json<any>();
+    const outsider = await seedIdentity("correction-outsider");
+    const body = correctionBody(saved, f);
+    expect((await correct(outsider, body)).status).toBe(409);
+    const second = await seedAdditionalDevice(f.identity, "correction-second");
+    const responses = await Promise.all([correct(f.identity, body), correct(second, correctionBody(saved, f))]);
+    expect(responses.map(r => r.status).sort()).toEqual([201, 409]);
+    expect((await correct(f.identity, correctionBody(saved, f))).status).toBe(409);
+  });
+  it("requires later collected payment events to be checked and pools them only once", async () => {
+    const f = await fixture(), saved = await (await save(f.identity, f.body)).json<any>();
+    const root = saved.records.find((r: any) => r.invoice.id === saved.invoiceID);
+    const receipt = { id: crypto.randomUUID(), paymentEventID: crypto.randomUUID(), paymentAmount: 275, issuedAt: new Date().toISOString() };
+    const invoice = { ...root.invoice, amountPaid: 300, balanceDue: 0, status: "Paid", paidDate: receipt.issuedAt, receipts: [receipt] };
+    const response = await sendVersionedMutation(f.identity, { entityType: "invoice", entityID: invoice.id,
+      baseRevision: root.revision, mutationKind: "wholeRecord", changedFields: [], record: invoice, sequenceNumber: 4 });
+    expect(response.status).toBe(201);
+    root.invoice = invoice; root.revision = (await response.json<any>()).revision;
+    const body = correctionBody(saved, f, 100, 200);
+    expect((await correct(f.identity, body)).status).toBe(400);
+    body.redistribution.pool.verifications.push({ id: crypto.randomUUID(), sourceInvoiceID: invoice.id,
+      recordedAmount: 275, collectedAmount: 275, receiptIDs: [receipt.id], paymentEventIDs: [receipt.paymentEventID],
+      verifiedBy: "Member", verifiedAt: receipt.issuedAt, note: "Collected", isAdditionalReceiptCollection: true });
+    const splitResponse = await correct(f.identity, body);
+    expect(splitResponse.status).toBe(201);
+    const split = await splitResponse.json<any>();
+    expect(split.records.filter((r: any) => r.invoice.status === "Paid")).toHaveLength(2);
+    expect(split.records[0].invoice.receipts[0]).toEqual(receipt);
+    const next = correctionBody(split, f, 100, 200);
+    expect((await correct(f.identity, next)).status).toBe(201);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM invoice_combination_payment_events WHERE tenant_id = ?1")
+      .bind(f.identity.tenantID).first("count")).toBe(1);
+  });
+  it("replaces the wrong source with another invoice while retaining exact lines and original bill number", async () => {
+    const f = await fixture(), saved = await (await save(f.identity, f.body)).json<any>();
+    const extra = { ...f.originals[1], id: crypto.randomUUID(), invoiceNumber: "REPLACEMENT", jobNumber: "JOB-REPLACEMENT",
+      subtotal: 50, total: 50, balanceDue: 50,
+      lineItems: [{ id: crypto.randomUUID(), description: "Named-area breakdown survives correction", quantity: 100,
+        unitPrice: 0.5, lineTotal: 50, serviceType: "Other", otherService: "Replacement work" }] };
+    const added = await sendVersionedMutation(f.identity, { entityType: "invoice", entityID: extra.id, baseRevision: null,
+      mutationKind: "wholeRecord", changedFields: [], record: extra, sequenceNumber: 4 });
+    expect(added.status).toBe(201);
+    const revision = (await added.json<any>()).revision;
+    const body = correctionBody(saved, f);
+    body.originalInvoices = [...body.originalInvoices, extra];
+    body.sources.push({ id: extra.id, revision, snapshotData: btoa(JSON.stringify(extra)) });
+    body.retainedInvoiceIDs = [f.originals[0].id, extra.id];
+    body.lines = [{ sourceInvoiceID: extra.id, sourceLineItemID: extra.lineItems[0].id,
+      item: { ...extra.lineItems[0], id: crypto.randomUUID() } }];
+    body.redistribution.allocations = [{ invoiceID: saved.invoiceID, invoiceTotal: 150, appliedAmount: 25 },
+      { invoiceID: f.originals[1].id, invoiceTotal: 200, appliedAmount: 0 }];
+    const resultResponse = await correct(f.identity, body);
+    expect(resultResponse.status).toBe(201);
+    const result = await resultResponse.json<any>();
+    const bill = result.records[0].invoice;
+    expect(bill.invoiceNumber).toBe(f.body.invoice.invoiceNumber); expect(bill.total).toBe(150);
+    expect(bill.associatedJobNumbers).toEqual([f.originals[0].jobNumber, extra.jobNumber]);
+    expect(bill.lineItems[0].description).toBe(extra.lineItems[0].description);
+    expect(result.records.find((r: any) => r.invoice.id === f.originals[1].id).invoice.combinedIntoInvoiceID).toBeUndefined();
+    expect(await env.DB.prepare("SELECT request_id FROM invoice_combination_sources WHERE tenant_id = ?1 AND source_invoice_id = ?2")
+      .bind(f.identity.tenantID, extra.id).first("request_id")).toBe(saved.invoiceID);
+  });
+  it("a late collection ownership failure rolls back the entire correction", async () => {
+    const f = await fixture(), saved = await (await save(f.identity, f.body)).json<any>();
+    const root = saved.records.find((r: any) => r.invoice.id === saved.invoiceID);
+    const receipt = { id: crypto.randomUUID(), paymentEventID: crypto.randomUUID(), paymentAmount: 25, issuedAt: new Date().toISOString() };
+    const invoice = { ...root.invoice, amountPaid: 50, balanceDue: 250, receipts: [receipt] };
+    const changed = await sendVersionedMutation(f.identity, { entityType: "invoice", entityID: invoice.id, baseRevision: root.revision,
+      mutationKind: "wholeRecord", changedFields: [], record: invoice, sequenceNumber: 4 });
+    expect(changed.status).toBe(201);
+    root.invoice = invoice; root.revision = (await changed.json<any>()).revision;
+    const otherID = crypto.randomUUID();
+    await env.DB.prepare("INSERT INTO invoice_combination_commits VALUES (?1, ?2, ?3, ?4, 'hash', '{}', ?5)")
+      .bind(f.identity.tenantID, otherID, otherID, "OTHER-C", new Date().toISOString()).run();
+    await env.DB.prepare("INSERT INTO invoice_combination_payment_events VALUES (?1, ?2, ?3)")
+      .bind(f.identity.tenantID, receipt.paymentEventID, otherID).run();
+    const body = correctionBody(saved, f, 50);
+    body.redistribution.pool.verifications.push({ id: crypto.randomUUID(), sourceInvoiceID: invoice.id,
+      recordedAmount: 25, collectedAmount: 25, receiptIDs: [receipt.id], paymentEventIDs: [receipt.paymentEventID],
+      verifiedBy: "Member", verifiedAt: receipt.issuedAt, note: "Collected", isAdditionalReceiptCollection: true });
+    expect((await correct(f.identity, body)).status).toBe(409);
+    expect(await env.DB.prepare("SELECT 1 FROM invoice_payment_corrections WHERE tenant_id = ?1 AND request_id = ?2")
+      .bind(f.identity.tenantID, body.requestID).first()).toBeNull();
+    expect((await canonicalInvoices(f.identity)).filter(b => b.status === "Void")).toHaveLength(2);
+    expect((await canonicalInvoices(f.identity)).every(b => !b.paymentCorrection)).toBe(true);
+  });
+  it("rolls back even the commit audit row on a late uniqueness failure", async () => {
+    const f = await fixture();
+    // Reserve one source with a different existing commit. The new handler
+    // passes revision review, then fails inside the atomic D1 batch.
+    const otherID = crypto.randomUUID();
+    await env.DB.prepare("INSERT INTO invoice_combination_commits VALUES (?1, ?2, ?3, ?4, 'hash', '{}', ?5)")
+      .bind(f.identity.tenantID, otherID, otherID, "RESERVED", new Date().toISOString()).run();
+    await env.DB.prepare("INSERT INTO invoice_combination_sources VALUES (?1, ?2, ?3, 1)")
+      .bind(f.identity.tenantID, f.originals[1].id, otherID).run();
+    expect((await save(f.identity, f.body)).status).toBe(409);
+    expect(await env.DB.prepare("SELECT 1 FROM invoice_combination_commits WHERE tenant_id = ?1 AND request_id = ?2")
+      .bind(f.identity.tenantID, f.body.requestID).first()).toBeNull();
+    expect((await canonicalInvoices(f.identity)).every(b => b.status !== "Void")).toBe(true);
   });
 });

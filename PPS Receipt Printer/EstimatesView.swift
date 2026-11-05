@@ -11,6 +11,10 @@ struct EstimateRecordsListView: View {
     @State private var selectedStatus: EstimateRecordStatus?
     @State private var dateFilter: RecordDateFilter = .all
     @State private var sortOrder: RecordListSortOrder = .dateAscending
+    @State private var sharedPDFURL: URL?
+    @State private var pdfErrorMessage: String?
+    @State private var isShowingPDFError = false
+    @State private var estimateToView: EstimateRecord?
 
     init(
         statuses: Set<EstimateRecordStatus>? = nil,
@@ -30,6 +34,7 @@ struct EstimateRecordsListView: View {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let searched = query.isEmpty ? source : source.filter { estimate in
             estimate.estimateNumber.localizedCaseInsensitiveContains(query) ||
+            estimate.title.localizedCaseInsensitiveContains(query) ||
             estimate.leadNumber.localizedCaseInsensitiveContains(query) ||
             estimate.customerNumber.localizedCaseInsensitiveContains(query) ||
             recipientDisplayName(for: estimate).localizedCaseInsensitiveContains(query) ||
@@ -65,28 +70,61 @@ struct EstimateRecordsListView: View {
             }
             Section("Estimates") {
                 ForEach(filteredEstimates) { estimate in
-                    NavigationLink { EstimateDetailView(estimate: estimate) } label: {
-                        VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 10) {
                             Text(recipientDisplayName(for: estimate))
                                 .font(.headline)
                                 .fontWeight(.bold)
-                            if estimate.customerNumber.isEmpty,
-                               !estimate.leadNumber.isEmpty {
-                                Text("Lead: \(estimate.leadNumber)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                .lineLimit(1)
+
+                            Spacer(minLength: 8)
+
+                            Button {
+                                createAndSharePDF(for: estimate)
+                            } label: {
+                                Image(systemName: "square.and.arrow.up")
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 44, height: 44)
+                                    .background(.green, in: Circle())
                             }
-                            Text("Estimate: \(estimate.estimateNumber)").font(.caption)
-                            Text("Site: \(siteDisplayName(for: estimate.siteID))").font(.caption)
-                            Text("Total: \(estimate.total, format: .currency(code: "USD"))").font(.caption)
-                            Text("Status: \(estimate.status.rawValue)").font(.caption)
-                            Text("Sales Rep: \(estimate.salesperson.isEmpty ? "Unassigned" : estimate.salesperson)")
-                                .font(.caption)
-                            if estimate.lifecycleStatus == .archived {
-                                Text("Archived").foregroundStyle(.red).font(.caption)
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Share estimate")
+
+                            Button {
+                                estimateToView = estimate
+                            } label: {
+                                Image(systemName: "pencil")
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 44, height: 44)
+                                    .background(.blue, in: Circle())
                             }
-                        }.padding(.vertical, 4)
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("View or edit estimate")
+                        }
+
+                        HStack(spacing: 10) {
+                            Text(
+                                estimate.title.trimmingCharacters(
+                                    in: .whitespacesAndNewlines
+                                ).isEmpty
+                                    ? "No Title"
+                                    : estimate.title
+                            )
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .lineLimit(1)
+
+                            Spacer(minLength: 8)
+
+                            Text(estimate.status.rawValue)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
+                    .padding(.vertical, 1)
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         if estimate.lifecycleStatus != .archived {
                             Button(role: .destructive) {
@@ -101,6 +139,18 @@ struct EstimateRecordsListView: View {
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(
+            isPresented: Binding(
+                get: { estimateToView != nil },
+                set: { isPresented in
+                    if !isPresented { estimateToView = nil }
+                }
+            )
+        ) {
+            if let estimateToView {
+                EstimateDetailView(estimate: estimateToView)
+            }
+        }
         .searchable(text: $searchText, prompt: "Search estimates")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -148,6 +198,23 @@ struct EstimateRecordsListView: View {
             NavigationStack {
                 EstimateNewView().environmentObject(store)
             }
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { sharedPDFURL != nil },
+                set: { isPresented in
+                    if !isPresented { sharedPDFURL = nil }
+                }
+            )
+        ) {
+            if let sharedPDFURL {
+                ActivityView(activityItems: [sharedPDFURL])
+            }
+        }
+        .alert("Unable to Share Estimate", isPresented: $isShowingPDFError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(pdfErrorMessage ?? "The estimate PDF could not be created.")
         }
     }
 
@@ -197,5 +264,44 @@ struct EstimateRecordsListView: View {
         if site.siteName.isEmpty { return site.serviceAddress }
         if site.serviceAddress.isEmpty { return site.siteName }
         return "\(site.siteName) — \(site.serviceAddress)"
+    }
+
+    private func createAndSharePDF(for estimate: EstimateRecord) {
+        var renderedEstimate = estimate
+        renderedEstimate.lineItems = PricingCalculator.updatedLineItems(
+            estimate.lineItems
+        )
+        renderedEstimate.subtotal = PricingCalculator.subtotal(
+            for: renderedEstimate
+        )
+        renderedEstimate.discount = DiscountCalculator.amount(
+            subtotal: renderedEstimate.subtotal,
+            method: renderedEstimate.discountMethod,
+            inputValue: renderedEstimate.discountInputValue
+        )
+        renderedEstimate.total = PricingCalculator.total(
+            subtotal: renderedEstimate.subtotal,
+            discount: renderedEstimate.discount
+        )
+
+        let customer = store.customers.first {
+            $0.customerNumber == renderedEstimate.customerNumber
+        }
+        let site = renderedEstimate.siteID.flatMap { siteID in
+            store.sites.first { $0.id == siteID }
+        }
+
+        do {
+            sharedPDFURL = try EstimatePDFRenderer.createPDF(
+                estimate: renderedEstimate,
+                businessProfile: store.businessProfile,
+                customer: customer,
+                site: site,
+                catalogItems: store.serviceCatalogItems
+            )
+        } catch {
+            pdfErrorMessage = error.localizedDescription
+            isShowingPDFError = true
+        }
     }
 }

@@ -352,6 +352,7 @@ final class MileageLocationCoordinator: NSObject, ObservableObject,
         content.body = body
         content.sound = .default
         content.threadIdentifier = "pfss-mileage"
+        content.userInfo = ["pfssDestination": "mileage"]
         let request = UNNotificationRequest(
             identifier: "pfss-mileage-\(UUID().uuidString)",
             content: content,

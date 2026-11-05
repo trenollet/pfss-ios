@@ -9,7 +9,7 @@ enum AppSection: Hashable {
 
     var title: String {
         switch self {
-        case .dashboard: return "Dashboard"
+        case .dashboard: return "Home"
         case .sales: return "Sales"
         case .myDay: return "My Day"
         case .service: return "Service"
@@ -19,7 +19,7 @@ enum AppSection: Hashable {
 
     var systemImage: String {
         switch self {
-        case .dashboard: return "chart.bar"
+        case .dashboard: return "house.fill"
         case .sales: return "chart.line.uptrend.xyaxis"
         case .myDay: return "calendar.day.timeline.left"
         case .service: return "wrench.and.screwdriver"
@@ -30,6 +30,8 @@ enum AppSection: Hashable {
 
 struct ContentView: View {
     @EnvironmentObject private var store: AppDataStore
+    @ObservedObject private var notificationRouter =
+        PFSSNotificationNavigationRouter.shared
     @State private var selectedSection: AppSection = .dashboard
     @State private var sectionResetGeneration: [AppSection: Int] = [:]
 
@@ -49,31 +51,8 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack {
-                sectionLayer(.dashboard) {
-                    DashboardView(selectedSection: $selectedSection)
-                }
-
-                if !isOperationalAccessBlocked {
-                    sectionLayer(.sales) {
-                        SalesDashboardView()
-                    }
-
-                    sectionLayer(.myDay) {
-                        TechnicianWorkspaceView()
-                    }
-
-                    sectionLayer(.service) {
-                        ServiceDashboardView()
-                    }
-                }
-
-                sectionLayer(.admin) {
-                    NavigationStack {
-                        AdminView()
-                    }
-                }
-            }
+            selectedSectionContent
+                .id(selectedSectionIdentity)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             PFSSPrimaryNavigationBar(
@@ -85,24 +64,62 @@ struct ContentView: View {
         .onChange(of: isOperationalAccessBlocked) { _, blocked in
             if blocked && selectedSection != .admin {
                 selectedSection = .dashboard
+            } else if !blocked {
+                selectSectionForPendingNotification()
+            }
+        }
+        .onAppear {
+            selectSectionForPendingNotification()
+        }
+        .onChange(of: notificationRouter.latestRequest) { _, _ in
+            selectSectionForPendingNotification()
+        }
+    }
+
+    @ViewBuilder
+    private var selectedSectionContent: some View {
+        switch selectedSection {
+        case .dashboard:
+            DashboardView(selectedSection: $selectedSection)
+        case .sales:
+            if isOperationalAccessBlocked {
+                DashboardView(selectedSection: $selectedSection)
+            } else {
+                SalesDashboardView()
+            }
+        case .myDay:
+            if isOperationalAccessBlocked {
+                DashboardView(selectedSection: $selectedSection)
+            } else {
+                TechnicianWorkspaceView()
+            }
+        case .service:
+            if isOperationalAccessBlocked {
+                DashboardView(selectedSection: $selectedSection)
+            } else {
+                ServiceDashboardView()
+            }
+        case .admin:
+            NavigationStack {
+                AdminView()
             }
         }
     }
 
-    private func sectionLayer<Content: View>(
-        _ section: AppSection,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        content()
-            .id(sectionResetGeneration[section, default: 0])
-            .opacity(selectedSection == section ? 1 : 0)
-            .allowsHitTesting(selectedSection == section)
-            .accessibilityHidden(selectedSection != section)
-            .zIndex(selectedSection == section ? 1 : 0)
-    }
-
     private func resetToSectionRoot(_ section: AppSection) {
         sectionResetGeneration[section, default: 0] += 1
+    }
+
+    private var selectedSectionIdentity: String {
+        "\(selectedSection)-\(sectionResetGeneration[selectedSection] ?? 0)"
+    }
+
+    private func selectSectionForPendingNotification() {
+        guard notificationRouter.latestRequest != nil,
+              !isOperationalAccessBlocked else {
+            return
+        }
+        selectedSection = .dashboard
     }
 }
 

@@ -12,6 +12,8 @@ struct PFSSSynchronizationHealthView: View {
     @State private var health: PFSSSynchronizationHealth?
     @State private var isLoading = true
     @State private var errorMessage = ""
+    @State private var updatingReminderDeviceID: String?
+    @State private var reminderErrorMessage = ""
 
     var body: some View {
         List {
@@ -48,6 +50,17 @@ struct PFSSSynchronizationHealthView: View {
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await refresh() }
         .task { await refresh() }
+        .alert(
+            "Unable to Update Reminder",
+            isPresented: Binding(
+                get: { !reminderErrorMessage.isEmpty },
+                set: { if !$0 { reminderErrorMessage = "" } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(reminderErrorMessage)
+        }
     }
 
     @ViewBuilder
@@ -176,6 +189,8 @@ struct PFSSSynchronizationHealthView: View {
                         Text(recommendation(for: device))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                        reminderStatus(for: device)
+                        reminderMenu(for: device)
                     }
                     Text(
                         "Last contacted PFSS \(device.lastSeenAt.formatted(date: .abbreviated, time: .shortened))."
@@ -184,9 +199,63 @@ struct PFSSSynchronizationHealthView: View {
                     .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 4)
-                .accessibilityElement(children: .combine)
             }
         }
+    }
+
+    @ViewBuilder
+    private func reminderStatus(
+        for device: PFSSSynchronizationHealth.Device
+    ) -> some View {
+        if device.divergenceReminder == "disabled" {
+            Label("Out-of-sync reminders are off for this device.", systemImage: "bell.slash")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        } else if device.divergenceReminderSuppressed == true,
+                  let until = device.divergenceReminderSuppressedUntil {
+            Label(
+                "Reminder paused until \(until.formatted(date: .abbreviated, time: .shortened)).",
+                systemImage: "clock"
+            )
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private func reminderMenu(
+        for device: PFSSSynchronizationHealth.Device
+    ) -> some View {
+        Menu {
+            Button {
+                Task { await updateReminder(deviceID: device.deviceID, mode: "snooze5Days") }
+            } label: {
+                Label("Remind Me in 5 Days", systemImage: "clock.arrow.circlepath")
+            }
+            Button {
+                Task { await updateReminder(deviceID: device.deviceID, mode: "disabled") }
+            } label: {
+                Label("Stop Reminding Me", systemImage: "bell.slash")
+            }
+            if device.divergenceReminder == "disabled" ||
+                device.divergenceReminderSuppressed == true {
+                Button {
+                    Task { await updateReminder(deviceID: device.deviceID, mode: "enabled") }
+                } label: {
+                    Label("Turn Reminders Back On", systemImage: "bell")
+                }
+            }
+        } label: {
+            if updatingReminderDeviceID == device.deviceID {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Updating Reminder…")
+                }
+            } else {
+                Label("Reminder Options", systemImage: "bell.badge")
+            }
+        }
+        .disabled(updatingReminderDeviceID != nil)
+        .font(.subheadline.weight(.semibold))
     }
 
     private func deliverySection(
@@ -276,6 +345,27 @@ struct PFSSSynchronizationHealthView: View {
             errorMessage = friendlyError(error)
         }
         isLoading = false
+    }
+
+    private func updateReminder(deviceID: String, mode: String) async {
+        guard updatingReminderDeviceID == nil else { return }
+        updatingReminderDeviceID = deviceID
+        reminderErrorMessage = ""
+        do {
+            try await manager.updateSynchronizationDivergenceReminder(
+                deviceID: deviceID,
+                mode: mode
+            )
+            let refreshedHealth = try await manager.synchronizationHealth()
+            health = refreshedHealth
+            NotificationCenter.default.post(
+                name: .pfssSynchronizationHealthDidRefresh,
+                object: refreshedHealth
+            )
+        } catch {
+            reminderErrorMessage = friendlyError(error)
+        }
+        updatingReminderDeviceID = nil
     }
 
     private func overallExplanation(_ health: PFSSSynchronizationHealth) -> String {

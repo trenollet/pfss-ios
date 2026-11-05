@@ -10,6 +10,7 @@ import Foundation
 enum ServiceType: String, CaseIterable, Identifiable, Codable {
     case windowCleaning = "Window Cleaning"
     case pressureWashing = "Pressure Washing"
+    case painting = "Painting"
     case gutterCleaning = "Gutter Cleaning"
     case handymanServices = "Handyman Services"
     case other = "Other"
@@ -606,6 +607,7 @@ struct Lead: Identifiable, Codable {
 struct EstimateRecord: Identifiable, Codable, WorkOrder {
     var id = UUID()
     var estimateNumber: String
+    var title: String = ""
     var leadNumber: String
     var customerNumber: String
     var siteID: UUID?
@@ -615,12 +617,99 @@ struct EstimateRecord: Identifiable, Codable, WorkOrder {
     var lineItems: [ServiceLineItem] = []
     var subtotal: Double
     var discount: Double
+    var discountMethod: PricingDiscountMethod = .fixedAmount
+    var discountInputValue: Double = 0
     var total: Double
     var salesperson: String
     var status: EstimateRecordStatus
     var createdDate: Date
     var expirationDate: Date
+    var scopeOfWork: String = ""
     var lifecycleStatus: RecordLifecycleStatus = .active
+
+    private enum CodingKeys: String, CodingKey {
+        case id, estimateNumber, title, leadNumber, customerNumber, siteID
+        case serviceType, otherService, serviceDetails, lineItems, subtotal
+        case discount, discountMethod, discountInputValue, total, salesperson, status, createdDate, expirationDate
+        case scopeOfWork, lifecycleStatus
+    }
+
+    init(
+        id: UUID = UUID(),
+        estimateNumber: String,
+        title: String = "",
+        leadNumber: String,
+        customerNumber: String,
+        siteID: UUID?,
+        serviceType: ServiceType,
+        otherService: String,
+        serviceDetails: String,
+        lineItems: [ServiceLineItem] = [],
+        subtotal: Double,
+        discount: Double,
+        total: Double,
+        salesperson: String,
+        status: EstimateRecordStatus,
+        createdDate: Date,
+        expirationDate: Date,
+        scopeOfWork: String = "",
+        lifecycleStatus: RecordLifecycleStatus = .active,
+        discountMethod: PricingDiscountMethod = .fixedAmount,
+        discountInputValue: Double? = nil
+    ) {
+        self.id = id
+        self.estimateNumber = estimateNumber
+        self.title = title
+        self.leadNumber = leadNumber
+        self.customerNumber = customerNumber
+        self.siteID = siteID
+        self.serviceType = serviceType
+        self.otherService = otherService
+        self.serviceDetails = serviceDetails
+        self.lineItems = lineItems
+        self.subtotal = subtotal
+        self.discount = discount
+        self.discountMethod = discountMethod
+        self.discountInputValue = discountInputValue ?? discount
+        self.total = total
+        self.salesperson = salesperson
+        self.status = status
+        self.createdDate = createdDate
+        self.expirationDate = expirationDate
+        self.scopeOfWork = scopeOfWork
+        self.lifecycleStatus = lifecycleStatus
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        estimateNumber = try values.decode(String.self, forKey: .estimateNumber)
+        title = try values.decodeIfPresent(String.self, forKey: .title) ?? ""
+        leadNumber = try values.decode(String.self, forKey: .leadNumber)
+        customerNumber = try values.decode(String.self, forKey: .customerNumber)
+        siteID = try values.decodeIfPresent(UUID.self, forKey: .siteID)
+        serviceType = try values.decode(ServiceType.self, forKey: .serviceType)
+        otherService = try values.decode(String.self, forKey: .otherService)
+        serviceDetails = try values.decode(String.self, forKey: .serviceDetails)
+        lineItems = try values.decodeIfPresent([ServiceLineItem].self, forKey: .lineItems) ?? []
+        subtotal = try values.decode(Double.self, forKey: .subtotal)
+        discount = try values.decode(Double.self, forKey: .discount)
+        discountMethod = try values.decodeIfPresent(
+            PricingDiscountMethod.self,
+            forKey: .discountMethod
+        ) ?? .fixedAmount
+        discountInputValue = try values.decodeIfPresent(
+            Double.self,
+            forKey: .discountInputValue
+        ) ?? discount
+        total = try values.decode(Double.self, forKey: .total)
+        salesperson = try values.decode(String.self, forKey: .salesperson)
+        status = try values.decode(EstimateRecordStatus.self, forKey: .status)
+        createdDate = try values.decode(Date.self, forKey: .createdDate)
+        expirationDate = try values.decode(Date.self, forKey: .expirationDate)
+        scopeOfWork = try values.decodeIfPresent(String.self, forKey: .scopeOfWork) ?? ""
+        lifecycleStatus = try values.decodeIfPresent(RecordLifecycleStatus.self, forKey: .lifecycleStatus) ?? .active
+    }
 }
 struct CustomerSite: Identifiable, Codable {
     var id = UUID()
@@ -705,6 +794,8 @@ struct BusinessProfile: Codable {
 
     var operations = BusinessOperationsSettings()
     var taxSettings = BusinessTaxSettings()
+    var pressureWashingPricing = PressureWashingPricingSettings()
+    var paintingPricing = PaintingPricingSettings()
 
     private enum CodingKeys: String, CodingKey {
         case businessName
@@ -722,6 +813,8 @@ struct BusinessProfile: Codable {
         case logoData
         case operations
         case taxSettings
+        case pressureWashingPricing
+        case paintingPricing
     }
 
     init() {}
@@ -808,14 +901,69 @@ struct BusinessProfile: Codable {
             forKey: .taxSettings
         ) ?? BusinessTaxSettings()
         taxSettings.normalize()
+
+        pressureWashingPricing = try container.decodeIfPresent(
+            PressureWashingPricingSettings.self,
+            forKey: .pressureWashingPricing
+        ) ?? PressureWashingPricingSettings()
+        pressureWashingPricing.normalize()
+
+        paintingPricing = try container.decodeIfPresent(
+            PaintingPricingSettings.self,
+            forKey: .paintingPricing
+        ) ?? PaintingPricingSettings()
+        paintingPricing.normalize()
     }
 }
 
 
+struct JobScheduledWorkday: Identifiable, Codable, Hashable {
+    var id = UUID()
+    var scheduledDate: Date
+    var schedulingMode: AssignmentSchedulingMode = .fixedTime
+    var arrivalWindowEnd: Date? = nil
+    var completionDeadline: Date? = nil
+
+    mutating func normalize(calendar: Calendar = .current) {
+        switch schedulingMode {
+        case .fixedTime:
+            scheduledDate = QuarterHourDatePicker.normalized(scheduledDate)
+            arrivalWindowEnd = nil
+            completionDeadline = nil
+        case .arrivalWindow:
+            scheduledDate = QuarterHourDatePicker.normalized(scheduledDate)
+            let proposedEnd = arrivalWindowEnd ?? calendar.date(
+                byAdding: .hour,
+                value: 2,
+                to: scheduledDate
+            ) ?? scheduledDate
+            arrivalWindowEnd = QuarterHourDatePicker.normalized(
+                proposedEnd > scheduledDate
+                    ? proposedEnd
+                    : calendar.date(byAdding: .hour, value: 2, to: scheduledDate) ?? scheduledDate
+            )
+            completionDeadline = nil
+        case .flexibleDay:
+            scheduledDate = calendar.startOfDay(for: scheduledDate)
+            arrivalWindowEnd = nil
+            completionDeadline = nil
+        case .deadline:
+            let deadline = QuarterHourDatePicker.normalized(
+                completionDeadline ?? scheduledDate
+            )
+            scheduledDate = calendar.startOfDay(for: deadline)
+            arrivalWindowEnd = nil
+            completionDeadline = deadline
+        }
+    }
+}
+
 struct JobRecord: Identifiable, Codable, WorkOrder {
     var id = UUID()
     var jobNumber: String
+    var title: String = ""
 
+    var leadNumber: String = ""
     var customerNumber: String
     var siteID: UUID?
     var estimateNumber: String
@@ -825,10 +973,24 @@ struct JobRecord: Identifiable, Codable, WorkOrder {
     var lineItems: [ServiceLineItem] = []
     var subtotal: Double
     var discount: Double
+    var discountMethod: PricingDiscountMethod = .fixedAmount
+    var discountInputValue: Double = 0
     var total: Double
+    var salesperson: String = ""
+    var expirationDate: Date = Calendar.current.date(
+        byAdding: .day,
+        value: 30,
+        to: Date()
+    ) ?? Date()
     var primaryTechnicianID: UUID?
     var secondaryTechnicianID: UUID?
     var scheduledDate: Date
+    /// Additional visits for the same Job. These are not recurring Jobs and
+    /// never create another invoice; My Day presents this Job on each date.
+    var additionalScheduledDates: [Date] = []
+    /// Per-workday scheduling details. `additionalScheduledDates` remains in
+    /// the record for compatibility with older clients and is kept in sync.
+    var additionalWorkdaySchedules: [JobScheduledWorkday] = []
     var scheduledDurationOverrideMinutes: Int? = nil
     /// Dispatch constraints selected while the Job is created. Keeping these
     /// on the business record allows recurring occurrences to inherit them.
@@ -844,6 +1006,7 @@ struct JobRecord: Identifiable, Codable, WorkOrder {
     var workflowState: JobWorkflowState = .notStarted
     var timelineEvents: [JobTimelineEvent] = []
     var workNotes: String
+    var scopeOfWork: String = ""
 
     var isRecurring: Bool
     var recurrenceFrequency: JobRecurrenceFrequency? = nil
@@ -862,9 +1025,100 @@ struct JobRecord: Identifiable, Codable, WorkOrder {
 }
 
 extension JobRecord {
+    var effectiveAdditionalWorkdaySchedules: [JobScheduledWorkday] {
+        if !additionalWorkdaySchedules.isEmpty {
+            return additionalWorkdaySchedules
+        }
+        return additionalScheduledDates.map {
+            JobScheduledWorkday(
+                scheduledDate: $0,
+                schedulingMode: assignmentSchedulingMode
+            )
+        }
+    }
+
+    var allScheduledWorkdaySchedules: [JobScheduledWorkday] {
+        var primary = JobScheduledWorkday(
+            scheduledDate: scheduledDate,
+            schedulingMode: assignmentSchedulingMode,
+            arrivalWindowEnd: arrivalWindowEnd,
+            completionDeadline: completionDeadline
+        )
+        primary.normalize()
+        return [primary] + effectiveAdditionalWorkdaySchedules
+    }
+
+    var allScheduledWorkDates: [Date] {
+        allScheduledWorkdaySchedules.map(\.scheduledDate)
+            .sorted()
+            .reduce(into: [Date]()) { dates, candidate in
+                if !dates.contains(where: { Calendar.current.isDate($0, inSameDayAs: candidate) }) {
+                    dates.append(candidate)
+                }
+            }
+    }
+
+    mutating func normalizeAdditionalScheduledDates(calendar: Calendar = .current) {
+        let normalizedLegacyDates = additionalScheduledDates
+            .filter { !calendar.isDate($0, inSameDayAs: scheduledDate) }
+            .sorted()
+            .reduce(into: [Date]()) { dates, candidate in
+                if !dates.contains(where: { calendar.isDate($0, inSameDayAs: candidate) }) {
+                    dates.append(candidate)
+                }
+            }
+
+        var schedules = additionalWorkdaySchedules
+        for date in normalizedLegacyDates where !schedules.contains(where: {
+            calendar.isDate($0.scheduledDate, inSameDayAs: date)
+        }) {
+            schedules.append(JobScheduledWorkday(
+                scheduledDate: date,
+                schedulingMode: assignmentSchedulingMode
+            ))
+        }
+        schedules = schedules
+            .filter { !calendar.isDate($0.scheduledDate, inSameDayAs: scheduledDate) }
+            .sorted { $0.scheduledDate < $1.scheduledDate }
+            .reduce(into: [JobScheduledWorkday]()) { result, candidate in
+                guard !result.contains(where: {
+                    calendar.isDate($0.scheduledDate, inSameDayAs: candidate.scheduledDate)
+                }) else { return }
+                var normalized = candidate
+                normalized.normalize(calendar: calendar)
+                result.append(normalized)
+            }
+        additionalWorkdaySchedules = schedules
+        additionalScheduledDates = schedules.map(\.scheduledDate)
+    }
+
+    func workdaySchedule(on date: Date, calendar: Calendar = .current) -> JobScheduledWorkday? {
+        allScheduledWorkdaySchedules.first {
+            calendar.isDate($0.scheduledDate, inSameDayAs: date)
+        }
+    }
+
+    mutating func appendAdditionalWorkday(_ schedule: JobScheduledWorkday) {
+        additionalWorkdaySchedules.append(schedule)
+        additionalScheduledDates.append(schedule.scheduledDate)
+        normalizeAdditionalScheduledDates()
+    }
+
+    mutating func removeAdditionalWorkday(on date: Date, calendar: Calendar = .current) {
+        additionalWorkdaySchedules.removeAll {
+            calendar.isDate($0.scheduledDate, inSameDayAs: date)
+        }
+        additionalScheduledDates.removeAll {
+            calendar.isDate($0, inSameDayAs: date)
+        }
+        normalizeAdditionalScheduledDates(calendar: calendar)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id
         case jobNumber
+        case title
+        case leadNumber
         case customerNumber
         case siteID
         case estimateNumber
@@ -873,10 +1127,16 @@ extension JobRecord {
         case lineItems
         case subtotal
         case discount
+        case discountMethod
+        case discountInputValue
         case total
+        case salesperson
+        case expirationDate
         case primaryTechnicianID
         case secondaryTechnicianID
         case scheduledDate
+        case additionalScheduledDates
+        case additionalWorkdaySchedules
         case scheduledDurationOverrideMinutes
         case assignmentSchedulingMode
         case arrivalWindowEnd
@@ -889,6 +1149,7 @@ extension JobRecord {
         case workflowState
         case timelineEvents
         case workNotes
+        case scopeOfWork
         case isRecurring
         case recurrenceFrequency
         case recurrenceEndMode
@@ -916,6 +1177,16 @@ extension JobRecord {
             String.self,
             forKey: .jobNumber
         )
+
+        title = try container.decodeIfPresent(
+            String.self,
+            forKey: .title
+        ) ?? ""
+
+        leadNumber = try container.decodeIfPresent(
+            String.self,
+            forKey: .leadNumber
+        ) ?? ""
 
         customerNumber = try container.decode(
             String.self,
@@ -957,10 +1228,34 @@ extension JobRecord {
             forKey: .discount
         ) ?? 0
 
+        discountMethod = try container.decodeIfPresent(
+            PricingDiscountMethod.self,
+            forKey: .discountMethod
+        ) ?? .fixedAmount
+
+        discountInputValue = try container.decodeIfPresent(
+            Double.self,
+            forKey: .discountInputValue
+        ) ?? discount
+
         total = try container.decodeIfPresent(
             Double.self,
             forKey: .total
         ) ?? 0
+
+        salesperson = try container.decodeIfPresent(
+            String.self,
+            forKey: .salesperson
+        ) ?? ""
+
+        expirationDate = try container.decodeIfPresent(
+            Date.self,
+            forKey: .expirationDate
+        ) ?? Calendar.current.date(
+            byAdding: .day,
+            value: 30,
+            to: Date()
+        ) ?? Date()
 
         primaryTechnicianID = try container.decodeIfPresent(
             UUID.self,
@@ -976,6 +1271,16 @@ extension JobRecord {
             Date.self,
             forKey: .scheduledDate
         )
+
+        additionalScheduledDates = try container.decodeIfPresent(
+            [Date].self,
+            forKey: .additionalScheduledDates
+        ) ?? []
+
+        additionalWorkdaySchedules = try container.decodeIfPresent(
+            [JobScheduledWorkday].self,
+            forKey: .additionalWorkdaySchedules
+        ) ?? []
 
         scheduledDurationOverrideMinutes =
             try container.decodeIfPresent(
@@ -1038,6 +1343,11 @@ extension JobRecord {
             forKey: .workNotes
         ) ?? ""
 
+        scopeOfWork = try container.decodeIfPresent(
+            String.self,
+            forKey: .scopeOfWork
+        ) ?? workNotes
+
         isRecurring = try container.decodeIfPresent(
             Bool.self,
             forKey: .isRecurring
@@ -1092,6 +1402,8 @@ extension JobRecord {
             RecordLifecycleStatus.self,
             forKey: .lifecycleStatus
         ) ?? .active
+
+        normalizeAdditionalScheduledDates()
     }
 
     private static func legacyWorkflowState(
@@ -1206,6 +1518,14 @@ struct InvoiceRecord: Identifiable, Codable, WorkOrder {
     /// the financial facts captured here.
     var receipts: [ReceiptSnapshot]? = nil
 
+    /// Sources use the legacy Void accounting status, with this explicit link
+    /// presenting Combined in current clients. Older clients therefore cannot
+    /// collect the superseded bill or count its charges a second time.
+    var combinedIntoInvoiceID: UUID? = nil
+    var combination: InvoiceCombinationProposal? = nil
+    var associatedJobNumbers: [String]? = nil
+    var paymentCorrection: InvoicePaymentCorrection? = nil
+
     var lifecycleStatus: RecordLifecycleStatus = .active
 }
 
@@ -1262,6 +1582,8 @@ struct ServiceLineItem: Identifiable, Codable {
     var quantity: Double
     var unitPrice: Double
     var lineTotal: Double
+    var discountMethod: PricingDiscountMethod = .fixedAmount
+    var discountInputValue: Double = 0
 
     var estimatedMinutesPerUnit: Double = 0
 
@@ -1277,6 +1599,8 @@ struct ServiceLineItem: Identifiable, Codable {
         case quantity
         case unitPrice
         case lineTotal
+        case discountMethod
+        case discountInputValue
         case estimatedMinutesPerUnit
     }
 
@@ -1292,6 +1616,8 @@ struct ServiceLineItem: Identifiable, Codable {
         quantity: Double,
         unitPrice: Double,
         lineTotal: Double,
+        discountMethod: PricingDiscountMethod = .fixedAmount,
+        discountInputValue: Double = 0,
         estimatedMinutesPerUnit: Double = 0
     ) {
         self.id = id
@@ -1305,6 +1631,8 @@ struct ServiceLineItem: Identifiable, Codable {
         self.quantity = quantity
         self.unitPrice = unitPrice
         self.lineTotal = lineTotal
+        self.discountMethod = discountMethod
+        self.discountInputValue = discountInputValue
         self.estimatedMinutesPerUnit = estimatedMinutesPerUnit
     }
 
@@ -1365,6 +1693,16 @@ struct ServiceLineItem: Identifiable, Codable {
             Double.self,
             forKey: .lineTotal
         )
+
+        discountMethod = try container.decodeIfPresent(
+            PricingDiscountMethod.self,
+            forKey: .discountMethod
+        ) ?? .fixedAmount
+
+        discountInputValue = try container.decodeIfPresent(
+            Double.self,
+            forKey: .discountInputValue
+        ) ?? 0
 
         estimatedMinutesPerUnit =
             (try? container.decodeIfPresent(

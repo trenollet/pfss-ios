@@ -14,9 +14,13 @@ struct RevenueSummaryCard: View {
 
     var title: String = "Revenue Summary"
     var subtitle: String? = nil
+    var showsScheduledRevenue = true
+    var onSelectInvoiced: (() -> Void)? = nil
+    var onSelectScheduled: (() -> Void)? = nil
+    var onSelectOutstanding: (() -> Void)? = nil
 
-    private var totalPipeline: Double {
-        max(summary.scheduled, 0)
+    private var primaryCollectedRevenue: Double {
+        max(summary.collected, 0)
     }
 
     private var collectionProgress: Double {
@@ -25,7 +29,7 @@ struct RevenueSummaryCard: View {
         }
 
         return min(
-            max(summary.collected / summary.invoiced, 0),
+            max((summary.invoiced - summary.outstanding) / summary.invoiced, 0),
             1
         )
     }
@@ -77,11 +81,11 @@ struct RevenueSummaryCard: View {
 
     private var primaryRevenue: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Scheduled Revenue")
+            Text("Collected Revenue")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Text(currency(totalPipeline))
+            Text(currency(primaryCollectedRevenue))
                 .font(.system(size: 30, weight: .bold))
                 .minimumScaleFactor(0.65)
                 .lineLimit(1)
@@ -100,33 +104,54 @@ struct RevenueSummaryCard: View {
             ],
             spacing: 16
         ) {
-            metric(
-                title: "Completed",
-                value: summary.completed,
-                icon: "checkmark.circle.fill",
-                color: .blue
-            )
-
-            metric(
+            interactiveMetric(
                 title: "Invoiced",
                 value: summary.invoiced,
                 icon: "doc.text.fill",
-                color: .orange
+                color: .orange,
+                action: onSelectInvoiced,
+                accessibilityHint: "Shows invoices issued in this period"
             )
 
-            metric(
-                title: "Collected",
-                value: summary.collected,
-                icon: "banknote.fill",
-                color: .green
-            )
+            if showsScheduledRevenue {
+                interactiveMetric(
+                    title: "Scheduled",
+                    value: summary.scheduled,
+                    icon: "calendar.badge.clock",
+                    color: .purple,
+                    action: onSelectScheduled,
+                    accessibilityHint: "Shows unfinished scheduled jobs in this period"
+                )
+            }
 
-            metric(
+            interactiveMetric(
                 title: "Outstanding",
-                value: max(summary.invoiced - summary.collected, 0),
+                value: summary.outstanding,
                 icon: "clock.fill",
-                color: .red
+                color: .red,
+                action: onSelectOutstanding,
+                accessibilityHint: "Shows the invoices with unpaid balances"
             )
+        }
+    }
+
+    @ViewBuilder
+    private func interactiveMetric(
+        title: String,
+        value: Double,
+        icon: String,
+        color: Color,
+        action: (() -> Void)?,
+        accessibilityHint: String
+    ) -> some View {
+        if let action {
+            Button(action: action) {
+                metric(title: title, value: value, icon: icon, color: color)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(accessibilityHint)
+        } else {
+            metric(title: title, value: value, icon: icon, color: color)
         }
     }
 

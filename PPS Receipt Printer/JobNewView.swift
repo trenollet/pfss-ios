@@ -12,8 +12,17 @@ struct JobNewView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedCustomerNumber = ""
+    @State private var selectedLeadNumber = ""
     @State private var selectedSiteID: UUID?
     @State private var selectedEstimateNumber = ""
+    @State private var salesperson = ""
+    @State private var expirationDate = Calendar.current.date(
+        byAdding: .day,
+        value: 30,
+        to: Date()
+    ) ?? Date()
+    @State private var jobTitle = ""
+    @State private var scopeOfWork = ""
 
     @State private var serviceType: ServiceType = .windowCleaning
     @State private var otherService = ""
@@ -22,6 +31,13 @@ struct JobNewView: View {
     @State private var secondaryTechnicianID: UUID?
 
     @State private var scheduledDate = QuarterHourDatePicker.normalized(Date())
+    @State private var isMultipleDayWork = false
+    @State private var additionalWorkdaySchedules: [JobScheduledWorkday] = []
+    @State private var nextAdditionalSchedule = JobScheduledWorkday(
+        scheduledDate: QuarterHourDatePicker.normalized(
+            Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+        )
+    )
     @State private var schedulingMode: AssignmentSchedulingMode = .fixedTime
     @State private var arrivalWindowEnd = QuarterHourDatePicker.normalized(
         Calendar.current.date(byAdding: .hour, value: 2, to: Date()) ?? Date()
@@ -42,21 +58,30 @@ struct JobNewView: View {
     @State private var itemQuantity = "1"
     @State private var itemUnitPrice = ""
     @State private var lineItems: [ServiceLineItem] = []
-    @State private var discount = ""
+    @State private var discountMethod: PricingDiscountMethod = .fixedAmount
+    @State private var discountInputValue: Double = 0
 
     @FocusState private var isInputFocused: Bool
     @State private var activeSheet: ActiveSheet?
+    @State private var compactEditorDestination: CompactWorkOrderEditorDestination?
 
     init(
         preselectedCustomerNumber: String = "",
         preselectedSiteID: UUID? = nil,
-        prefilledWorkNotes: String = ""
+        prefilledWorkNotes: String = "",
+        initialLineItems: [ServiceLineItem] = []
     ) {
         _selectedCustomerNumber = State(
             initialValue: preselectedCustomerNumber
         )
         _selectedSiteID = State(initialValue: preselectedSiteID)
         _workNotes = State(initialValue: prefilledWorkNotes)
+        _scopeOfWork = State(initialValue: prefilledWorkNotes)
+        _lineItems = State(initialValue: initialLineItems)
+        if let firstItem = initialLineItems.first {
+            _serviceType = State(initialValue: firstItem.serviceType)
+            _otherService = State(initialValue: firstItem.otherService)
+        }
     }
 
     private enum ActiveSheet: Identifiable {
@@ -108,7 +133,11 @@ struct JobNewView: View {
     }
 
     private var discountValue: Double {
-        Double(discount) ?? 0
+        DiscountCalculator.amount(
+            subtotal: subtotalValue,
+            method: discountMethod,
+            inputValue: discountInputValue
+        )
     }
 
     private var totalValue: Double {
@@ -189,47 +218,28 @@ struct JobNewView: View {
 
     var body: some View {
         Form {
-                Section("New Job") {
-                    SearchableRecordSelectionField(
-                        title: "Customer",
-                        placeholder: "Select Customer",
-                        options: customerOptions,
-                        selection: $selectedCustomerNumber
-                    )
+                CompactCustomerInfoSection(
+                    leadNumber: $selectedLeadNumber,
+                    customerNumber: $selectedCustomerNumber,
+                    siteID: $selectedSiteID,
+                    salesperson: $salesperson,
+                    expirationDate: $expirationDate,
+                    onSelect: { compactEditorDestination = .customerInfo }
+                )
 
-                    Picker("Site", selection: $selectedSiteID) {
-                        Text("Select Site").tag(UUID?.none)
-                        ForEach(availableSites) { site in
-                            Text(site.siteName.isEmpty ? site.serviceAddress : site.siteName)
-                                .tag(Optional(site.id))
-                        }
-                    }
+                CompactTitleSection(
+                    title: $jobTitle,
+                    onSelect: { compactEditorDestination = .title }
+                )
 
-                    Picker("Estimate", selection: $selectedEstimateNumber) {
-                        Text("None / Impromptu").tag("")
-                        ForEach(availableEstimates) { estimate in
-                            Text("\(estimate.estimateNumber) - \(estimate.total, format: .currency(code: "USD"))")
-                                .tag(estimate.estimateNumber)
+                Section("Status") {
+                    Picker("Status", selection: $status) {
+                        ForEach(JobStatus.allCases) { status in
+                            Text(status.rawValue).tag(status)
                         }
                     }
                 }
 
-                Section("Service") {
-                    Picker("Service Type", selection: $serviceType) {
-                        ForEach(ServiceType.allCases) { service in
-                            Text(service.rawValue).tag(service)
-                        }
-                    }
-
-                    if serviceType == .other {
-                        TextField("Other Service", text: $otherService)
-                            .focused($isInputFocused)
-                    }
-
-                    TextField("Work Notes", text: $workNotes, axis: .vertical)
-                        .lineLimit(3...6)
-                        .focused($isInputFocused)
-                }
                 WorkOrderEditorView(
                     lineItems: $lineItems,
                     isInputFocused: $isInputFocused,
@@ -245,48 +255,17 @@ struct JobNewView: View {
                     }
                 )
                 
-                Section("Pricing") {
-                    LabeledContent("Discount") {
-                        SelectAllTextField(
-                            placeholder: "0.00",
-                            text: $discount
-                        )
-                        .frame(minWidth: 90, minHeight: 30)
-                        .focused($isInputFocused)
-                    }
+                CompactPricingSection(
+                    method: $discountMethod,
+                    inputValue: $discountInputValue,
+                    subtotal: subtotalValue,
+                    onSelect: { compactEditorDestination = .pricing }
+                )
 
-                    HStack {
-                        Text("Total")
-                        Spacer()
-                        Text(totalValue, format: .currency(code: "USD"))
-                            .bold()
-                    }
-                }
-
-                LabeledContent("Quantity") {
-                    SelectAllTextField(
-                        placeholder: "1",
-                        text: $itemQuantity
-                    )
-                    .frame(minWidth: 90, minHeight: 30)
-                    .focused($isInputFocused)
-                }
-
-                LabeledContent("Unit Price") {
-                    SelectAllTextField(
-                        placeholder: "0.00",
-                        text: $itemUnitPrice
-                    )
-                    .frame(minWidth: 90, minHeight: 30)
-                    .focused($isInputFocused)
-                }
-
-                HStack {
-                    Text("Line Total")
-                    Spacer()
-                    Text(itemLineTotal, format: .currency(code: "USD"))
-                        .bold()
-                }
+                CompactScopeSection(
+                    scope: $scopeOfWork,
+                    onSelect: { compactEditorDestination = .scope }
+                )
 
                 Section("Technicians") {
                     Picker(
@@ -346,12 +325,6 @@ struct JobNewView: View {
                 }
 
                 Section("Schedule") {
-                    Picker("Status", selection: $status) {
-                        ForEach(JobStatus.allCases) { status in
-                            Text(status.rawValue).tag(status)
-                        }
-                    }
-
                     Picker("Scheduling Mode", selection: $schedulingMode) {
                         ForEach(AssignmentSchedulingMode.allCases) { mode in
                             Text(mode.rawValue).tag(mode)
@@ -363,6 +336,39 @@ struct JobNewView: View {
                     Picker("Priority", selection: $assignmentPriority) {
                         ForEach(AssignmentPriority.allCases) { priority in
                             Text(priority.rawValue).tag(priority)
+                        }
+                    }
+
+                    Toggle("Multiple Day Work", isOn: $isMultipleDayWork)
+
+                    if isMultipleDayWork {
+                        JobWorkdayScheduleFields(schedule: $nextAdditionalSchedule)
+                        Button {
+                            addAdditionalScheduledDate()
+                        } label: {
+                            Label("Add Scheduled Day", systemImage: "calendar.badge.plus")
+                        }
+                        .disabled(!canAddAdditionalScheduledDate)
+
+                        ForEach(additionalWorkdaySchedules) { workday in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(workday.scheduledDate.formatted(date: .abbreviated, time: .omitted))
+                                    Text(workday.schedulingMode.rawValue)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text(workday.scheduledDate.formatted(date: .omitted, time: .shortened))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button(role: .destructive) {
+                                    additionalWorkdaySchedules.removeAll { $0.id == workday.id }
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                            }
                         }
                     }
 
@@ -384,9 +390,20 @@ struct JobNewView: View {
             .navigationTitle("New Job")
             .onChange(of: isRecurring) {
                 if isRecurring {
+                    isMultipleDayWork = false
+                    additionalWorkdaySchedules = []
                     showingRecurrencePicker = true
                 } else {
                     recurrenceFrequency = nil
+                }
+            }
+            .onChange(of: isMultipleDayWork) { _, enabled in
+                if enabled {
+                    isRecurring = false
+                    recurrenceFrequency = nil
+                    prepareNextAdditionalDate()
+                } else {
+                    additionalWorkdaySchedules = []
                 }
             }
             .onChange(of: scheduledDate) { _, newDate in
@@ -419,12 +436,26 @@ struct JobNewView: View {
                         addJob()
                     }
                     .disabled(
-                        selectedCustomerNumber.isEmpty ||
+                        (selectedCustomerNumber.isEmpty && selectedLeadNumber.isEmpty) ||
                         !hasValidScheduling ||
                         (isRecurring && recurrenceFrequency == nil)
                     )
                 }
             }
+            .compactWorkOrderEditorSheet(
+                destination: $compactEditorDestination,
+                leadNumber: $selectedLeadNumber,
+                customerNumber: $selectedCustomerNumber,
+                siteID: $selectedSiteID,
+                salesperson: $salesperson,
+                expirationDate: $expirationDate,
+                title: $jobTitle,
+                discountMethod: $discountMethod,
+                discountInputValue: $discountInputValue,
+                subtotal: subtotalValue,
+                scope: $scopeOfWork,
+                store: store
+            )
             .sheet(item: $activeSheet) { sheet in
                 switch sheet {
                 case .catalogPicker:
@@ -448,21 +479,30 @@ struct JobNewView: View {
     }
 
     private func addJob() {
-        
+        let firstItem = lineItems.first
+
         let job = JobRecord(
             jobNumber: store.generateJobNumber(),
+            title: jobTitle.trimmingCharacters(in: .whitespacesAndNewlines),
+            leadNumber: selectedLeadNumber,
             customerNumber: selectedCustomerNumber,
             siteID: selectedSiteID,
             estimateNumber: selectedEstimateNumber,
-            serviceType: serviceType,
-            otherService: otherService,
+            serviceType: firstItem?.serviceType ?? serviceType,
+            otherService: firstItem?.otherService ?? otherService,
             lineItems: lineItems,
             subtotal: subtotalValue,
             discount: discountValue,
+            discountMethod: discountMethod,
+            discountInputValue: discountInputValue,
             total: totalValue,
+            salesperson: salesperson,
+            expirationDate: expirationDate,
             primaryTechnicianID: primaryTechnicianID,
             secondaryTechnicianID: secondaryTechnicianID,
             scheduledDate: operationalJobDate,
+            additionalScheduledDates: additionalWorkdaySchedules.map(\.scheduledDate),
+            additionalWorkdaySchedules: additionalWorkdaySchedules,
             assignmentSchedulingMode: schedulingMode,
             arrivalWindowEnd: schedulingMode == .arrivalWindow
                 ? QuarterHourDatePicker.normalized(arrivalWindowEnd)
@@ -474,6 +514,7 @@ struct JobNewView: View {
             completedDate: status == .completed ? Date() : nil,
             status: status,
             workNotes: workNotes,
+            scopeOfWork: scopeOfWork.trimmingCharacters(in: .whitespacesAndNewlines),
             isRecurring: isRecurring,
             recurrenceFrequency: recurrenceFrequency,
             recurrenceEndMode: recurrenceEndMode,
@@ -487,6 +528,7 @@ struct JobNewView: View {
         dismiss()
 
         selectedCustomerNumber = ""
+        selectedLeadNumber = ""
         selectedSiteID = nil
         selectedEstimateNumber = ""
         serviceType = .windowCleaning
@@ -495,7 +537,16 @@ struct JobNewView: View {
         itemQuantity = "1"
         itemUnitPrice = ""
         lineItems = []
-        discount = ""
+        discountMethod = .fixedAmount
+        discountInputValue = 0
+        salesperson = ""
+        expirationDate = Calendar.current.date(
+            byAdding: .day,
+            value: 30,
+            to: Date()
+        ) ?? Date()
+        jobTitle = ""
+        scopeOfWork = ""
         recurrenceEndMode = .noEnd
         recurrenceEndDate = nil
         recurrenceOccurrenceCount = nil
@@ -508,6 +559,35 @@ struct JobNewView: View {
         workNotes = ""
         isRecurring = false
         recurrenceFrequency = nil
+        isMultipleDayWork = false
+        additionalWorkdaySchedules = []
+    }
+
+    private var canAddAdditionalScheduledDate: Bool {
+        let calendar = Calendar.current
+        return !calendar.isDate(nextAdditionalSchedule.scheduledDate, inSameDayAs: operationalJobDate)
+            && !additionalWorkdaySchedules.contains(where: {
+                calendar.isDate($0.scheduledDate, inSameDayAs: nextAdditionalSchedule.scheduledDate)
+            })
+    }
+
+    private func addAdditionalScheduledDate() {
+        guard canAddAdditionalScheduledDate else { return }
+        var schedule = nextAdditionalSchedule
+        schedule.normalize()
+        additionalWorkdaySchedules.append(schedule)
+        additionalWorkdaySchedules.sort { $0.scheduledDate < $1.scheduledDate }
+        prepareNextAdditionalDate()
+    }
+
+    private func prepareNextAdditionalDate() {
+        let base = additionalWorkdaySchedules.last?.scheduledDate ?? operationalJobDate
+        nextAdditionalSchedule = JobScheduledWorkday(
+            scheduledDate: QuarterHourDatePicker.normalized(
+                Calendar.current.date(byAdding: .day, value: 1, to: base) ?? base
+            ),
+            schedulingMode: nextAdditionalSchedule.schedulingMode
+        )
     }
 
     @ViewBuilder

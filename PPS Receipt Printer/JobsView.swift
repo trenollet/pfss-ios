@@ -12,6 +12,7 @@ struct JobRecordsListView: View {
     let title: String
     let customerNumber: String?
     let lifecycleScope: JobLifecycleListScope
+    let jobFilter: ((JobRecord) -> Bool)?
     @State private var showArchived = false
     @State private var showingNewJob = false
     @State private var searchText: String
@@ -25,12 +26,14 @@ struct JobRecordsListView: View {
         title: String = "All Jobs",
         initialSearchText: String = "",
         customerNumber: String? = nil,
-        lifecycleScope: JobLifecycleListScope = .all
+        lifecycleScope: JobLifecycleListScope = .all,
+        jobFilter: ((JobRecord) -> Bool)? = nil
     ) {
         self.statuses = statuses
         self.title = title
         self.customerNumber = customerNumber
         self.lifecycleScope = lifecycleScope
+        self.jobFilter = jobFilter
         _searchText = State(initialValue: initialSearchText)
     }
 
@@ -39,7 +42,10 @@ struct JobRecordsListView: View {
         let source = statuses.map { accepted in
             lifecycleSource.filter { accepted.contains($0.status) }
         } ?? lifecycleSource
-        let lifecycleScoped = source.filter { job in
+        let customFiltered = jobFilter.map { filter in
+            source.filter(filter)
+        } ?? source
+        let lifecycleScoped = customFiltered.filter { job in
             switch lifecycleScope {
             case .all:
                 return true
@@ -58,7 +64,7 @@ struct JobRecordsListView: View {
             job.jobNumber.localizedCaseInsensitiveContains(query) ||
             job.customerNumber.localizedCaseInsensitiveContains(query) ||
             customerDisplayName(for: job.customerNumber).localizedCaseInsensitiveContains(query) ||
-            siteDisplayName(for: job.siteID).localizedCaseInsensitiveContains(query) ||
+            siteName(for: job.siteID).localizedCaseInsensitiveContains(query) ||
             serviceName(for: job).localizedCaseInsensitiveContains(query) ||
             employeeName(for: job.primaryTechnicianID).localizedCaseInsensitiveContains(query) ||
             job.status.rawValue.localizedCaseInsensitiveContains(query) ||
@@ -92,34 +98,59 @@ struct JobRecordsListView: View {
                 ForEach(filteredJobs) { job in
                     NavigationLink { JobDetailView(job: job) } label: {
                         VStack(alignment: .leading, spacing: 5) {
-                            Text(customerDisplayName(for: job.customerNumber))
-                                .font(.title3)
-                                .fontWeight(.bold)
-                            Label(
-                                siteDisplayName(for: job.siteID),
-                                systemImage: "mappin.circle.fill"
-                            )
-                            .font(.headline.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            Text("Job: \(job.jobNumber)").font(.caption)
-                            Text("Service: \(serviceName(for: job))").font(.caption)
-                            Text("Primary Tech: \(employeeName(for: job.primaryTechnicianID))").font(.caption)
-                            HStack {
-                                Label(jobListStatusTitle(for: job), systemImage: jobListStatusSymbol(for: job))
-                                    .font(.body.weight(.bold))
-                                    .foregroundStyle(jobListStatusColor(for: job))
-                                Spacer()
-                                Label(
-                                    job.scheduledDate.formatted(date: .abbreviated, time: .shortened),
-                                    systemImage: "calendar"
-                                )
+                            HStack(spacing: 8) {
+                                Text(customerDisplayName(for: job.customerNumber))
+                                    .font(.headline)
+                                    .fontWeight(.bold)
+                                    .lineLimit(1)
+
+                                Spacer(minLength: 6)
+
+                                Image(systemName: jobListStatusSymbol(for: job))
                                 .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(listDateColor)
+                                .foregroundStyle(jobListStatusColor(for: job))
+                                .accessibilityLabel(jobListStatusTitle(for: job))
+                            }
+
+                            HStack(alignment: .top, spacing: 10) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(siteName(for: job.siteID))
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+
+                                    Text(serviceName(for: job))
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+
+                                HStack(alignment: .center, spacing: 5) {
+                                    Image(systemName: "calendar")
+
+                                    VStack(alignment: .trailing, spacing: 2) {
+                                        Text(
+                                            job.scheduledDate.formatted(
+                                                date: .abbreviated,
+                                                time: .omitted
+                                            )
+                                        )
+
+                                        Text(
+                                            job.scheduledDate.formatted(
+                                                date: .omitted,
+                                                time: .shortened
+                                            )
+                                        )
+                                    }
+                                }
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(jobListStatusColor(for: job))
                             }
                             if job.lifecycleStatus == .archived {
                                 Text("Archived").foregroundStyle(.red).font(.caption)
                             }
-                        }.padding(.vertical, 4)
+                        }.padding(.vertical, 2)
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         if job.lifecycleStatus != .archived {
@@ -178,34 +209,72 @@ struct JobRecordsListView: View {
         selectedStatus != nil || dateFilter != .all || sortOrder != .dateAscending
     }
 
-    private var listDateColor: Color {
-        Color(red: 0.20, green: 0.95, blue: 0.42)
+    private func isScheduledButUnassigned(_ job: JobRecord) -> Bool {
+        job.status == .scheduled && job.primaryTechnicianID == nil
     }
 
     private func jobListStatusTitle(for job: JobRecord) -> String {
-        if job.primaryTechnicianID == nil &&
-            job.status != .completed &&
-            job.status != .cancelled {
-            return "Unassigned"
+        if isScheduledButUnassigned(job) {
+            return "Scheduled but unassigned"
         }
-        return workflowPresentation(for: job).statusTitle
+
+        switch job.status {
+        case .toBeScheduled, .scheduled, .assigned:
+            return job.status.rawValue
+        case .inProgress:
+            return workflowPresentation(for: job).statusTitle
+        case .completed:
+            return "Completed"
+        case .cancelled:
+            return "Cancelled"
+        }
     }
 
     private func jobListStatusColor(for job: JobRecord) -> Color {
-        if job.primaryTechnicianID == nil && job.status != .completed && job.status != .cancelled { return .red }
-        switch workflowPresentation(for: job).accent {
-        case .green: return .green
-        case .blue: return .blue
-        case .orange: return .orange
-        case .purple: return .purple
-        case .red: return .red
-        case .secondary: return .secondary
+        if isScheduledButUnassigned(job) {
+            return .orange
+        }
+
+        switch job.status {
+        case .toBeScheduled:
+            return Color(red: 1, green: 0, blue: 1)
+        case .scheduled, .assigned:
+            return .blue
+        case .inProgress:
+            let presentation = workflowPresentation(for: job)
+            if presentation.statusTitle == "Invoice Created" {
+                return .purple
+            }
+            if presentation.isClosed {
+                return .green
+            }
+            return .yellow
+        case .completed:
+            return .green
+        case .cancelled:
+            return .red
         }
     }
 
     private func jobListStatusSymbol(for job: JobRecord) -> String {
-        if job.primaryTechnicianID == nil && job.status != .completed && job.status != .cancelled { return "person.crop.circle.badge.exclamationmark" }
-        return workflowPresentation(for: job).statusSystemImage
+        if isScheduledButUnassigned(job) {
+            return "person.crop.circle.badge.exclamationmark"
+        }
+
+        switch job.status {
+        case .toBeScheduled:
+            return "calendar.badge.clock"
+        case .scheduled:
+            return "calendar"
+        case .assigned:
+            return "person.crop.circle.fill"
+        case .inProgress:
+            return workflowPresentation(for: job).statusSystemImage
+        case .completed:
+            return "checkmark.circle.fill"
+        case .cancelled:
+            return "xmark.circle.fill"
+        }
     }
 
     private func workflowPresentation(
@@ -241,14 +310,15 @@ struct JobRecordsListView: View {
         return employee.displayName
     }
 
-    private func siteDisplayName(for siteID: UUID?) -> String {
+    private func siteName(for siteID: UUID?) -> String {
         guard let siteID,
               let site = store.sites.first(where: { $0.id == siteID }) else {
             return "No site selected"
         }
 
-        if site.siteName.isEmpty { return site.serviceAddress }
-        if site.serviceAddress.isEmpty { return site.siteName }
-        return "\(site.siteName) — \(site.serviceAddress)"
+        let name = site.siteName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        return name.isEmpty ? "Unnamed Site" : name
     }
 }

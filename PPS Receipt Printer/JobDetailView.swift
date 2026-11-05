@@ -28,6 +28,7 @@ struct JobDetailView: View {
     @State private var originalJob: JobRecord
     @FocusState private var isInputFocused: Bool
     @State private var activeSheet: ActiveSheet?
+    @State private var compactEditorDestination: CompactWorkOrderEditorDestination?
     @State private var scheduledDurationHours = 0
     @State private var scheduledDurationMinutes = 0
     @State private var technicianNoteDraft = ""
@@ -35,6 +36,7 @@ struct JobDetailView: View {
     @State private var showingRecurrencePicker = false
     @State private var timelineCorrectionEvent: JobTimelineEvent?
     @State private var showingUnsavedChangesAlert = false
+    @State private var nextAdditionalSchedule: JobScheduledWorkday
 
     private let scheduleSectionID = "job-schedule-section"
 
@@ -45,6 +47,12 @@ struct JobDetailView: View {
     ) {
         _job = State(initialValue: job)
         _originalJob = State(initialValue: job)
+        _nextAdditionalSchedule = State(initialValue: JobScheduledWorkday(
+            scheduledDate: QuarterHourDatePicker.normalized(
+                Calendar.current.date(byAdding: .day, value: 1, to: job.allScheduledWorkDates.last ?? job.scheduledDate)
+                    ?? job.scheduledDate
+            )
+        ))
         self.scrollToScheduleOnAppear = scrollToScheduleOnAppear
         self.onSave = onSave
     }
@@ -67,9 +75,17 @@ struct JobDetailView: View {
     private var subtotalValue: Double {
         PricingCalculator.subtotal(for: job)
     }
+
+    private var discountValue: Double {
+        DiscountCalculator.amount(
+            subtotal: subtotalValue,
+            method: job.discountMethod,
+            inputValue: job.discountInputValue
+        )
+    }
     
     private var totalValue: Double {
-        PricingCalculator.total(for: job)
+        PricingCalculator.total(subtotal: subtotalValue, discount: discountValue)
     }
     
     private var calculatedLaborMinutes: Int {
@@ -184,9 +200,10 @@ struct JobDetailView: View {
     }
 
     private func correctionEvent(
-        matching types: [JobTimelineEventType]
+        matching types: [JobTimelineEventType],
+        in context: JobWorkflowContext
     ) -> JobTimelineEvent? {
-        workflowContext.timeline.last {
+        context.timeline.last {
             types.contains($0.type)
                 && $0.type != .timelineCorrected
         }
@@ -196,7 +213,8 @@ struct JobDetailView: View {
     private func lifecycleTimeRow(
         _ title: String,
         value: Date?,
-        eventTypes: [JobTimelineEventType]
+        eventTypes: [JobTimelineEventType],
+        context: JobWorkflowContext
     ) -> some View {
         HStack {
             Text(title)
@@ -204,7 +222,10 @@ struct JobDetailView: View {
             Text(lifecycleTimestamp(value))
                 .foregroundStyle(.secondary)
             if timelineCorrectionActor != nil,
-               let event = correctionEvent(matching: eventTypes) {
+               let event = correctionEvent(
+                matching: eventTypes,
+                in: context
+               ) {
                 Button {
                     timelineCorrectionEvent = event
                 } label: {
@@ -241,36 +262,77 @@ struct JobDetailView: View {
             ($0.lifecycleStatus == .active || $0.id == job.siteID)
         }
     }
+
+    private var customerDisplayName: String {
+        guard let customer = store.customers.first(where: {
+            $0.customerNumber == job.customerNumber
+        }) else {
+            return job.customerNumber
+        }
+        if !customer.businessName.isEmpty { return customer.businessName }
+        if !customer.contactName.isEmpty { return customer.contactName }
+        return job.customerNumber
+    }
     
     var body: some View {
-        ScrollViewReader { scrollProxy in
-        Form {
-            Section("Job") {
-                Text(job.jobNumber)
-                    .font(.headline)
-                
-                Text("Customer #: \(job.customerNumber)")
+        let currentWorkflowContext = workflowContext
 
-                Picker("Site", selection: $job.siteID) {
-                    Text("No site selected").tag(UUID?.none)
-                    ForEach(availableSites) { site in
-                        Text(siteDisplayName(site)).tag(Optional(site.id))
+        ScrollViewReader { scrollProxy in
+        List {
+            CompactCustomerInfoSection(
+                leadNumber: $job.leadNumber,
+                customerNumber: $job.customerNumber,
+                siteID: $job.siteID,
+                salesperson: $job.salesperson,
+                expirationDate: $job.expirationDate,
+                onSelect: { compactEditorDestination = .customerInfo }
+            )
+
+            CompactTitleSection(
+                title: $job.title,
+                onSelect: { compactEditorDestination = .title }
+            )
+
+            Section("Status") {
+                Picker("Status", selection: $job.status) {
+                    ForEach(JobStatus.allCases) { status in
+                        Text(status.rawValue).tag(status)
                     }
                 }
-                
-                if !job.estimateNumber.isEmpty {
-                    Text("Estimate: \(job.estimateNumber)")
-                }
-                
-                LabeledContent(
-                    "Status",
-                    value: workflowContext.presentation.statusTitle
+            }
+
+            if showWorkOrder {
+                WorkOrderEditorView(
+                    lineItems: $job.lineItems,
+                    isInputFocused: $isInputFocused,
+                    onAddLineItem: {
+                        PresentationDebug.log("Job detail requested catalog picker")
+                        activeSheet = .catalogPicker
+                    },
+                    onEditLineItem: { item in
+                        PresentationDebug.log(
+                            "Job detail requested editor for \(item.id)"
+                        )
+                        activeSheet = .editLineItem(item)
+                    }
                 )
             }
 
+            CompactPricingSection(
+                method: $job.discountMethod,
+                inputValue: $job.discountInputValue,
+                subtotal: subtotalValue,
+                onSelect: { compactEditorDestination = .pricing }
+            )
+
+            CompactScopeSection(
+                scope: $job.scopeOfWork,
+                onSelect: { compactEditorDestination = .scope }
+            )
+
             Section("Job Timeline") {
                 JobTimelineView(
-                    events: workflowContext.timeline,
+                    events: currentWorkflowContext.timeline,
                     employeeName: { employeeID in
                         employeeName(for: employeeID)
                     },
@@ -302,21 +364,24 @@ struct JobDetailView: View {
             Section("Time Details") {
                 lifecycleTimeRow(
                     "Setup Started",
-                    value: workflowContext.timeDetails.setupStarted,
-                    eventTypes: [.setupStarted]
+                    value: currentWorkflowContext.timeDetails.setupStarted,
+                    eventTypes: [.setupStarted],
+                    context: currentWorkflowContext
                 )
                 lifecycleTimeRow(
                     "Work Started",
-                    value: workflowContext.timeDetails.workStarted,
-                    eventTypes: [.workStarted]
+                    value: currentWorkflowContext.timeDetails.workStarted,
+                    eventTypes: [.workStarted],
+                    context: currentWorkflowContext
                 )
                 lifecycleTimeRow(
                     "Completed",
-                    value: workflowContext.timeDetails.completed,
-                    eventTypes: [.workCompleted, .jobCompleted]
+                    value: currentWorkflowContext.timeDetails.completed,
+                    eventTypes: [.workCompleted, .jobCompleted],
+                    context: currentWorkflowContext
                 )
                 LabeledContent("Time on Job") {
-                    Text(lifecycleDuration(workflowContext.timeDetails.timeOnJob))
+                    Text(lifecycleDuration(currentWorkflowContext.timeDetails.timeOnJob))
                         .fontWeight(.semibold)
                 }
                 if timelineCorrectionActor != nil {
@@ -376,7 +441,7 @@ struct JobDetailView: View {
 
             Section("Field Workflow") {
                 JobWorkflowStatusCard(
-                    context: workflowContext,
+                    context: currentWorkflowContext,
                     action: {
                         performPrimaryWorkflowAction()
                     },
@@ -404,25 +469,6 @@ struct JobDetailView: View {
                     .buttonStyle(.plain)
                 }
             }
-            if showServiceDetails {
-            Section("Service") {
-                Picker("Service Type", selection: $job.serviceType) {
-                    ForEach(ServiceType.allCases) { service in
-                        Text(service.rawValue).tag(service)
-                    }
-                }
-                
-                if job.serviceType == .other {
-                    TextField("Other Service", text: $job.otherService)
-                        .focused($isInputFocused)
-                }
-                
-                TextField("Work Notes", text: $job.workNotes, axis: .vertical)
-                    .lineLimit(3...6)
-                    .focused($isInputFocused)
-            }
-            
-            }
             if showCapacity {
             Section("Capacity Preview") {
                 if primaryEmployee == nil &&
@@ -449,47 +495,6 @@ struct JobDetailView: View {
             }
             
             }
-            if showWorkOrder {
-                WorkOrderEditorView(
-                lineItems: $job.lineItems,
-                isInputFocused: $isInputFocused,
-                onAddLineItem: {
-                    PresentationDebug.log("Job detail requested catalog picker")
-                    activeSheet = .catalogPicker
-                },
-                onEditLineItem: { item in
-                    PresentationDebug.log(
-                        "Job detail requested editor for \(item.id)"
-                    )
-                    activeSheet = .editLineItem(item)
-                }
-            )
-            
-            }
-            Section("Pricing") {
-                LabeledContent("Discount") {
-                    SelectAllDecimalField(
-                        placeholder: "Discount",
-                        value: $job.discount
-                    )
-                    .focused($isInputFocused)
-                }
-                
-                HStack {
-                    Text("Subtotal")
-                    Spacer()
-                    Text(subtotalValue, format: .currency(code: "USD"))
-                        .bold()
-                }
-                
-                HStack {
-                    Text("Total")
-                    Spacer()
-                    Text(totalValue, format: .currency(code: "USD"))
-                        .bold()
-                }
-            }
-            
             Section("Schedule") {
                 Picker(
                     "Scheduling Mode",
@@ -505,6 +510,54 @@ struct JobDetailView: View {
                 Picker("Priority", selection: $job.assignmentPriority) {
                     ForEach(AssignmentPriority.allCases) { priority in
                         Text(priority.rawValue).tag(priority)
+                    }
+                }
+
+                Toggle("Multiple Day Work", isOn: Binding(
+                    get: { !job.effectiveAdditionalWorkdaySchedules.isEmpty },
+                    set: { enabled in
+                        if enabled {
+                            job.isRecurring = false
+                            job.recurrenceFrequency = nil
+                            prepareNextAdditionalDate()
+                            if job.effectiveAdditionalWorkdaySchedules.isEmpty {
+                                job.appendAdditionalWorkday(nextAdditionalSchedule)
+                            }
+                        } else {
+                            job.additionalScheduledDates = []
+                            job.additionalWorkdaySchedules = []
+                        }
+                    }
+                ))
+
+                if !job.effectiveAdditionalWorkdaySchedules.isEmpty {
+                    JobWorkdayScheduleFields(schedule: $nextAdditionalSchedule)
+                    Button {
+                        addAdditionalScheduledDate()
+                    } label: {
+                        Label("Add Scheduled Day", systemImage: "calendar.badge.plus")
+                    }
+                    .disabled(!canAddAdditionalScheduledDate)
+
+                    ForEach(job.effectiveAdditionalWorkdaySchedules) { workday in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(workday.scheduledDate.formatted(date: .abbreviated, time: .omitted))
+                                Text(workday.schedulingMode.rawValue)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(workday.scheduledDate.formatted(date: .omitted, time: .shortened))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button(role: .destructive) {
+                                job.removeAdditionalWorkday(on: workday.scheduledDate)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                        }
                     }
                 }
 
@@ -658,6 +711,7 @@ struct JobDetailView: View {
                 }
             }
         }
+        .listStyle(.insetGrouped)
         .onAppear {
             if scrollToScheduleOnAppear {
                 Task { @MainActor in
@@ -726,6 +780,20 @@ struct JobDetailView: View {
         } message: {
             Text("This job has changes that have not been saved.")
         }
+        .compactWorkOrderEditorSheet(
+            destination: $compactEditorDestination,
+            leadNumber: $job.leadNumber,
+            customerNumber: $job.customerNumber,
+            siteID: $job.siteID,
+            salesperson: $job.salesperson,
+            expirationDate: $job.expirationDate,
+            title: $job.title,
+            discountMethod: $job.discountMethod,
+            discountInputValue: $job.discountInputValue,
+            subtotal: subtotalValue,
+            scope: $job.scopeOfWork,
+            store: store
+        )
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .catalogPicker:
@@ -1048,8 +1116,15 @@ struct JobDetailView: View {
                 ? enteredScheduledDurationMinutes
                 : nil
 
+        job.normalizeAdditionalScheduledDates()
+
         job.lineItems = PricingCalculator.updatedLineItems(job.lineItems)
         job.subtotal = PricingCalculator.subtotal(for: job)
+        job.discount = DiscountCalculator.amount(
+            subtotal: job.subtotal,
+            method: job.discountMethod,
+            inputValue: job.discountInputValue
+        )
         job.total = PricingCalculator.total(for: job)
         store.updateJob(job)
 
@@ -1065,6 +1140,32 @@ struct JobDetailView: View {
         if shouldDismiss {
             dismiss()
         }
+    }
+
+    private var canAddAdditionalScheduledDate: Bool {
+        let calendar = Calendar.current
+        return !calendar.isDate(nextAdditionalSchedule.scheduledDate, inSameDayAs: job.scheduledDate)
+            && !job.effectiveAdditionalWorkdaySchedules.contains(where: {
+                calendar.isDate($0.scheduledDate, inSameDayAs: nextAdditionalSchedule.scheduledDate)
+            })
+    }
+
+    private func addAdditionalScheduledDate() {
+        guard canAddAdditionalScheduledDate else { return }
+        var schedule = nextAdditionalSchedule
+        schedule.normalize()
+        job.appendAdditionalWorkday(schedule)
+        prepareNextAdditionalDate()
+    }
+
+    private func prepareNextAdditionalDate() {
+        let base = job.allScheduledWorkDates.last ?? job.scheduledDate
+        nextAdditionalSchedule = JobScheduledWorkday(
+            scheduledDate: QuarterHourDatePicker.normalized(
+                Calendar.current.date(byAdding: .day, value: 1, to: base) ?? base
+            ),
+            schedulingMode: nextAdditionalSchedule.schedulingMode
+        )
     }
 
     private func refreshJobFromStore() {

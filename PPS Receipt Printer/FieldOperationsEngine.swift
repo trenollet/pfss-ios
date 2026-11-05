@@ -268,7 +268,7 @@ struct FieldOperationsEngine {
         case .travelPaused:
             return .init(statusTitle: "Travel Paused", statusSystemImage: "pause.circle.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false, isClosed: false)
         case .arrived:
-            return .init(statusTitle: "Arrived", statusSystemImage: "mappin.circle.fill", accent: .blue, completionTitle: nil, isTechnicianComplete: false, isClosed: false)
+            return .init(statusTitle: "Setting Up", statusSystemImage: "wrench.and.screwdriver.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false, isClosed: false)
         case .settingUp:
             return .init(statusTitle: "Setting Up", statusSystemImage: "wrench.and.screwdriver.fill", accent: .orange, completionTitle: nil, isTechnicianComplete: false, isClosed: false)
         case .working:
@@ -410,7 +410,7 @@ struct FieldOperationsEngine {
 
         updated.workflowState = transition.state
 
-        if action == .startSetup,
+        if action == .startSetup || action == .markArrived,
            updated.setupStartDate == nil {
             updated.setupStartDate = timestamp
         }
@@ -434,6 +434,16 @@ struct FieldOperationsEngine {
                 note: normalizedNote(note)
             )
         )
+
+        if action == .markArrived {
+            updated.timelineEvents.append(JobTimelineEvent(
+                type: .setupStarted,
+                title: "Setup Started",
+                timestamp: timestamp,
+                employeeID: employeeID,
+                note: nil
+            ))
+        }
 
         switch transition.state {
         case .traveling,
@@ -619,7 +629,7 @@ struct FieldOperationsEngine {
         case .travelPaused:
             return .resumeTravel
         case .arrived:
-            return .startSetup
+            return .startWork
         case .settingUp:
             return .startWork
         case .working:
@@ -684,6 +694,7 @@ struct FieldOperationsEngine {
              (.travelPaused, .resumeTravel),
              (.traveling, .markArrived),
              (.arrived, .startSetup),
+             (.arrived, .startWork),
              (.settingUp, .startWork),
              (.working, .pauseWork),
              (.paused, .resumeWork),
@@ -715,7 +726,7 @@ struct FieldOperationsEngine {
         case .resumeTravel:
             return (.traveling, .travelResumed, "Travel Resumed")
         case .markArrived:
-            return (.arrived, .arrived, "Arrived On Site")
+            return (.settingUp, .arrived, "Arrived On Site")
         case .startSetup:
             return (.settingUp, .setupStarted, "Setup Started")
         case .startWork:
@@ -747,7 +758,7 @@ struct FieldOperationsEngine {
         case .notStarted: return [.startTravel]
         case .traveling: return [.pauseTravel, .markArrived]
         case .travelPaused: return [.resumeTravel]
-        case .arrived: return [.startSetup]
+        case .arrived: return [.startWork]
         case .settingUp: return [.startWork]
         case .working: return [.pauseWork, .startPackUp]
         case .paused: return [.resumeWork]

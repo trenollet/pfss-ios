@@ -22,6 +22,8 @@ struct EditableLineItemView: View {
     @State private var quantity = "1"
     @State private var unitPrice = ""
     @State private var estimatedMinutesPerUnit = ""
+    @State private var discountMethod: PricingDiscountMethod = .fixedAmount
+    @State private var discountInputValue: Double = 0
 
     @FocusState private var isInputFocused: Bool
 
@@ -40,8 +42,20 @@ struct EditableLineItemView: View {
         max(Double(estimatedMinutesPerUnit) ?? 0, 0)
     }
 
+    private var grossLineTotal: Double {
+        max(quantityValue * unitPriceValue, 0)
+    }
+
+    private var itemDiscountAmount: Double {
+        DiscountCalculator.amount(
+            subtotal: grossLineTotal,
+            method: discountMethod,
+            inputValue: discountInputValue
+        )
+    }
+
     private var lineTotal: Double {
-        quantityValue * unitPriceValue
+        max(grossLineTotal - itemDiscountAmount, 0)
     }
 
     var body: some View {
@@ -81,6 +95,20 @@ struct EditableLineItemView: View {
                         )
                         .frame(minWidth: 90, minHeight: 30)
                         .focused($isInputFocused)
+                    }
+
+                    DiscountEditorRows(
+                        title: "Item Discount",
+                        method: $discountMethod,
+                        inputValue: $discountInputValue,
+                        subtotal: grossLineTotal
+                    )
+
+                    if itemDiscountAmount > 0 {
+                        LabeledContent("Before Discount") {
+                            Text(grossLineTotal, format: .currency(code: "USD"))
+                                .foregroundStyle(.secondary)
+                        }
                     }
 
                     HStack {
@@ -135,6 +163,8 @@ struct EditableLineItemView: View {
             estimatedMinutesPerUnit = existingLineItem.estimatedMinutesPerUnit.formatted(
                 .number.precision(.fractionLength(0...1))
             )
+            discountMethod = existingLineItem.discountMethod
+            discountInputValue = existingLineItem.discountInputValue
             return
         }
 
@@ -168,6 +198,8 @@ struct EditableLineItemView: View {
             quantity: quantityValue,
             unitPrice: unitPriceValue,
             lineTotal: lineTotal,
+            discountMethod: discountMethod,
+            discountInputValue: discountInputValue,
             estimatedMinutesPerUnit: estimatedMinutesValue
         )
 

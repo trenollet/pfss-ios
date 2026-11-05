@@ -20,6 +20,8 @@ struct CustomLineItemView: View {
     @State private var unitPrice = ""
     @State private var itemType: CatalogItemType = .service
     @State private var taxTreatment: TaxTreatment = .nonTaxable
+    @State private var discountMethod: PricingDiscountMethod = .fixedAmount
+    @State private var discountInputValue: Double = 0
 
     @FocusState private var isInputFocused: Bool
 
@@ -31,8 +33,20 @@ struct CustomLineItemView: View {
         Double(unitPrice) ?? 0
     }
 
+    private var grossLineTotal: Double {
+        max(quantityValue * unitPriceValue, 0)
+    }
+
+    private var itemDiscountAmount: Double {
+        DiscountCalculator.amount(
+            subtotal: grossLineTotal,
+            method: discountMethod,
+            inputValue: discountInputValue
+        )
+    }
+
     private var lineTotal: Double {
-        quantityValue * unitPriceValue
+        max(grossLineTotal - itemDiscountAmount, 0)
     }
 
     var body: some View {
@@ -68,6 +82,13 @@ struct CustomLineItemView: View {
                             .frame(minWidth: 90, minHeight: 30)
                             .focused($isInputFocused)
                     }
+
+                    DiscountEditorRows(
+                        title: "Item Discount",
+                        method: $discountMethod,
+                        inputValue: $discountInputValue,
+                        subtotal: grossLineTotal
+                    )
 
                     HStack {
                         Text("Line Total")
@@ -123,7 +144,9 @@ struct CustomLineItemView: View {
             description: itemDescription,
             quantity: quantityValue,
             unitPrice: unitPriceValue,
-            lineTotal: lineTotal
+            lineTotal: lineTotal,
+            discountMethod: discountMethod,
+            discountInputValue: discountInputValue
         )
 
         lineItems.append(item)

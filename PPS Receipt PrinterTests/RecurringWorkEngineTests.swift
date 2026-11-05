@@ -405,6 +405,45 @@ struct RecurringWorkEngineTests {
         #expect(store.assignment(forJobID: selected.id)?.scheduling.fixedStartDate == movedDate)
     }
 
+    @MainActor
+    @Test func skippingOneOccurrencePreservesFutureJobsAndRemovesItsAssignment() throws {
+        let originalDate = try testDate(year: 2026, month: 8, day: 10)
+        let futureDate = try testDate(year: 2026, month: 8, day: 17)
+        let template = makeTemplate(anchor: originalDate, rule: .weekly)
+
+        var selected = template.prototype
+        selected.recurringWorkTemplateID = template.id
+        selected.recurrenceSeriesID = template.id
+        selected.recurrenceSequence = 0
+
+        var future = template.prototype
+        future.id = UUID()
+        future.recurringWorkTemplateID = template.id
+        future.recurrenceSeriesID = template.id
+        future.recurrenceSequence = 1
+        future.scheduledDate = futureDate
+
+        let store = AppDataStore(persistenceEnabled: false)
+        store.recurringWorkTemplates = [template]
+        store.jobs = [selected, future]
+        store.synchronizeAssignmentsFromJobs()
+        #expect(store.assignment(forJobID: selected.id) != nil)
+
+        store.skipRecurringOccurrence(
+            jobID: selected.id,
+            reason: "Scheduling conflict.",
+            at: originalDate
+        )
+
+        #expect(store.jobs.contains(where: { $0.id == selected.id }) == false)
+        #expect(store.jobs.contains(where: { $0.id == future.id }))
+        #expect(store.assignment(forJobID: selected.id) == nil)
+        #expect(store.recurringWorkTemplates.first?.exceptions.contains(where: {
+            $0.occurrenceIndex == selected.recurrenceSequence &&
+            $0.kind == .skipped
+        }) == true)
+    }
+
     private func makeTemplate(
         anchor: Date,
         rule: RecurringWorkRule

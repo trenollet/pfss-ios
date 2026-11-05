@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Combine
 
 struct AdminView: View {
     @EnvironmentObject private var store: AppDataStore
@@ -14,6 +15,7 @@ struct AdminView: View {
     @State private var logoutError = ""
     @State private var isShowingLogoutError = false
     @State private var canViewSynchronizationHealth = false
+    @State private var offlineQueueRevision = 0
 
     private var appVersion: String {
         Bundle.main.object(
@@ -166,6 +168,22 @@ struct AdminView: View {
                             systemImage: "sparkles"
                         )
                     }
+                    NavigationLink {
+                        PressureWashingPricingSettingsView()
+                    } label: {
+                        Label(
+                            "Wash Pricing Settings",
+                            systemImage: "dollarsign.arrow.circlepath"
+                        )
+                    }
+                    NavigationLink {
+                        PaintingPricingSettingsView()
+                    } label: {
+                        Label(
+                            "Painting Pricing Settings",
+                            systemImage: "paintbrush.fill"
+                        )
+                    }
                     }
                 }
 
@@ -214,6 +232,23 @@ struct AdminView: View {
                                     try store.resolveRecordConflict(
                                         operationID: operationID,
                                         resolution: resolution
+                                    )
+                                },
+                                employees: store.employees,
+                                onResolveQuarantine: {
+                                    operationID, resolution, reason in
+                                    try await store.resolveInboxQuarantine(
+                                        operationID: operationID,
+                                        resolution: resolution,
+                                        reason: reason
+                                    )
+                                },
+                                onRepairAssignmentQuarantine: {
+                                    operationID, assignment, reason in
+                                    try await store.repairAssignmentQuarantine(
+                                        operationID: operationID,
+                                        repairedAssignment: assignment,
+                                        reason: reason
                                     )
                                 }
                             )
@@ -332,6 +367,9 @@ struct AdminView: View {
         } message: {
             Text(logoutError)
         }
+        .onReceive(store.offlineOperationQueue.objectWillChange) { _ in
+            offlineQueueRevision &+= 1
+        }
     }
 }
 
@@ -351,12 +389,7 @@ private struct JobTimerReminderSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("After Arriving", selection: $arrivalToSetupMinutes) {
-                    ForEach(choices, id: \.self) { minutes in
-                        Text(label(for: minutes)).tag(minutes)
-                    }
-                }
-                Picker("After Starting Setup", selection: $setupToWorkMinutes) {
+                Picker("After Arriving / Starting Setup", selection: $setupToWorkMinutes) {
                     ForEach(choices, id: \.self) { minutes in
                         Text(label(for: minutes)).tag(minutes)
                     }
@@ -365,7 +398,7 @@ private struct JobTimerReminderSettingsView: View {
                 Text("Reminder Timing")
             } footer: {
                 Text(
-                    "PFSS reminds you if Setup has not started after arrival, or Work has not started after Setup. These settings belong to your user profile."
+                    "Arriving automatically starts Setup. PFSS reminds you if Work has not started after this step. These settings belong to your user profile."
                 )
             }
 

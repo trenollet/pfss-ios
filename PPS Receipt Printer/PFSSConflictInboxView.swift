@@ -610,13 +610,23 @@ struct PFSSQuarantineInboxItem: Identifiable {
 }
 
 enum PFSSQuarantineInbox {
+    static func isUnresolvedServerQuarantine(
+        _ operation: PendingOfflineOperation
+    ) -> Bool {
+        guard operation.metadata["serverQuarantineID"] != nil else {
+            return false
+        }
+        guard operation.metadata["serverQuarantineStatus"] != "resolved",
+              operation.metadata["quarantineResolvedAt"] == nil else {
+            return false
+        }
+        return true
+    }
+
     static func unresolvedItems(
         in operations: [PendingOfflineOperation]
     ) -> [PFSSQuarantineInboxItem] {
-        operations.filter {
-            $0.metadata["serverQuarantineID"] != nil &&
-            $0.metadata["serverQuarantineStatus"] == "unresolved"
-        }
+        operations.filter(isUnresolvedServerQuarantine)
         .map(PFSSQuarantineInboxItem.init)
         .sorted { $0.detectedAt < $1.detectedAt }
     }
@@ -628,12 +638,14 @@ struct PFSSQuarantineInboxView: View {
     let onResolve:
         (UUID, OfflineQuarantineResolution, String) async throws -> Void
     let onRepairAssignment: (UUID, Assignment, String) async throws -> Void
+    var initiallySelectedOperationID: UUID? = nil
 
     @State private var selectedItem: PFSSQuarantineInboxItem?
     @State private var reason = ""
     @State private var isResolving = false
     @State private var errorMessage = ""
     @State private var isShowingError = false
+    @State private var didApplyInitialSelection = false
 
     private var items: [PFSSQuarantineInboxItem] {
         PFSSQuarantineInbox.unresolvedItems(in: queue.orderedOperations)
@@ -695,6 +707,15 @@ struct PFSSQuarantineInboxView: View {
         }
         .navigationTitle("Quarantine Inbox")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            guard !didApplyInitialSelection,
+                  selectedItem == nil,
+                  let initiallySelectedOperationID else { return }
+            didApplyInitialSelection = true
+            selectedItem = items.first {
+                $0.operation.id == initiallySelectedOperationID
+            }
+        }
         .sheet(item: $selectedItem) { item in
             NavigationStack { review(item) }
         }

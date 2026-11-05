@@ -15,6 +15,7 @@ struct EstimateDetailView: View {
     @FocusState private var isInputFocused: Bool
     
     @State private var activeSheet: ActiveSheet?
+    @State private var compactEditorDestination: CompactWorkOrderEditorDestination?
     @State private var sharedPDFURL: URL?
     @State private var pdfErrorMessage: String?
     @State private var isShowingPDFError = false
@@ -38,8 +39,16 @@ struct EstimateDetailView: View {
         PricingCalculator.subtotal(for: estimate)
     }
 
+    private var discountValue: Double {
+        DiscountCalculator.amount(
+            subtotal: subtotalValue,
+            method: estimate.discountMethod,
+            inputValue: estimate.discountInputValue
+        )
+    }
+
     private var totalValue: Double {
-        PricingCalculator.total(for: estimate)
+        PricingCalculator.total(subtotal: subtotalValue, discount: discountValue)
     }
 
     private var availableSites: [CustomerSite] {
@@ -50,31 +59,27 @@ struct EstimateDetailView: View {
     }
 
     var body: some View {
-        Form {
-            Section("Estimate") {
-                Text(estimate.estimateNumber)
-                    .font(.headline)
+        List {
+            CompactCustomerInfoSection(
+                leadNumber: $estimate.leadNumber,
+                customerNumber: $estimate.customerNumber,
+                siteID: $estimate.siteID,
+                salesperson: $estimate.salesperson,
+                expirationDate: $estimate.expirationDate,
+                onSelect: { compactEditorDestination = .customerInfo }
+            )
 
-                Text("Customer #: \(estimate.customerNumber)")
+            CompactTitleSection(
+                title: $estimate.title,
+                onSelect: { compactEditorDestination = .title }
+            )
 
-                Picker("Site", selection: $estimate.siteID) {
-                    Text("No site selected").tag(UUID?.none)
-                    ForEach(availableSites) { site in
-                        Text(siteDisplayName(site)).tag(Optional(site.id))
-                    }
-                }
-
-                if !estimate.leadNumber.isEmpty {
-                    Text("Lead: \(estimate.leadNumber)")
-                }
-
+            Section("Status") {
                 Picker("Status", selection: $estimate.status) {
                     ForEach(EstimateRecordStatus.allCases) { status in
                         Text(status.rawValue).tag(status)
                     }
                 }
-
-                DatePicker("Expiration Date", selection: $estimate.expirationDate, displayedComponents: .date)
             }
 
             WorkOrderEditorView(
@@ -92,42 +97,29 @@ struct EstimateDetailView: View {
                 }
             )
 
-            Section("Pricing") {
-                LabeledContent("Discount") {
-                    SelectAllDecimalField(
-                        placeholder: "Discount",
-                        value: $estimate.discount
-                    )
-                    .focused($isInputFocused)
-                }
+            CompactPricingSection(
+                method: $estimate.discountMethod,
+                inputValue: $estimate.discountInputValue,
+                subtotal: subtotalValue,
+                onSelect: { compactEditorDestination = .pricing }
+            )
 
+            CompactScopeSection(
+                scope: $estimate.scopeOfWork,
+                onSelect: { compactEditorDestination = .scope }
+            )
+
+            Section("Scheduling") {
                 HStack {
-                    Text("Subtotal")
+                    Text("Estimated Labor")
                     Spacer()
-                    Text(subtotalValue, format: .currency(code: "USD"))
-                        .bold()
-                }
-
-                HStack {
-                    Text("Total")
-                    Spacer()
-                    Text(totalValue, format: .currency(code: "USD"))
-                        .bold()
-                }
-                Section("Scheduling") {
-                    HStack {
-                        Text("Estimated Labor")
-
-                        Spacer()
-
-                        Text(
-                            SchedulingCalculator.formattedDuration(
-                                for: estimate.lineItems
-                            )
+                    Text(
+                        SchedulingCalculator.formattedDuration(
+                            for: estimate.lineItems
                         )
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.blue)
-                    }
+                    )
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.blue)
                 }
             }
 
@@ -135,27 +127,43 @@ struct EstimateDetailView: View {
                 Button {
                     createAndSharePDF()
                 } label: {
-                    HStack {
-                        Spacer()
+                    ZStack {
+                        Text("Share Estimate")
+                            .frame(maxWidth: .infinity)
 
-                        Label(
-                            "Share Estimate",
-                            systemImage: "square.and.arrow.up"
-                        )
-
-                        Spacer()
+                        HStack {
+                            Image(systemName: "square.and.arrow.up")
+                            Spacer()
+                        }
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                Button("Create Job from Estimate") {
-                    estimate.lineItems = PricingCalculator.updatedLineItems(estimate.lineItems)
+                .tint(.green)
+
+                Button {
+                    estimate.lineItems = PricingCalculator.updatedLineItems(
+                        estimate.lineItems
+                    )
                     estimate.subtotal = subtotalValue
+                    estimate.discount = discountValue
                     estimate.total = totalValue
 
                     store.updateEstimate(estimate)
                     store.createJobFromEstimate(estimate)
                     dismiss()
+                } label: {
+                    ZStack {
+                        Text("Create Job from Estimate")
+                            .frame(maxWidth: .infinity)
+
+                        HStack {
+                            Image(systemName: "briefcase.fill")
+                            Spacer()
+                        }
+                    }
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
                 .disabled(estimate.lifecycleStatus == .archived)
 
                 if estimate.lifecycleStatus == .archived {
@@ -178,6 +186,7 @@ struct EstimateDetailView: View {
                 }
             }
         }
+        .listStyle(.insetGrouped)
         .navigationTitle("Edit Estimate")
         .toolbar {
             EditorKeyboardDismissAction(isVisible: isInputFocused) {
@@ -191,6 +200,20 @@ struct EstimateDetailView: View {
             }
 
         }
+        .compactWorkOrderEditorSheet(
+            destination: $compactEditorDestination,
+            leadNumber: $estimate.leadNumber,
+            customerNumber: $estimate.customerNumber,
+            siteID: $estimate.siteID,
+            salesperson: $estimate.salesperson,
+            expirationDate: $estimate.expirationDate,
+            title: $estimate.title,
+            discountMethod: $estimate.discountMethod,
+            discountInputValue: $estimate.discountInputValue,
+            subtotal: subtotalValue,
+            scope: $estimate.scopeOfWork,
+            store: store
+        )
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .catalogPicker:
@@ -251,6 +274,11 @@ struct EstimateDetailView: View {
 
         estimate.lineItems = PricingCalculator.updatedLineItems(estimate.lineItems)
         estimate.subtotal = PricingCalculator.subtotal(for: estimate)
+        estimate.discount = DiscountCalculator.amount(
+            subtotal: estimate.subtotal,
+            method: estimate.discountMethod,
+            inputValue: estimate.discountInputValue
+        )
         estimate.total = PricingCalculator.total(for: estimate)
 
         if let firstItem = estimate.lineItems.first {
@@ -275,6 +303,12 @@ struct EstimateDetailView: View {
 
         estimate.subtotal = PricingCalculator.subtotal(
             for: estimate
+        )
+
+        estimate.discount = DiscountCalculator.amount(
+            subtotal: estimate.subtotal,
+            method: estimate.discountMethod,
+            inputValue: estimate.discountInputValue
         )
 
         estimate.total = PricingCalculator.total(

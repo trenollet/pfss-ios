@@ -11,6 +11,52 @@ import XCTest
 
 @MainActor
 final class OfflineWorkflowIntegrationTests: XCTestCase {
+    func testJobReminderNotificationResolvesToSpecificJob() {
+        let jobID = UUID()
+
+        XCTAssertEqual(
+            PFSSNotificationRouteResolver.destination(
+                categoryIdentifier:
+                    PFSSJobStartReminderService.categoryIdentifier,
+                threadIdentifier: "pfss-job-workflow",
+                userInfo: [
+                    "pfssDestination": "job",
+                    "jobID": jobID.uuidString
+                ]
+            ),
+            .job(jobID)
+        )
+    }
+
+    func testMileageNotificationsResolveFromNewAndLegacyPayloads() {
+        XCTAssertEqual(
+            PFSSNotificationRouteResolver.destination(
+                categoryIdentifier: "",
+                threadIdentifier: "pfss-mileage",
+                userInfo: [:]
+            ),
+            .mileage
+        )
+        XCTAssertEqual(
+            PFSSNotificationRouteResolver.destination(
+                categoryIdentifier: "",
+                threadIdentifier: "",
+                userInfo: ["pfssDestination": "mileage"]
+            ),
+            .mileage
+        )
+    }
+
+    func testSynchronizationWakeDoesNotResolveToVisibleNavigation() {
+        XCTAssertNil(
+            PFSSNotificationRouteResolver.destination(
+                categoryIdentifier: "",
+                threadIdentifier: "",
+                userInfo: ["pfss": "syncWake"]
+            )
+        )
+    }
+
     func testPhysicalDeviceWorkflowFixturesAreRecognizedForNotificationCleanup() {
         XCTAssertTrue(PFSSJobStartReminderService.isTestFixtureJobNumber(
             "JOB-OFFLINE-TRAVEL-PAUSE"
@@ -115,7 +161,7 @@ final class OfflineWorkflowIntegrationTests: XCTestCase {
 
         XCTAssertEqual(
             store.jobs.first(where: { $0.id == job.id })?.workflowState,
-            .arrived
+            .settingUp
         )
         XCTAssertEqual(
             queue.orderedOperations
@@ -173,7 +219,6 @@ final class OfflineWorkflowIntegrationTests: XCTestCase {
         let actions: [JobWorkflowAction] = [
             .startTravel,
             .markArrived,
-            .startSetup,
             .startWork,
             .startPackUp,
             .finishWork,
@@ -431,7 +476,9 @@ final class OfflineWorkflowIntegrationTests: XCTestCase {
         ))
 
         let savedJob = try XCTUnwrap(store.jobs.first { $0.id == job.id })
-        XCTAssertEqual(savedJob.workflowState, .arrived)
+        XCTAssertEqual(savedJob.workflowState, .settingUp)
+        XCTAssertEqual(savedJob.setupStartDate, Date(timeIntervalSince1970: 80_003))
+        XCTAssertEqual(myDayCoordinator.workflowContext(for: job.id)?.nextAction, .startWork)
         XCTAssertEqual(
             myDayCoordinator.workflowContext(for: job.id)?.currentState,
             jobDetailCoordinator.workflowContext(for: job.id)?.currentState
@@ -443,8 +490,8 @@ final class OfflineWorkflowIntegrationTests: XCTestCase {
             actions.map(\.rawValue)
         )
         XCTAssertEqual(
-            savedJob.timelineEvents.suffix(actions.count).map(\.type),
-            [.travelStarted, .travelPaused, .travelResumed, .arrived]
+            savedJob.timelineEvents.suffix(actions.count + 1).map(\.type),
+            [.travelStarted, .travelPaused, .travelResumed, .arrived, .setupStarted]
         )
     }
 
@@ -463,7 +510,6 @@ final class OfflineWorkflowIntegrationTests: XCTestCase {
             .pauseTravel,
             .resumeTravel,
             .markArrived,
-            .startSetup,
             .startWork,
             .pauseWork,
             .resumeWork,
@@ -499,7 +545,7 @@ final class OfflineWorkflowIntegrationTests: XCTestCase {
             actions.map(\.rawValue)
         )
         XCTAssertEqual(
-            savedJob.timelineEvents.suffix(actions.count).map(\.type),
+            savedJob.timelineEvents.suffix(actions.count + 1).map(\.type),
             [
                 .travelStarted,
                 .travelPaused,
@@ -553,7 +599,6 @@ final class OfflineWorkflowIntegrationTests: XCTestCase {
         let interruptionActions: [JobWorkflowAction] = [
             .startTravel,
             .markArrived,
-            .startSetup,
             .startWork,
             .startPackUp,
             .finishWork,
@@ -571,7 +616,6 @@ final class OfflineWorkflowIntegrationTests: XCTestCase {
         let resumedActions: [JobWorkflowAction] = [
             .resumeTravel,
             .markArrived,
-            .startSetup,
             .startWork,
             .pauseWork,
             .resumeWork

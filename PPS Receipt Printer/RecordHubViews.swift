@@ -636,6 +636,7 @@ private func searchableEstimateText(_ estimate: EstimateRecord, store: AppDataSt
     let site = store.sites.first { $0.id == estimate.siteID }
     return [
         estimate.estimateNumber,
+        estimate.title,
         estimate.customerNumber,
         customer?.businessName ?? "",
         customer?.contactName ?? "",
@@ -643,6 +644,7 @@ private func searchableEstimateText(_ estimate: EstimateRecord, store: AppDataSt
         site?.serviceAddress ?? "",
         estimate.status.rawValue,
         estimate.salesperson,
-        estimate.serviceDetails
+        estimate.serviceDetails,
+        estimate.scopeOfWork
     ].joined(separator: " ")
 }

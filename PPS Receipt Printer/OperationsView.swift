@@ -8,6 +8,7 @@
 //
 
 import SwiftUI
+import Combine
 
 struct OperationsView: View {
 
@@ -15,6 +16,7 @@ struct OperationsView: View {
     @State private var selectedAssignmentID: UUID?
     @State private var operationErrorMessage = ""
     @State private var showingOperationError = false
+    @State private var offlineQueueRevision = 0
 
     private let calendar = Calendar.current
 
@@ -79,68 +81,12 @@ struct OperationsView: View {
     }
 
     private var revenueSummary: RevenueSummary {
-        let scheduledRevenue = todayJobs
-            .filter {
-                $0.status != .cancelled &&
-                $0.status != .completed
-            }
-            .reduce(0.0) {
-                $0 + max($1.total, 0)
-            }
-
-        let completedRevenue = activeJobs
-            .filter { job in
-                guard job.status == .completed else {
-                    return false
-                }
-
-                if let completedDate = job.completedDate {
-                    return calendar.isDate(
-                        completedDate,
-                        inSameDayAs: now
-                    )
-                }
-
-                return calendar.isDate(
-                    job.scheduledDate,
-                    inSameDayAs: now
-                )
-            }
-            .reduce(0.0) {
-                $0 + max($1.total, 0)
-            }
-
-        let todaysInvoices = store.activeInvoices.filter {
-            calendar.isDate(
-                $0.issueDate,
-                inSameDayAs: now
-            )
-        }
-
-        let invoicedRevenue = todaysInvoices.reduce(0.0) {
-            $0 + max($1.total, 0)
-        }
-
-        let collectedRevenue = store.activeInvoices
-            .filter { invoice in
-                guard let paidDate = invoice.paidDate else {
-                    return false
-                }
-
-                return calendar.isDate(
-                    paidDate,
-                    inSameDayAs: now
-                )
-            }
-            .reduce(0.0) {
-                $0 + max($1.amountPaid, 0)
-            }
-
-        return RevenueSummary(
-            scheduled: scheduledRevenue,
-            completed: completedRevenue,
-            invoiced: invoicedRevenue,
-            collected: collectedRevenue
+        RevenueSummaryEngine.summary(
+            for: .daily,
+            jobs: store.activeJobs,
+            invoices: store.invoices,
+            now: now,
+            calendar: calendar
         )
     }
 
@@ -180,6 +126,9 @@ struct OperationsView: View {
             Button("OK", role: .cancel) { }
         } message: {
             Text(operationErrorMessage)
+        }
+        .onReceive(store.offlineOperationQueue.objectWillChange) { _ in
+            offlineQueueRevision &+= 1
         }
     }
 
@@ -334,6 +283,23 @@ struct OperationsView: View {
                             operationID: operationID,
                             resolution: resolution
                         )
+                    },
+                    employees: store.employees,
+                    onResolveQuarantine: {
+                        operationID, resolution, reason in
+                        try await store.resolveInboxQuarantine(
+                            operationID: operationID,
+                            resolution: resolution,
+                            reason: reason
+                        )
+                    },
+                    onRepairAssignmentQuarantine: {
+                        operationID, assignment, reason in
+                        try await store.repairAssignmentQuarantine(
+                            operationID: operationID,
+                            repairedAssignment: assignment,
+                            reason: reason
+                        )
                     }
                 )
             }
@@ -431,7 +397,7 @@ struct OperationsView: View {
                 subtitle: "Collected today",
                 color: .green
             ) {
-                OperationsRevenueView(summary: revenueSummary)
+                OperationsRevenueView()
             }
             case "recommendations":
             operationsTile(

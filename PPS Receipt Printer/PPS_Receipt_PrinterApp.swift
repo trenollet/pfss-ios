@@ -73,6 +73,9 @@ private struct PFSSAppDataSessionView: View {
     var body: some View {
         PFSSProtectedRootView()
             .environmentObject(store)
+            .onAppear {
+                PFSSWatchWorkflowBridge.shared.bind(store: store)
+            }
             .task {
                 await MileageLocationCoordinator.shared
                     .configureFromCurrentSession()

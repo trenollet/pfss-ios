@@ -9,6 +9,11 @@ import XCTest
 
 @MainActor
 final class SynchronizationMutationEnvelopeTests: XCTestCase {
+    private struct RapidSyncRecord: Codable, Equatable {
+        var name: String
+        var note: String
+    }
+
     private struct PolicyContract: Decodable {
         var schemaVersion: Int
         var commandsByEntity: [String: [String: [String]]]
@@ -410,6 +415,93 @@ final class SynchronizationMutationEnvelopeTests: XCTestCase {
             XCTAssertEqual(classification.commandName, expectedCommand, field)
             XCTAssertEqual(classification.changedFields, [field], field)
         }
+    }
+
+    func testRapidUntouchedRecordSavesCoalesceIntoLatestSnapshot() throws {
+        let queue = OfflineOperationQueue(
+            persistence: TransientOfflineOperationQueuePersistence()
+        )
+        let store = AppDataStore(
+            offlineOperationQueue: queue,
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
+        )
+        let id = UUID()
+        let base = RapidSyncRecord(name: "Original", note: "")
+        let first = RapidSyncRecord(name: "First", note: "")
+        let latest = RapidSyncRecord(name: "Latest", note: "Field note")
+
+        store.enqueueRecordMutation(
+            entityType: .customer,
+            entityID: id,
+            value: first,
+            baseRecordData: try encoder.encode(base)
+        )
+        store.enqueueRecordMutation(
+            entityType: .customer,
+            entityID: id,
+            value: latest,
+            baseRecordData: try encoder.encode(first)
+        )
+
+        let queued = queue.orderedOperations.filter {
+            $0.type == .recordMutation && $0.entityID == id
+        }
+        XCTAssertEqual(queued.count, 1)
+        XCTAssertEqual(queued.first?.metadata["coalescedSaveCount"], "2")
+        let envelope = try XCTUnwrap(queued.first).payload.decode(
+            SynchronizationMutationEnvelope.self,
+            decoder: decoder
+        )
+        XCTAssertEqual(
+            try decoder.decode(RapidSyncRecord.self, from: try XCTUnwrap(envelope.recordData)),
+            latest
+        )
+        XCTAssertEqual(
+            try decoder.decode(RapidSyncRecord.self, from: try XCTUnwrap(envelope.baseRecordData)),
+            base
+        )
+        XCTAssertEqual(Set(envelope.changedFields), Set(["name", "note"]))
+    }
+
+    func testWorkflowBarrierPreventsRecordSnapshotCompactionAcrossIntent() throws {
+        let queue = OfflineOperationQueue(
+            persistence: TransientOfflineOperationQueuePersistence()
+        )
+        let store = AppDataStore(
+            offlineOperationQueue: queue,
+            offlineSynchronizationMode: .queueRemoteOperations,
+            persistenceEnabled: false
+        )
+        let id = UUID()
+        let base = RapidSyncRecord(name: "Original", note: "")
+        let first = RapidSyncRecord(name: "First", note: "")
+        let latest = RapidSyncRecord(name: "Latest", note: "")
+        store.enqueueRecordMutation(
+            entityType: .job,
+            entityID: id,
+            value: first,
+            baseRecordData: try encoder.encode(base)
+        )
+        _ = try queue.enqueue(PendingOfflineOperation(
+            type: .workflowAction,
+            entityType: .job,
+            entityID: id,
+            actionName: "startWork",
+            payload: OfflineOperationPayload(
+                contentType: "test.workflow",
+                body: Data("start".utf8)
+            )
+        ))
+        store.enqueueRecordMutation(
+            entityType: .job,
+            entityID: id,
+            value: latest,
+            baseRecordData: try encoder.encode(first)
+        )
+
+        XCTAssertEqual(queue.orderedOperations.count, 3)
+        XCTAssertNil(queue.orderedOperations.first?.metadata["coalescedSaveCount"])
     }
 
     private var encoder: JSONEncoder {

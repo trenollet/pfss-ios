@@ -18,6 +18,8 @@ struct ServiceCatalogPickerView: View {
     @State private var searchText = ""
     @State private var showingNewCatalogItem = false
     @State private var showingCustomItem = false
+    @State private var showingWashPricing = false
+    @State private var showingPaintingPricing = false
     @State private var selectedCatalogItem: ServiceCatalogItem?
 
     private var filteredItems: [ServiceCatalogItem] {
@@ -56,6 +58,22 @@ struct ServiceCatalogPickerView: View {
                         showingCustomItem = true
                     } label: {
                         Label("Custom Line Item", systemImage: "square.and.pencil")
+                    }
+
+                    Menu {
+                        Button {
+                            showingWashPricing = true
+                        } label: {
+                            Label("Wash Pricing Calculator", systemImage: "ruler.fill")
+                        }
+
+                        Button {
+                            showingPaintingPricing = true
+                        } label: {
+                            Label("Painting Pricing Calculator", systemImage: "paintbrush.fill")
+                        }
+                    } label: {
+                        Label("Estimation Tools", systemImage: "hammer.fill")
                     }
 
                     if store.canManageCompany {
@@ -137,6 +155,26 @@ struct ServiceCatalogPickerView: View {
                         onFinished()
                     }
                 )
+            }
+            .sheet(isPresented: $showingWashPricing) {
+                NavigationStack {
+                    PressureWashingPricingView { lineItem in
+                        lineItems.append(lineItem)
+                        showingWashPricing = false
+                        onFinished()
+                    }
+                    .environmentObject(store)
+                }
+            }
+            .sheet(isPresented: $showingPaintingPricing) {
+                NavigationStack {
+                    PaintingPricingView { lineItem in
+                        lineItems.append(lineItem)
+                        showingPaintingPricing = false
+                        onFinished()
+                    }
+                    .environmentObject(store)
+                }
             }
         }
     }

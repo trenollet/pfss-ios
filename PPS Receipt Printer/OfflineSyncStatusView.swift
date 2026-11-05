@@ -190,6 +190,11 @@ struct OfflineSyncDetailsView: View {
     var canOverrideConflicts = false
     var onSyncNow: (() -> Void)? = nil
     var onResolveConflict: ((UUID, OfflineConflictResolution) throws -> Void)? = nil
+    var employees: [EmployeeRecord] = []
+    var onResolveQuarantine:
+        ((UUID, OfflineQuarantineResolution, String) async throws -> Void)? = nil
+    var onRepairAssignmentQuarantine:
+        ((UUID, Assignment, String) async throws -> Void)? = nil
 
     @ObservedObject private var recoveryStatus =
         PFSSSynchronizationRecoveryStatus.shared
@@ -432,6 +437,34 @@ struct OfflineSyncDetailsView: View {
                 Text("Available recovery: repair and retry, supersede, or discard.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if canOverrideConflicts,
+                   PFSSQuarantineInbox.isUnresolvedServerQuarantine(operation),
+                   let onResolveQuarantine,
+                   let onRepairAssignmentQuarantine {
+                    NavigationLink {
+                        PFSSQuarantineInboxView(
+                            queue: queue,
+                            employees: employees,
+                            onResolve: onResolveQuarantine,
+                            onRepairAssignment: onRepairAssignmentQuarantine,
+                            initiallySelectedOperationID: operation.id
+                        )
+                    } label: {
+                        Label(
+                            "Review and Resolve",
+                            systemImage: "checkmark.shield.fill"
+                        )
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+                    .padding(.top, 4)
+                    .accessibilityHint(
+                        "Opens this quarantined change to retry or discard it"
+                    )
+                }
             }
             if let conflict = operation.conflict,
                conflict.requiresHumanReview {

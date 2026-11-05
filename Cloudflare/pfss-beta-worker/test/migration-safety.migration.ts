@@ -172,7 +172,7 @@ describe("Phase 20 migration safety", () => {
     );
     expect(prePhase20).toHaveLength(22);
     expect(phase20.map((migration) => migrationNumber(migration))).toEqual([
-      23, 24, 25, 26, 27, 28, 29, 30,
+      23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
     ]);
 
     await applyD1Migrations(env.DB, prePhase20);
@@ -268,11 +268,13 @@ describe("Phase 20 migration safety", () => {
           'synchronization_push_registrations',
           'synchronization_push_deliveries',
           'synchronization_device_health_reports',
-          'synchronization_health_alerts'
+          'synchronization_health_alerts',
+          'synchronization_device_reminder_preferences'
         ) ORDER BY name`,
     )).toEqual([
       { name: "synchronization_device_cursors" },
       { name: "synchronization_device_health_reports" },
+      { name: "synchronization_device_reminder_preferences" },
       { name: "synchronization_diagnostics" },
       { name: "synchronization_health_alerts" },
       { name: "synchronization_push_deliveries" },

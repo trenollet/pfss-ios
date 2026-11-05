@@ -14,7 +14,7 @@ final class MileageTripRepository: ObservableObject {
 
     @Published private(set) var trips: [MileageTrip] = []
 
-    private struct StoredMileageData: Codable {
+    private struct StoredMileageData: Codable, @unchecked Sendable {
         var trips: [MileageTrip]
         var activeEngine: MileageDetectionEngine?
         var pendingTripIDs: Set<UUID>?
@@ -238,6 +238,32 @@ final class MileageTripRepository: ObservableObject {
         try data.write(to: fileURL, options: .atomic)
     }
 
+    /// Cloud polling must not encode a user's complete mileage history on the
+    /// main actor. Long routes can contain thousands of points, and doing that
+    /// work in the UI executor caused a visible pause on every polling cycle.
+    private func persistCloudSynchronizationSnapshot() async throws {
+        guard let fileURL else { return }
+        let stored = StoredMileageData(
+            trips: trips,
+            activeEngine: activeEngine,
+            pendingTripIDs: pendingTripIDs,
+            deletionTombstones: deletionTombstones,
+            cloudCursor: cloudCursor
+        )
+        let directory = baseDirectory
+        try await Task.detached(priority: .utility) {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(stored)
+            try data.write(to: fileURL, options: .atomic)
+        }.value
+    }
+
     func synchronizeWithCloud() async {
         guard cloudSynchronizationEnabled, context != nil else { return }
         let manager = PFSSCloudflareBetaManager()
@@ -257,13 +283,21 @@ final class MileageTripRepository: ObservableObject {
                     trips: uploads,
                     deletions: deletions
                 )
-                merge(response.changes)
+                let persistenceChanged = !response.changes.isEmpty ||
+                    response.cursor != cloudCursor ||
+                    !uploadIDs.isEmpty ||
+                    !deletions.isEmpty
+                if !response.changes.isEmpty {
+                    merge(response.changes)
+                }
                 cloudCursor = response.cursor
                 pendingTripIDs.subtract(uploadIDs)
                 for id in deletions.keys {
                     deletionTombstones.removeValue(forKey: id)
                 }
-                try persist()
+                if persistenceChanged {
+                    try await persistCloudSynchronizationSnapshot()
+                }
                 hasMore = response.hasMore
                 firstPage = false
             }

@@ -199,26 +199,32 @@ struct SchedulingCalculator {
         from jobs: [JobRecord],
         calendar: Calendar = .current
     ) -> [JobRecord] {
-        jobs.filter { job in
+        jobs.compactMap { job in
             guard job.lifecycleStatus == .active else {
-                return false
+                return nil
             }
 
             guard job.status != .cancelled else {
-                return false
+                return nil
             }
 
             guard isEmployee(
                 employee.id,
                 assignedTo: job
             ) else {
-                return false
+                return nil
             }
 
-            return calendar.isDate(
-                job.scheduledDate,
-                inSameDayAs: date
-            )
+            guard let occurrence = job.allScheduledWorkdaySchedules.first(where: {
+                calendar.isDate($0.scheduledDate, inSameDayAs: date)
+            }) else { return nil }
+
+            var scheduledOccurrence = job
+            scheduledOccurrence.scheduledDate = occurrence.scheduledDate
+            scheduledOccurrence.assignmentSchedulingMode = occurrence.schedulingMode
+            scheduledOccurrence.arrivalWindowEnd = occurrence.arrivalWindowEnd
+            scheduledOccurrence.completionDeadline = occurrence.completionDeadline
+            return scheduledOccurrence
         }
     }
 

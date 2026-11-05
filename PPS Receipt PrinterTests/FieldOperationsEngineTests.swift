@@ -141,18 +141,10 @@ final class FieldOperationsEngineTests: XCTestCase {
                 at: date(hour: 8, minute: 15)
             )
         )
-        XCTAssertEqual(job.workflowState, .arrived)
-
-        job = try XCTUnwrap(
-            engine.transition(
-                job: job,
-                action: .startSetup,
-                employeeID: technicianID,
-                at: date(hour: 8, minute: 20)
-            )
-        )
         XCTAssertEqual(job.workflowState, .settingUp)
-        XCTAssertEqual(job.setupStartDate, date(hour: 8, minute: 20))
+        XCTAssertEqual(job.setupStartDate, date(hour: 8, minute: 15))
+        XCTAssertEqual(job.timelineEvents.suffix(2).map(\.type), [.arrived, .setupStarted])
+        XCTAssertEqual(engine.context(for: job).nextAction, .startWork)
 
         job = try XCTUnwrap(
             engine.transition(
@@ -364,8 +356,20 @@ final class FieldOperationsEngineTests: XCTestCase {
         )
         XCTAssertEqual(
             job.timelineEvents.map(\.type),
-            [.travelStarted, .travelPaused, .travelResumed, .arrived]
+            [.travelStarted, .travelPaused, .travelResumed, .arrived, .setupStarted]
         )
+    }
+
+    func testLegacyArrivedJobCanStartWorkWithoutAnotherSetupAction() throws {
+        let engine = FieldOperationsEngine()
+        var job = makeJob()
+        job.workflowState = .arrived
+        XCTAssertEqual(engine.context(for: job).nextAction, .startWork)
+        XCTAssertEqual(engine.availableActions(for: job), [.startWork])
+        let updated = try XCTUnwrap(engine.transition(job: job, action: .startWork,
+            employeeID: technicianID, at: date(hour: 9)))
+        XCTAssertEqual(updated.workflowState, .working)
+        XCTAssertEqual(updated.workStartDate, date(hour: 9))
     }
 
     func testTravelingContextKeepsArrivePrimaryAndExposesPause() {
@@ -491,6 +495,233 @@ final class FieldOperationsEngineTests: XCTestCase {
         XCTAssertTrue(context.presentation.isClosed)
         XCTAssertTrue(context.isTerminal)
         XCTAssertEqual(context.progressPercentage, 100)
+    }
+
+    func testMultiDayJobAppearsOnEveryScheduledDayWithoutDuplicatingJobIdentity() {
+        var job = makeJob()
+        let secondDay = calendar.date(byAdding: .day, value: 1, to: job.scheduledDate)!
+        let thirdDay = calendar.date(byAdding: .day, value: 2, to: job.scheduledDate)!
+        job.additionalScheduledDates = [secondDay, thirdDay, secondDay]
+        job.normalizeAdditionalScheduledDates(calendar: calendar)
+
+        for expected in [job.scheduledDate, secondDay, thirdDay] {
+            let matches = SchedulingCalculator.scheduledJobs(
+                for: EmployeeRecord(id: technicianID, firstName: "Test", lastName: "Tech", role: .technician),
+                on: expected,
+                from: [job],
+                calendar: calendar
+            )
+            XCTAssertEqual(matches.count, 1)
+            XCTAssertEqual(matches.first?.id, job.id)
+            XCTAssertEqual(matches.first?.scheduledDate, expected)
+        }
+    }
+
+    func testLegacyJobDecodesWithNoAdditionalWorkdays() throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(makeJob())) as? [String: Any])
+        object.removeValue(forKey: "additionalScheduledDates")
+        object.removeValue(forKey: "additionalWorkdaySchedules")
+        let data = try JSONSerialization.data(withJSONObject: object)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        XCTAssertTrue(try decoder.decode(JobRecord.self, from: data).additionalScheduledDates.isEmpty)
+    }
+
+    func testPausedJobCanScheduleContinuationWithoutCreatingAnotherJob() throws {
+        let store = AppDataStore(persistenceEnabled: false)
+        let employee = EmployeeRecord(id: technicianID, firstName: "Test", lastName: "Tech")
+        store.employees = [employee]
+        let job = makeJob()
+        store.addJob(job)
+        for (offset, action) in [JobWorkflowAction.startTravel, .markArrived, .startWork, .pauseWork].enumerated() {
+            XCTAssertTrue(store.performWorkflowAction(
+                jobID: job.id,
+                action: action,
+                employeeID: technicianID,
+                at: date(hour: 8).addingTimeInterval(Double(offset))
+            ))
+        }
+        let continuation = calendar.date(byAdding: .day, value: 2, to: job.scheduledDate)!
+        XCTAssertTrue(store.addJobContinuationDate(jobID: job.id, scheduledDate: continuation))
+        XCTAssertFalse(store.addJobContinuationDate(jobID: job.id, scheduledDate: continuation))
+        XCTAssertEqual(store.jobs.count, 1)
+        let saved = try XCTUnwrap(store.jobs.first)
+        XCTAssertEqual(saved.workflowState, .paused)
+        XCTAssertEqual(saved.additionalScheduledDates.count, 1)
+        XCTAssertEqual(SchedulingCalculator.scheduledJobs(
+            for: employee,
+            on: continuation,
+            from: store.jobs,
+            calendar: calendar
+        ).first?.id, job.id)
+    }
+
+    func testPausedJobAdditionalWorkdayCanMoveWithoutChangingPrimaryDate() throws {
+        let store = AppDataStore(persistenceEnabled: false)
+        let job = makeJob()
+        let primaryDate = job.scheduledDate
+        let incorrectDate = calendar.date(byAdding: .day, value: 2, to: primaryDate)!
+        let correctedDate = calendar.date(byAdding: .day, value: 3, to: primaryDate)!
+        store.addJob(job)
+        for (offset, action) in [JobWorkflowAction.startTravel, .markArrived, .startWork, .pauseWork].enumerated() {
+            XCTAssertTrue(store.performWorkflowAction(
+                jobID: job.id,
+                action: action,
+                employeeID: technicianID,
+                at: date(hour: 8).addingTimeInterval(Double(offset))
+            ))
+        }
+        XCTAssertTrue(store.addJobContinuationDate(jobID: job.id, scheduledDate: incorrectDate))
+        let beforeMove = try XCTUnwrap(store.jobs.first)
+
+        var occurrence = beforeMove
+        occurrence.scheduledDate = correctedDate
+        XCTAssertTrue(store.updateJobWorkdaySchedule(
+            jobID: job.id,
+            originalDate: incorrectDate,
+            updatedJob: occurrence
+        ))
+
+        let saved = try XCTUnwrap(store.jobs.first)
+        XCTAssertEqual(saved.scheduledDate, primaryDate)
+        XCTAssertEqual(saved.additionalScheduledDates, [correctedDate])
+        XCTAssertEqual(saved.workflowState, beforeMove.workflowState)
+        XCTAssertEqual(saved.status, beforeMove.status)
+    }
+
+    func testMovingWorkdayOntoExistingWorkdayIsRejected() throws {
+        let store = AppDataStore(persistenceEnabled: false)
+        var job = makeJob(workflowState: .paused, status: .inProgress)
+        let additionalDate = calendar.date(byAdding: .day, value: 2, to: job.scheduledDate)!
+        job.additionalScheduledDates = [additionalDate]
+        store.addJob(job)
+
+        var occurrence = job
+        occurrence.scheduledDate = job.scheduledDate
+        XCTAssertFalse(store.updateJobWorkdaySchedule(
+            jobID: job.id,
+            originalDate: additionalDate,
+            updatedJob: occurrence
+        ))
+        XCTAssertEqual(try XCTUnwrap(store.jobs.first).additionalScheduledDates, [additionalDate])
+    }
+
+    func testAddedWorkdayKeepsItsOwnArrivalWindowAndProjectsItOnMyDay() throws {
+        let store = AppDataStore(persistenceEnabled: false)
+        let employee = EmployeeRecord(id: technicianID, firstName: "Test", lastName: "Tech")
+        store.employees = [employee]
+        let job = makeJob()
+        store.addJob(job)
+        let start = calendar.date(byAdding: .day, value: 2, to: job.scheduledDate)!
+        let end = calendar.date(byAdding: .hour, value: 3, to: start)!
+
+        XCTAssertTrue(store.addJobContinuationWorkday(
+            jobID: job.id,
+            schedule: JobScheduledWorkday(
+                scheduledDate: start,
+                schedulingMode: .arrivalWindow,
+                arrivalWindowEnd: end
+            )
+        ))
+
+        let saved = try XCTUnwrap(store.jobs.first?.effectiveAdditionalWorkdaySchedules.first)
+        XCTAssertEqual(saved.schedulingMode, .arrivalWindow)
+        XCTAssertEqual(saved.arrivalWindowEnd, end)
+        let occurrence = try XCTUnwrap(SchedulingCalculator.scheduledJobs(
+            for: employee,
+            on: start,
+            from: store.jobs,
+            calendar: calendar
+        ).first)
+        XCTAssertEqual(occurrence.assignmentSchedulingMode, .arrivalWindow)
+        XCTAssertEqual(occurrence.arrivalWindowEnd, end)
+    }
+
+    func testAllAddedWorkdayTimeOptionsSurviveSynchronizationRoundTrip() throws {
+        var job = makeJob()
+        let fixed = calendar.date(byAdding: .day, value: 1, to: job.scheduledDate)!
+        let window = calendar.date(byAdding: .day, value: 2, to: job.scheduledDate)!
+        let flexible = calendar.date(byAdding: .day, value: 3, to: job.scheduledDate)!
+        let deadlineDay = calendar.date(byAdding: .day, value: 4, to: job.scheduledDate)!
+        let windowEnd = calendar.date(byAdding: .hour, value: 2, to: window)!
+        let deadline = calendar.date(byAdding: .hour, value: 5, to: deadlineDay)!
+        job.additionalWorkdaySchedules = [
+            JobScheduledWorkday(scheduledDate: fixed, schedulingMode: .fixedTime),
+            JobScheduledWorkday(
+                scheduledDate: window,
+                schedulingMode: .arrivalWindow,
+                arrivalWindowEnd: windowEnd
+            ),
+            JobScheduledWorkday(scheduledDate: flexible, schedulingMode: .flexibleDay),
+            JobScheduledWorkday(
+                scheduledDate: deadlineDay,
+                schedulingMode: .deadline,
+                completionDeadline: deadline
+            )
+        ]
+        job.normalizeAdditionalScheduledDates(calendar: calendar)
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(JobRecord.self, from: encoder.encode(job))
+
+        XCTAssertEqual(
+            Set(decoded.additionalWorkdaySchedules.map(\.schedulingMode)),
+            Set(AssignmentSchedulingMode.allCases)
+        )
+        XCTAssertEqual(
+            decoded.additionalWorkdaySchedules.first(where: { $0.schedulingMode == .arrivalWindow })?.arrivalWindowEnd,
+            windowEnd
+        )
+        XCTAssertEqual(
+            decoded.additionalWorkdaySchedules.first(where: { $0.schedulingMode == .deadline })?.completionDeadline,
+            deadline
+        )
+    }
+
+    func testMyDayMovesInProgressJobAheadOfEarlierScheduledJobs() {
+        var earlier = makeJob()
+        earlier.id = UUID(uuidString: "10000000-0000-0000-0000-000000000010")!
+        earlier.scheduledDate = date(hour: 8)
+
+        var active = makeJob(workflowState: .working, status: .inProgress)
+        active.id = UUID(uuidString: "10000000-0000-0000-0000-000000000020")!
+        active.scheduledDate = date(hour: 11)
+
+        let ordered = TechnicianAgendaOrdering.orderedJobs(
+            [earlier, active],
+            plannedStart: \.scheduledDate,
+            routeSequence: { _ in nil },
+            isFinished: { $0.status == .completed },
+            completionDate: { $0.completedDate ?? .distantPast }
+        )
+
+        XCTAssertEqual(ordered.map(\.id), [active.id, earlier.id])
+    }
+
+    func testMyDayMovesCompletedJobBehindRemainingScheduledJobs() {
+        var completed = makeJob(workflowState: .completed, status: .completed)
+        completed.id = UUID(uuidString: "10000000-0000-0000-0000-000000000030")!
+        completed.scheduledDate = date(hour: 8)
+        completed.completedDate = date(hour: 9)
+
+        var remaining = makeJob()
+        remaining.id = UUID(uuidString: "10000000-0000-0000-0000-000000000040")!
+        remaining.scheduledDate = date(hour: 11)
+
+        let ordered = TechnicianAgendaOrdering.orderedJobs(
+            [completed, remaining],
+            plannedStart: \.scheduledDate,
+            routeSequence: { _ in nil },
+            isFinished: { $0.status == .completed },
+            completionDate: { $0.completedDate ?? .distantPast }
+        )
+
+        XCTAssertEqual(ordered.map(\.id), [remaining.id, completed.id])
     }
 
     // MARK: - Fixtures

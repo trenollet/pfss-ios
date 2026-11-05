@@ -141,6 +141,56 @@ struct ServiceDashboardView: View {
     }
 }
 
+struct ToolsDashboardView: View {
+    var body: some View {
+        ScrollView {
+            CustomizableTileGrid(
+                storageKey: "pfss.tile-layout.tools.v1",
+                defaultTileIDs: ["sh-calculator", "wash-pricing", "painting-pricing"]
+            ) { tileID in
+                switch tileID {
+                case "sh-calculator":
+                    hubTile(
+                        title: "SH Calculator",
+                        value: "",
+                        icon: "drop.triangle.fill",
+                        subtitle: "Pressure washing mix",
+                        color: .cyan
+                    ) {
+                        SHCalculatorView()
+                    }
+                case "wash-pricing":
+                    hubTile(
+                        title: "Wash Pricing",
+                        value: "",
+                        icon: "ruler.fill",
+                        subtitle: "Square-foot pricing",
+                        color: .orange
+                    ) {
+                        PressureWashingPricingView()
+                    }
+                case "painting-pricing":
+                    hubTile(
+                        title: "Painting Pricing",
+                        value: "",
+                        icon: "paintbrush.fill",
+                        subtitle: "Square-foot pricing",
+                        color: .orange
+                    ) {
+                        PaintingPricingView()
+                    }
+                default:
+                    EmptyView()
+                }
+            }
+            .padding()
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle("Tools")
+        .navigationBarTitleDisplayMode(.large)
+    }
+}
+
 private func hubTile<Destination: View>(
     title: String,
     value: String,

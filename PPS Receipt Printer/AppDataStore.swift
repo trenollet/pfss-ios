@@ -35,7 +35,6 @@ final class AppDataStore: ObservableObject {
     let offlineConnectivityMonitor: OfflineConnectivityMonitor
     let offlineSynchronizationService: OfflineSynchronizationService?
     private var assignmentObservation: AnyCancellable?
-    private var offlineQueueObservation: AnyCancellable?
     @Published var lastOfflineOperationError: String?
     @Published private(set) var cloudRole: PFSSTenantRole = .member
     @Published private(set) var cloudEmployeeID: UUID?
@@ -180,6 +179,11 @@ final class AppDataStore: ObservableObject {
     private static let cloudAccountHoldCacheKey = "PFSSCloudAccountHold"
     var isApplyingRestoredSnapshot = false
     var isApplyingRemoteSynchronization = false
+    /// A synchronization page can contain many records. Each published array
+    /// mutation must still refresh interested views, but persistence is
+    /// deferred until the whole page has been applied so scrolling and touch
+    /// tracking are not blocked by one full database write per record.
+    var isDeferringRemoteBatchPersistence = false
     var synchronizedRecordState: [String: Data] = [:]
     var synchronizedRecordRevisions: [String: String] = [:]
     private var hasInitializedSynchronizedRecordState = false
@@ -270,9 +274,6 @@ final class AppDataStore: ObservableObject {
         assignmentObservation = assignmentStore.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
-        offlineQueueObservation = operationQueue.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        }
         synchronizeJobsFromAssignments(assignmentStore.assignments)
         synchronizedRecordState = makeSynchronizedRecordState()
         hasInitializedSynchronizedRecordState = true
@@ -341,7 +342,9 @@ final class AppDataStore: ObservableObject {
     }
 
     func updateCloudRole(_ role: PFSSTenantRole) {
-        cloudRole = role
+        if cloudRole != role {
+            cloudRole = role
+        }
         removeOwnerRecoveryAccessIfNeeded(for: role)
     }
 
@@ -351,9 +354,14 @@ final class AppDataStore: ObservableObject {
         displayName: String? = nil,
         email: String? = nil
     ) {
-        cloudRole = role
-        cloudEmployeeID = employeeID.flatMap(UUID.init(uuidString:))
+        let resolvedEmployeeID = employeeID.flatMap(UUID.init(uuidString:))
             ?? matchingEmployeeID(displayName: displayName, email: email)
+        if cloudRole != role {
+            cloudRole = role
+        }
+        if cloudEmployeeID != resolvedEmployeeID {
+            cloudEmployeeID = resolvedEmployeeID
+        }
         if persistsCloudIdentity {
             cloudIdentityDefaults.set(role.rawValue, forKey: Self.cloudRoleCacheKey)
             if let cloudEmployeeID {
@@ -414,6 +422,7 @@ final class AppDataStore: ObservableObject {
             // successful authenticated request may restore local operations.
             return
         }
+        guard cloudSynchronizationAccessStatus != status else { return }
         cloudSynchronizationAccessStatus = status
         switch status {
         case let .accountHold(hold):
@@ -626,6 +635,11 @@ final class AppDataStore: ObservableObject {
     
     func addJob(_ job: JobRecord) {
         var storedJob = job
+        if storedJob.isRecurring {
+            storedJob.additionalScheduledDates = []
+            storedJob.additionalWorkdaySchedules = []
+        }
+        storedJob.normalizeAdditionalScheduledDates()
         prepareRecurrenceIdentity(for: &storedJob)
         jobs.append(storedJob)
         upsertRecurringWorkTemplate(from: storedJob)
@@ -642,6 +656,11 @@ final class AppDataStore: ObservableObject {
             }
 
             var storedJob = job
+            if storedJob.isRecurring {
+                storedJob.additionalScheduledDates = []
+                storedJob.additionalWorkdaySchedules = []
+            }
+            storedJob.normalizeAdditionalScheduledDates()
             prepareRecurrenceIdentity(for: &storedJob)
 
             guard let currentIndex = jobs.firstIndex(where: {
@@ -692,6 +711,93 @@ final class AppDataStore: ObservableObject {
         jobs[index].scheduledDate = updatedJob.scheduledDate
         jobs[index].arrivalWindowEnd = updatedJob.arrivalWindowEnd
         jobs[index].completionDeadline = updatedJob.completionDeadline
+        synchronizeAssignmentsFromJobs()
+        return true
+    }
+
+    @discardableResult
+    func updateJobWorkdaySchedule(
+        jobID: UUID,
+        originalDate: Date,
+        updatedJob: JobRecord
+    ) -> Bool {
+        guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return false }
+        let calendar = Calendar.current
+        let conflictsWithAnotherWorkday = jobs[index].allScheduledWorkDates.contains { date in
+            !calendar.isDate(date, inSameDayAs: originalDate) &&
+                calendar.isDate(date, inSameDayAs: updatedJob.scheduledDate)
+        }
+        guard !conflictsWithAnotherWorkday else { return false }
+        if calendar.isDate(jobs[index].scheduledDate, inSameDayAs: originalDate) {
+            jobs[index].assignmentSchedulingMode = updatedJob.assignmentSchedulingMode
+            jobs[index].scheduledDate = updatedJob.scheduledDate
+            jobs[index].arrivalWindowEnd = updatedJob.arrivalWindowEnd
+            jobs[index].completionDeadline = updatedJob.completionDeadline
+        } else if let dateIndex = jobs[index].additionalWorkdaySchedules.firstIndex(where: {
+            calendar.isDate($0.scheduledDate, inSameDayAs: originalDate)
+        }) {
+            var schedule = JobScheduledWorkday(
+                id: jobs[index].additionalWorkdaySchedules[dateIndex].id,
+                scheduledDate: updatedJob.scheduledDate,
+                schedulingMode: updatedJob.assignmentSchedulingMode,
+                arrivalWindowEnd: updatedJob.arrivalWindowEnd,
+                completionDeadline: updatedJob.completionDeadline
+            )
+            schedule.normalize(calendar: calendar)
+            jobs[index].additionalWorkdaySchedules[dateIndex] = schedule
+            jobs[index].additionalScheduledDates = jobs[index].additionalWorkdaySchedules.map(\.scheduledDate)
+            jobs[index].normalizeAdditionalScheduledDates(calendar: calendar)
+        } else {
+            return false
+        }
+        synchronizeAssignmentsFromJobs()
+        return true
+    }
+
+    func isAdditionalJobWorkday(jobID: UUID, scheduledDate: Date) -> Bool {
+        guard let job = jobs.first(where: { $0.id == jobID }) else { return false }
+        return job.effectiveAdditionalWorkdaySchedules.contains {
+            Calendar.current.isDate($0.scheduledDate, inSameDayAs: scheduledDate)
+        }
+    }
+
+    /// Adds another visit to one Job. Charges, workflow, and invoice identity
+    /// remain on the original Job so multi-day work cannot be double billed.
+    @discardableResult
+    func addJobContinuationDate(jobID: UUID, scheduledDate: Date) -> Bool {
+        addJobContinuationWorkday(
+            jobID: jobID,
+            schedule: JobScheduledWorkday(scheduledDate: scheduledDate)
+        )
+    }
+
+    @discardableResult
+    func addJobContinuationWorkday(
+        jobID: UUID,
+        schedule proposedSchedule: JobScheduledWorkday
+    ) -> Bool {
+        guard let index = jobs.firstIndex(where: { $0.id == jobID }),
+              jobs[index].lifecycleStatus == .active,
+              jobs[index].status != .completed,
+              jobs[index].status != .cancelled else { return false }
+        let calendar = Calendar.current
+        guard !jobs[index].allScheduledWorkDates.contains(where: {
+            calendar.isDate($0, inSameDayAs: proposedSchedule.scheduledDate)
+        }) else { return false }
+        var schedule = proposedSchedule
+        schedule.normalize(calendar: calendar)
+        jobs[index].appendAdditionalWorkday(schedule)
+        synchronizeAssignmentsFromJobs()
+        return true
+    }
+
+    @discardableResult
+    func removeJobContinuationDate(jobID: UUID, scheduledDate: Date) -> Bool {
+        guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return false }
+        let calendar = Calendar.current
+        let oldCount = jobs[index].effectiveAdditionalWorkdaySchedules.count
+        jobs[index].removeAdditionalWorkday(on: scheduledDate, calendar: calendar)
+        guard jobs[index].effectiveAdditionalWorkdaySchedules.count != oldCount else { return false }
         synchronizeAssignmentsFromJobs()
         return true
     }
@@ -1386,14 +1492,7 @@ final class AppDataStore: ObservableObject {
         after action: JobWorkflowAction
     ) {
         switch action {
-        case .markArrived:
-            let minutes = authenticatedCloudEmployee?
-                .jobTimerReminderPreferences.arrivalToSetupMinutes ?? 5
-            PFSSJobStartReminderService.shared.scheduleAfterArrival(
-                for: job,
-                minutes: minutes
-            )
-        case .startSetup:
+        case .markArrived, .startSetup:
             let minutes = authenticatedCloudEmployee?
                 .jobTimerReminderPreferences.setupToWorkMinutes ?? 5
             PFSSJobStartReminderService.shared.scheduleAfterSetup(
@@ -1587,6 +1686,7 @@ final class AppDataStore: ObservableObject {
     }
 
     func updateInvoice(_ invoice: InvoiceRecord) {
+        guard invoice.combinedIntoInvoiceID == nil else { return }
         guard let index = invoices.firstIndex(where: {
             $0.id == invoice.id
         }) else {
@@ -1594,6 +1694,22 @@ final class AppDataStore: ObservableObject {
         }
 
         let previousInvoice = invoices[index]
+        guard previousInvoice.combinedIntoInvoiceID == nil else { return }
+        if previousInvoice.combination != nil || previousInvoice.paymentCorrection != nil {
+            // Payment/status/notes may change; charges and allocation evidence
+            // must go through the atomic manual correction workflow.
+            guard previousInvoice.status != .void, invoice.status != .void, invoice.amountPaid >= previousInvoice.amountPaid,
+                  !invoiceChargesChanged(from: previousInvoice, to: invoice),
+                  invoice.invoiceNumber == previousInvoice.invoiceNumber,
+                  invoice.customerNumber == previousInvoice.customerNumber,
+                  invoice.siteID == previousInvoice.siteID,
+                  invoice.jobNumber == previousInvoice.jobNumber,
+                  invoice.associatedJobNumbers == previousInvoice.associatedJobNumbers,
+                  (try? Self.recordSynchronizationEncoder.encode(invoice.combination))
+                    == (try? Self.recordSynchronizationEncoder.encode(previousInvoice.combination)),
+                  (try? Self.recordSynchronizationEncoder.encode(invoice.paymentCorrection))
+                    == (try? Self.recordSynchronizationEncoder.encode(previousInvoice.paymentCorrection)) else { return }
+        }
         let previousStatus = previousInvoice.status
         // A status or payment update must not silently reprice a historical
         // invoice. Explicit editor/tax actions recalculate before this call.
@@ -1715,9 +1831,7 @@ final class AppDataStore: ObservableObject {
     }
 
     func invoice(for job: JobRecord) -> InvoiceRecord? {
-        invoices.first { invoice in
-            invoice.jobNumber == job.jobNumber
-        }
+        InvoiceEngine.existingInvoice(forJobNumber: job.jobNumber, in: invoices)
     }
 
     func invoice(forJobID jobID: UUID) -> InvoiceRecord? {
@@ -1765,20 +1879,28 @@ final class AppDataStore: ObservableObject {
     func createJobFromEstimate(_ estimate: EstimateRecord) {
         let job = JobRecord(
             jobNumber: generateJobNumber(),
+            title: estimate.title,
+            leadNumber: estimate.leadNumber,
             customerNumber: estimate.customerNumber,
             siteID: estimate.siteID,
             estimateNumber: estimate.estimateNumber,
             serviceType: estimate.serviceType,
             otherService: estimate.otherService,
+            lineItems: estimate.lineItems,
             subtotal: estimate.subtotal,
             discount: estimate.discount,
+            discountMethod: estimate.discountMethod,
+            discountInputValue: estimate.discountInputValue,
             total: estimate.total,
+            salesperson: estimate.salesperson,
+            expirationDate: estimate.expirationDate,
             primaryTechnicianID: nil,
             secondaryTechnicianID: nil,
             scheduledDate: Date(),
             completedDate: nil,
             status: .toBeScheduled,
             workNotes: estimate.serviceDetails,
+            scopeOfWork: estimate.scopeOfWork,
             isRecurring: false,
             createdDate: Date()
         )
@@ -2061,7 +2183,9 @@ final class AppDataStore: ObservableObject {
     }
 
     private func saveData() {
-        guard persistenceEnabled, !isApplyingRestoredSnapshot else {
+        guard persistenceEnabled,
+              !isApplyingRestoredSnapshot,
+              !isDeferringRemoteBatchPersistence else {
             return
         }
 
@@ -2090,6 +2214,14 @@ final class AppDataStore: ObservableObject {
         } catch {
             print("Failed to save app data: \(error.localizedDescription)")
         }
+    }
+
+    /// Completes one remotely applied page with a single atomic persistence
+    /// pass. The synchronized baseline must be updated by the caller first so
+    /// authoritative cloud records are never re-enqueued as local edits.
+    func persistDeferredRemoteBatch() {
+        isDeferringRemoteBatchPersistence = false
+        saveData()
     }
 
     /// Persists an imported or authoritative snapshot without interpreting its

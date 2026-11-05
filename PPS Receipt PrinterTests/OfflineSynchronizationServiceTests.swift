@@ -227,6 +227,34 @@ final class OfflineSynchronizationServiceTests: XCTestCase {
         service.stop()
     }
 
+    func testSaveQueuedDuringActiveUploadDrainsWithoutFalseFailure() async throws {
+        let queue = makeQueue()
+        let recordID = UUID()
+        let first = try queue.enqueue(makeOperation(action: "first-edit", entityID: recordID))
+        let adapter = TestSynchronizationAdapter(delayNanoseconds: 50_000_000)
+        let service = OfflineSynchronizationService(
+            queue: queue,
+            connectivity: TestConnectivityMonitor(status: .online),
+            adapter: adapter
+        )
+        service.start()
+
+        for _ in 0..<40 where adapter.receivedIDs.isEmpty {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let second = try queue.enqueue(makeOperation(action: "second-edit", entityID: recordID))
+
+        for _ in 0..<80 where queue.operation(id: second.id)?.status != .synchronized {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        XCTAssertEqual(adapter.receivedIDs, [first.id, second.id])
+        XCTAssertEqual(queue.operation(id: first.id)?.status, .synchronized)
+        XCTAssertEqual(queue.operation(id: second.id)?.status, .synchronized)
+        XCTAssertEqual(service.state, .idle)
+        service.stop()
+    }
+
     func testRetryFailureIsDurableAndManualSyncCanRecover() async throws {
         let queue = makeQueue()
         let operation = try queue.enqueue(makeOperation(action: "pauseWork"))

@@ -594,6 +594,9 @@ struct PFSSSynchronizationHealth: Decodable {
         var cursorUpdatedAt: Date?
         var appBuild: String?
         var latestPush: LatestPush?
+        var divergenceReminder: String?
+        var divergenceReminderSuppressedUntil: Date?
+        var divergenceReminderSuppressed: Bool?
 
         var id: String { deviceID }
     }
@@ -1283,6 +1286,20 @@ final class PFSSCloudflareBetaManager: ObservableObject {
         _ = try await perform(request)
     }
 
+    func saveInvoiceCombination(_ value: InvoiceCombinationSaveRequest) async throws -> InvoiceCombinationSaveReceipt {
+        var request = try request(path: "/v1/invoices/combine", method: "POST", authenticated: true)
+        request.httpBody = try Self.encoder.encode(value)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        return try Self.decoder.decode(InvoiceCombinationSaveReceipt.self, from: try await perform(request))
+    }
+
+    func correctInvoicePayments(_ value: InvoicePaymentCorrectionRequest) async throws -> InvoiceCombinationSaveReceipt {
+        var request = try request(path: "/v1/invoices/correct-payments", method: "POST", authenticated: true)
+        request.httpBody = try Self.encoder.encode(value)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        return try Self.decoder.decode(InvoiceCombinationSaveReceipt.self, from: try await perform(request))
+    }
+
     func synchronizationBootstrap() async throws
         -> (data: Data, cursor: Int) {
         let result = try await performWithResponse(
@@ -1378,6 +1395,23 @@ final class PFSSCloudflareBetaManager: ObservableObject {
                 try request(path: "/v1/sync/health", authenticated: true)
             )
         )
+    }
+
+    func updateSynchronizationDivergenceReminder(
+        deviceID: String,
+        mode: String
+    ) async throws {
+        let encodedDeviceID = deviceID.addingPercentEncoding(
+            withAllowedCharacters: .urlPathAllowed
+        ) ?? deviceID
+        var reminderRequest = try request(
+            path: "/v1/sync/devices/\(encodedDeviceID)/divergence-reminder",
+            method: "POST",
+            authenticated: true
+        )
+        reminderRequest.httpBody = try Self.encoder.encode(["mode": mode])
+        reminderRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        _ = try await perform(reminderRequest)
     }
 
     func reportSynchronizationDeviceHealth(

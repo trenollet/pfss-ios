@@ -6,8 +6,79 @@
 //
 
 import Foundation
+import Combine
 import UIKit
 import UserNotifications
+
+enum PFSSNotificationNavigationDestination: Hashable {
+    case job(UUID)
+    case mileage
+}
+
+struct PFSSNotificationNavigationRequest: Identifiable, Equatable {
+    let id: UUID
+    let destination: PFSSNotificationNavigationDestination
+
+    init(
+        id: UUID = UUID(),
+        destination: PFSSNotificationNavigationDestination
+    ) {
+        self.id = id
+        self.destination = destination
+    }
+}
+
+enum PFSSNotificationRouteResolver {
+    static func destination(
+        categoryIdentifier: String,
+        threadIdentifier: String,
+        userInfo: [AnyHashable: Any]
+    ) -> PFSSNotificationNavigationDestination? {
+        let requestedDestination = userInfo["pfssDestination"] as? String
+
+        if categoryIdentifier ==
+            PFSSJobStartReminderService.categoryIdentifier ||
+            requestedDestination == "job" {
+            guard let jobIDValue = userInfo["jobID"] as? String,
+                  let jobID = UUID(uuidString: jobIDValue) else {
+                return nil
+            }
+            return .job(jobID)
+        }
+
+        if requestedDestination == "mileage" ||
+            threadIdentifier == "pfss-mileage" {
+            return .mileage
+        }
+
+        return nil
+    }
+}
+
+@MainActor
+final class PFSSNotificationNavigationRouter: ObservableObject {
+    static let shared = PFSSNotificationNavigationRouter()
+
+    @Published private(set) var latestRequest:
+        PFSSNotificationNavigationRequest?
+    private var handledRequestIDs: Set<UUID> = []
+
+    private init() { }
+
+    func request(_ destination: PFSSNotificationNavigationDestination) {
+        latestRequest = PFSSNotificationNavigationRequest(
+            destination: destination
+        )
+    }
+
+    func isHandled(_ request: PFSSNotificationNavigationRequest) -> Bool {
+        handledRequestIDs.contains(request.id)
+    }
+
+    func markHandled(_ request: PFSSNotificationNavigationRequest) {
+        handledRequestIDs.insert(request.id)
+    }
+}
 
 final class PFSSJobStartReminderService: NSObject {
     static let shared = PFSSJobStartReminderService()
@@ -175,6 +246,7 @@ final class PFSSJobStartReminderService: NSObject {
         content.categoryIdentifier = Self.categoryIdentifier
         content.threadIdentifier = "pfss-job-workflow"
         content.userInfo = [
+            "pfssDestination": "job",
             "jobID": jobID.uuidString,
             "jobNumber": jobNumber,
             "reminderKind": kind.rawValue
@@ -258,6 +330,27 @@ final class PFSSApplicationDelegate: NSObject, UIApplicationDelegate,
         if response.actionIdentifier ==
             PFSSJobStartReminderService.snoozeActionIdentifier {
             await PFSSJobStartReminderService.shared.snooze(from: response)
+            return
+        }
+
+        guard response.actionIdentifier ==
+                UNNotificationDefaultActionIdentifier ||
+                response.actionIdentifier ==
+                PFSSJobStartReminderService.openActionIdentifier else {
+            return
+        }
+
+        let content = response.notification.request.content
+        guard let destination = PFSSNotificationRouteResolver.destination(
+            categoryIdentifier: content.categoryIdentifier,
+            threadIdentifier: content.threadIdentifier,
+            userInfo: content.userInfo
+        ) else {
+            return
+        }
+
+        await MainActor.run {
+            PFSSNotificationNavigationRouter.shared.request(destination)
         }
     }
 }

@@ -8,87 +8,45 @@
 import SwiftUI
 import CoreLocation
 
-struct TechnicianDailyAgendaView: View {
-    private struct InvoiceDestination: Identifiable, Hashable {
-        let id: UUID
-    }
+enum TechnicianAgendaOrdering {
+    static func orderedJobs(
+        _ jobs: [JobRecord],
+        plannedStart: (JobRecord) -> Date,
+        routeSequence: (JobRecord) -> Int?,
+        isFinished: (JobRecord) -> Bool,
+        completionDate: (JobRecord) -> Date
+    ) -> [JobRecord] {
+        jobs.sorted { first, second in
+            let firstPriority = priority(
+                for: first,
+                isFinished: isFinished(first)
+            )
+            let secondPriority = priority(
+                for: second,
+                isFinished: isFinished(second)
+            )
 
-    @EnvironmentObject var store: AppDataStore
-    
-    @Environment(\.openURL)
-    private var openURL
-
-    let employee: EmployeeRecord
-    
-    @State private var navigationAddress = ""
-    @State private var showingNavigationOptions = false
-    @State private var navigationErrorMessage = ""
-    @State private var showingNavigationError = false
-    
-    @State private var selectedDate = Date()
-    @State private var selectedJobID: UUID?
-    @State private var selectedInvoiceDestination: InvoiceDestination?
-    @State private var showingDatePicker = false
-    @ObservedObject private var declineCenter = PFSSJobDeclineReviewCenter.shared
-    @State private var declineJob: JobRecord?
-    @State private var moveJob: JobRecord?
-    @State private var declineReason = ""
-    @State private var declineErrorMessage = ""
-    @State private var showingDeclineError = false
-    @State private var isSubmittingDecline = false
-
-    @StateObject private var locationManager = TechnicianLocationManager()
-    @State private var displayedJobs: [JobRecord] = []
-    @State private var isOptimizingRoute = false
-    @State private var routeOptimizationErrorMessage = ""
-    @State private var showingRouteOptimizationError = false
-    @State private var routeSummary: DailyRouteOptimizer.RouteSummary?
-    @State private var isRouteOptimized = false
-    @State private var optimizedStartByJobID: [UUID: Date] = [:]
-
-    @MainActor
-    private func workflowCoordinator() -> FieldOperationsWorkflowCoordinator {
-        FieldOperationsWorkflowCoordinator(store: store)
-    }
-
-    private var currentEmployee: EmployeeRecord {
-        store.employees.first(where: { $0.id == employee.id }) ?? employee
-    }
-
-    private var agenda: TechnicianAgenda {
-        SchedulingEngine.dailyAgenda(
-            for: currentEmployee,
-            on: selectedDate,
-            from: store.jobs
-        )
-    }
-
-    private var sortedJobs: [JobRecord] {
-        agenda.jobs.sorted { first, second in
-            let firstIsFinished = isFinishedForAgenda(first)
-            let secondIsFinished = isFinishedForAgenda(second)
-
-            if firstIsFinished != secondIsFinished {
-                return !firstIsFinished
+            if firstPriority != secondPriority {
+                return firstPriority < secondPriority
             }
 
-            if firstIsFinished && secondIsFinished {
-                let firstCompletion = completionDate(for: first)
-                let secondCompletion = completionDate(for: second)
+            if firstPriority == 2 {
+                let firstCompletion = completionDate(first)
+                let secondCompletion = completionDate(second)
                 if firstCompletion != secondCompletion {
                     return firstCompletion > secondCompletion
                 }
                 return first.id.uuidString < second.id.uuidString
             }
 
-            let firstStart = plannedStart(for: first)
-            let secondStart = plannedStart(for: second)
+            let firstStart = plannedStart(first)
+            let secondStart = plannedStart(second)
             if firstStart != secondStart {
                 return firstStart < secondStart
             }
 
-            let firstSequence = store.assignment(forJobID: first.id)?.routeSequence
-            let secondSequence = store.assignment(forJobID: second.id)?.routeSequence
+            let firstSequence = routeSequence(first)
+            let secondSequence = routeSequence(second)
 
             switch (firstSequence, secondSequence) {
             case let (.some(left), .some(right)) where left != right:
@@ -103,7 +61,327 @@ struct TechnicianDailyAgendaView: View {
         }
     }
 
-    private var plannedStartByJobID: [UUID: Date] {
+    private static func priority(
+        for job: JobRecord,
+        isFinished: Bool
+    ) -> Int {
+        if isFinished {
+            return 2
+        }
+        return job.status == .inProgress ? 0 : 1
+    }
+}
+
+struct JobWorkdayScheduleFields: View {
+    @Binding var schedule: JobScheduledWorkday
+
+    var body: some View {
+        Picker("Time Option", selection: $schedule.schedulingMode) {
+            ForEach(AssignmentSchedulingMode.allCases) { mode in
+                Text(mode.rawValue).tag(mode)
+            }
+        }
+
+        switch schedule.schedulingMode {
+        case .fixedTime:
+            QuarterHourDatePicker(
+                selection: $schedule.scheduledDate,
+                dateLabel: "Work Date",
+                timeLabel: "Fixed Time"
+            )
+        case .arrivalWindow:
+            QuarterHourDatePicker(
+                selection: $schedule.scheduledDate,
+                dateLabel: "Work Date",
+                timeLabel: "Window Starts"
+            )
+            QuarterHourDatePicker(
+                selection: arrivalWindowEndBinding,
+                dateLabel: "Window End Date",
+                timeLabel: "Window Ends"
+            )
+        case .deadline:
+            QuarterHourDatePicker(
+                selection: deadlineBinding,
+                dateLabel: "Work Date",
+                timeLabel: "Complete By"
+            )
+        case .flexibleDay:
+            DatePicker(
+                "Work Date",
+                selection: $schedule.scheduledDate,
+                displayedComponents: .date
+            )
+        }
+    }
+
+    private var arrivalWindowEndBinding: Binding<Date> {
+        Binding(
+            get: {
+                schedule.arrivalWindowEnd ?? Calendar.current.date(
+                    byAdding: .hour,
+                    value: 2,
+                    to: schedule.scheduledDate
+                ) ?? schedule.scheduledDate
+            },
+            set: { schedule.arrivalWindowEnd = $0 }
+        )
+    }
+
+    private var deadlineBinding: Binding<Date> {
+        Binding(
+            get: { schedule.completionDeadline ?? schedule.scheduledDate },
+            set: {
+                schedule.completionDeadline = $0
+                schedule.scheduledDate = Calendar.current.startOfDay(for: $0)
+            }
+        )
+    }
+}
+
+struct JobContinuationScheduleView: View {
+    @EnvironmentObject private var store: AppDataStore
+    @Environment(\.dismiss) private var dismiss
+    let job: JobRecord
+    @State private var schedule: JobScheduledWorkday
+
+    init(job: JobRecord) {
+        self.job = job
+        let base = job.allScheduledWorkDates.last ?? Date()
+        _schedule = State(initialValue: JobScheduledWorkday(
+            scheduledDate: QuarterHourDatePicker.normalized(
+                Calendar.current.date(byAdding: .day, value: 1, to: max(base, Date())) ?? Date()
+            )
+        ))
+    }
+
+    private var isDuplicateDay: Bool {
+        job.allScheduledWorkDates.contains {
+            Calendar.current.isDate($0, inSameDayAs: schedule.scheduledDate)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Continued Work") {
+                    LabeledContent("Job", value: job.jobNumber)
+                    JobWorkdayScheduleFields(schedule: $schedule)
+                }
+                Section("Scheduled Workdays") {
+                    ForEach(job.allScheduledWorkdaySchedules) { workday in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(workday.scheduledDate.formatted(date: .abbreviated, time: .shortened))
+                            Text(workday.schedulingMode.rawValue)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Section {
+                    Text("This adds another visit to the same Job. Services, pricing, customer, workflow history, and the eventual invoice stay together.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Schedule Continued Work")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add Workday") {
+                        if store.addJobContinuationWorkday(jobID: job.id, schedule: schedule) {
+                            dismiss()
+                        }
+                    }
+                    .disabled(isDuplicateDay)
+                }
+            }
+        }
+    }
+}
+
+struct TechnicianDailyAgendaView: View {
+    private struct InvoiceDestination: Identifiable, Hashable {
+        let id: UUID
+    }
+
+    private struct InvoicePrintDestination: Identifiable, Hashable {
+        let id: UUID
+    }
+
+    @EnvironmentObject var store: AppDataStore
+    @EnvironmentObject private var printer: BluetoothPrinter
+    
+    @Environment(\.openURL)
+    private var openURL
+
+    let employee: EmployeeRecord
+
+    init(employee: EmployeeRecord) {
+        self.employee = employee
+        let initialDate = Date()
+        _selectedDate = State(initialValue: initialDate)
+        _displayedAgenda = State(
+            initialValue: SchedulingEngine.dailyAgenda(
+                for: employee,
+                on: initialDate,
+                from: []
+            )
+        )
+    }
+    
+    @State private var navigationAddress = ""
+    @State private var showingNavigationOptions = false
+    @State private var navigationErrorMessage = ""
+    @State private var showingNavigationError = false
+    
+    @State private var selectedDate: Date
+    @State private var selectedJobID: UUID?
+    @State private var selectedInvoiceDestination: InvoiceDestination?
+    @State private var selectedInvoicePrintDestination: InvoicePrintDestination?
+    @State private var showingDatePicker = false
+    // Polling decline reviews changes `isRefreshing` twice every 15 seconds.
+    // My Day only queries the center when presenting decline actions, so it
+    // must not observe those bookkeeping publications and rebuild every card.
+    private let declineCenter = PFSSJobDeclineReviewCenter.shared
+    @State private var declineJob: JobRecord?
+    @State private var moveJob: JobRecord?
+    @State private var skipJob: JobRecord?
+    @State private var modifyJob: JobRecord?
+    @State private var pauseJob: JobRecord?
+    @State private var continuationJob: JobRecord?
+    @State private var declineReason = ""
+    @State private var declineErrorMessage = ""
+    @State private var showingDeclineError = false
+    @State private var isSubmittingDecline = false
+
+    @StateObject private var locationManager = TechnicianLocationManager()
+    @State private var displayedAgenda: TechnicianAgenda
+    @State private var displayedJobs: [JobRecord] = []
+    @State private var isOptimizingRoute = false
+    @State private var routeOptimizationErrorMessage = ""
+    @State private var showingRouteOptimizationError = false
+    @State private var routeSummary: DailyRouteOptimizer.RouteSummary?
+    @State private var isRouteOptimized = false
+    @State private var optimizedStartByJobID: [UUID: Date] = [:]
+    @State private var plannedStartByJobID: [UUID: Date] = [:]
+
+    @MainActor
+    private func workflowCoordinator() -> FieldOperationsWorkflowCoordinator {
+        FieldOperationsWorkflowCoordinator(store: store)
+    }
+
+    private var currentEmployee: EmployeeRecord {
+        store.employees.first(where: { $0.id == employee.id }) ?? employee
+    }
+
+    private var agenda: TechnicianAgenda {
+        displayedAgenda
+    }
+
+    /// A cheap fingerprint of the inputs that can change the selected day's
+    /// agenda. AppDataStore publishes other concerns (sync health, identity,
+    /// receipts, and settings); those publications must not rerun the full
+    /// scheduling/conflict engine while a scroll gesture is in progress.
+    private var agendaInputSignature: Int {
+        var signature = Hasher()
+        signature.combine(Calendar.current.startOfDay(for: selectedDate))
+        signature.combine(store.assignmentStore.revision)
+
+        let employee = currentEmployee
+        signature.combine(employee.id)
+        signature.combine(employee.defaultStartMinutes)
+        signature.combine(employee.defaultEndMinutes)
+        signature.combine(employee.lunchDurationMinutes)
+        for day in employee.workingDays.map(\.rawValue).sorted() {
+            signature.combine(day)
+        }
+
+        for job in store.jobs {
+            signature.combine(job.id)
+            signature.combine(job.lifecycleStatus.rawValue)
+            signature.combine(job.status.rawValue)
+            signature.combine(job.workflowState.rawValue)
+            signature.combine(job.scheduledDate)
+            signature.combine(job.primaryTechnicianID)
+            signature.combine(job.secondaryTechnicianID)
+            signature.combine(job.scheduledDurationOverrideMinutes)
+            signature.combine(SchedulingCalculator.scheduledMinutes(for: job))
+            signature.combine(job.assignmentSchedulingMode.rawValue)
+            signature.combine(job.arrivalWindowEnd)
+            signature.combine(job.completionDeadline)
+            signature.combine(job.completedDate)
+            for workday in job.additionalWorkdaySchedules {
+                signature.combine(workday)
+            }
+            for date in job.additionalScheduledDates {
+                signature.combine(date)
+            }
+        }
+        return signature.finalize()
+    }
+
+    private var sortedJobs: [JobRecord] {
+        orderedJobs(
+            agenda.jobs,
+            plannedStarts: plannedStartByJobID,
+            optimizedStarts: optimizedStartByJobID
+        )
+    }
+
+    private func orderedJobs(
+        _ jobs: [JobRecord],
+        plannedStarts: [UUID: Date],
+        optimizedStarts: [UUID: Date]
+    ) -> [JobRecord] {
+        TechnicianAgendaOrdering.orderedJobs(
+            jobs,
+            plannedStart: { job in
+                optimizedStarts[job.id]
+                    ?? plannedStarts[job.id]
+                    ?? job.scheduledDate
+            },
+            routeSequence: {
+                store.assignment(forJobID: $0.id)?.routeSequence
+            },
+            isFinished: { isFinishedForAgenda($0) },
+            completionDate: { completionDate(for: $0) }
+        )
+    }
+
+    private func refreshDisplayedJobs(
+        resetRouteOptimization: Bool = false
+    ) {
+        let refreshedAgenda = SchedulingEngine.dailyAgenda(
+            for: currentEmployee,
+            on: selectedDate,
+            from: store.jobs
+        )
+        displayedAgenda = refreshedAgenda
+        let planMap = calculatePlannedStartByJobID()
+        let optimizedMap: [UUID: Date]
+
+        if resetRouteOptimization {
+            optimizedMap = [:]
+            routeSummary = nil
+            isRouteOptimized = false
+            optimizedStartByJobID = [:]
+        } else {
+            optimizedMap = optimizedStartByJobID
+        }
+
+        plannedStartByJobID = planMap
+        displayedJobs = orderedJobs(
+            refreshedAgenda.jobs,
+            plannedStarts: planMap,
+            optimizedStarts: optimizedMap
+        )
+    }
+
+    private func calculatePlannedStartByJobID() -> [UUID: Date] {
         let plan = store.dailyPlan(
             for: currentEmployee,
             on: selectedDate
@@ -155,22 +433,6 @@ struct TechnicianDailyAgendaView: View {
 
                 dailySummaryCard
 
-                NavigationLink {
-                    TechnicianCalendarView(
-                        initialEmployeeID: currentEmployee.id
-                    )
-                    .environmentObject(store)
-                } label: {
-                    DashboardStatCard(
-                        title: "Calendar View",
-                        value: "",
-                        icon: "calendar",
-                        subtitle: "1, 3, or 5-day job schedule",
-                        accentColor: .orange,
-                        trend: .neutral,
-                        navigationIndicator: true
-                    )
-                }
                 .buttonStyle(.plain)
 
                 NavigationLink {
@@ -187,6 +449,23 @@ struct TechnicianDailyAgendaView: View {
                             try store.resolveRecordConflict(
                                 operationID: operationID,
                                 resolution: resolution
+                            )
+                        },
+                        employees: store.employees,
+                        onResolveQuarantine: {
+                            operationID, resolution, reason in
+                            try await store.resolveInboxQuarantine(
+                                operationID: operationID,
+                                resolution: resolution,
+                                reason: reason
+                            )
+                        },
+                        onRepairAssignmentQuarantine: {
+                            operationID, assignment, reason in
+                            try await store.repairAssignmentQuarantine(
+                                operationID: operationID,
+                                repairedAssignment: assignment,
+                                reason: reason
                             )
                         }
                     )
@@ -239,6 +518,86 @@ struct TechnicianDailyAgendaView: View {
             JobOccurrenceMoveView(job: job)
                 .environmentObject(store)
         }
+        .sheet(item: $continuationJob) { job in
+            JobContinuationScheduleView(job: job)
+                .environmentObject(store)
+        }
+        .confirmationDialog(
+            "Modify Job",
+            isPresented: Binding(
+                get: { modifyJob != nil },
+                set: { if !$0 { modifyJob = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let job = modifyJob {
+                if canDecline(job) && !hasPendingDecline(job) {
+                    Button("Decline Job", role: .destructive) {
+                        declineReason = ""
+                        declineJob = job
+                        modifyJob = nil
+                    }
+                }
+                if canMove(job) {
+                    Button("Move Scheduled Day") {
+                        moveJob = job
+                        modifyJob = nil
+                    }
+                }
+                if canAddWorkday(job) {
+                    Button("Add Another Workday") {
+                        continuationJob = job
+                        modifyJob = nil
+                    }
+                }
+                if canSkip(job) {
+                    Button("Skip This Visit", role: .destructive) {
+                        skipJob = job
+                        modifyJob = nil
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) { modifyJob = nil }
+        }
+        .confirmationDialog(
+            "Pause Work",
+            isPresented: Binding(
+                get: { pauseJob != nil },
+                set: { if !$0 { pauseJob = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Pause for Now") {
+                pauseSelectedJob(scheduleContinuation: false)
+            }
+            Button("Pause and Schedule Continued Work") {
+                pauseSelectedJob(scheduleContinuation: true)
+            }
+            Button("Cancel", role: .cancel) { pauseJob = nil }
+        } message: {
+            Text("Choose whether this Job will resume later today or needs another scheduled workday.")
+        }
+        .confirmationDialog(
+            "Skip only this visit?",
+            isPresented: Binding(
+                get: { skipJob != nil },
+                set: { if !$0 { skipJob = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Skip This Visit", role: .destructive) {
+                if let skipJob {
+                    store.skipRecurringOccurrence(
+                        jobID: skipJob.id,
+                        reason: "Skipped from My Day by an Owner or Manager."
+                    )
+                }
+                skipJob = nil
+            }
+            Button("Cancel", role: .cancel) { skipJob = nil }
+        } message: {
+            Text("This visit will be removed. Future jobs in the recurring series will stay on their current schedule.")
+        }
         .alert("Unable to Decline Job", isPresented: $showingDeclineError) {
             Button("OK", role: .cancel) { }
         } message: {
@@ -264,6 +623,24 @@ struct TechnicianDailyAgendaView: View {
                 }
             }
             .presentationDetents([.medium])
+        }
+        .sheet(item: $selectedInvoicePrintDestination) { destination in
+            if let invoice = store.invoices.first(where: {
+                $0.id == destination.id
+            }) {
+                ReceiptPrinterSelectionView(
+                    receiptText: printableInvoiceText(for: invoice)
+                )
+                .environmentObject(printer)
+            } else {
+                ContentUnavailableView(
+                    "Invoice Not Found",
+                    systemImage: "doc.text.magnifyingglass",
+                    description: Text(
+                        "The invoice may have been removed or archived."
+                    )
+                )
+            }
         }
         .navigationDestination(
             item: $selectedJobID
@@ -334,24 +711,15 @@ struct TechnicianDailyAgendaView: View {
             Text(navigationErrorMessage)
         }
         .task(id: selectedDate) {
-            displayedJobs = sortedJobs
-            routeSummary = nil
-            isRouteOptimized = false
-            optimizedStartByJobID = [:]
+            refreshDisplayedJobs(resetRouteOptimization: true)
 
             if locationManager.authorizationStatus == .authorizedAlways ||
                locationManager.authorizationStatus == .authorizedWhenInUse {
                 locationManager.refreshLocation()
             }
         }
-        .onChange(of: agenda.jobs.map(\.id)) {
-            displayedJobs = sortedJobs
-            routeSummary = nil
-            isRouteOptimized = false
-            optimizedStartByJobID = [:]
-        }
-        .onChange(of: finishedJobIDs) {
-            displayedJobs = sortedJobs
+        .onChange(of: agendaInputSignature) {
+            refreshDisplayedJobs()
         }
         .alert(
             "Route Optimization",
@@ -749,50 +1117,46 @@ struct TechnicianDailyAgendaView: View {
             technicianActionRow(for: job)
 
             if let invoice = store.invoice(for: job) {
-                Button {
-                    selectedInvoiceDestination = InvoiceDestination(id: invoice.id)
-                } label: {
-                    Label("View Invoice", systemImage: "doc.text.fill")
-                        .fontWeight(.semibold)
-                        .frame(maxWidth: .infinity)
+                HStack(spacing: 10) {
+                    Button {
+                        selectedInvoiceDestination = InvoiceDestination(id: invoice.id)
+                    } label: {
+                        Label("View Invoice", systemImage: "doc.text.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
+                            .frame(maxWidth: .infinity, minHeight: 34)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue)
+
+                    Button {
+                        selectedInvoicePrintDestination = InvoicePrintDestination(
+                            id: invoice.id
+                        )
+                    } label: {
+                        Label("Print Invoice", systemImage: "printer.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
+                            .frame(maxWidth: .infinity, minHeight: 34)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.blue)
             }
 
-            if canDecline(job) || canMove(job) {
-                HStack(spacing: 12) {
-                    if canDecline(job) {
-                        if let assignment = store.assignment(forJobID: job.id),
-                           declineCenter.hasPendingReview(assignmentID: assignment.id) {
-                            Label("Review Pending", systemImage: "flag.fill")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.orange)
-                                .frame(maxWidth: .infinity)
-                        } else {
-                            Button(role: .destructive) {
-                                declineReason = ""
-                                declineJob = job
-                            } label: {
-                                Label("Decline", systemImage: "flag.fill")
-                                    .fontWeight(.semibold)
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                    }
-
-                    if canMove(job) {
-                        Button {
-                            moveJob = job
-                        } label: {
-                            Label("Move", systemImage: "calendar.badge.clock")
-                                .fontWeight(.semibold)
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
+            if canDecline(job) || canMove(job) || canSkip(job) || canAddWorkday(job) {
+                Button {
+                    modifyJob = job
+                } label: {
+                    Label("Modify", systemImage: "ellipsis.circle.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 34)
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(uiColor: .systemGray3))
             }
         }
         .padding()
@@ -818,14 +1182,68 @@ struct TechnicianDailyAgendaView: View {
         return assignment.status == .scheduled || assignment.status == .dispatched
     }
 
+    private func printableInvoiceText(
+        for invoice: InvoiceRecord
+    ) -> String {
+        let customer = store.customers.first {
+            $0.customerNumber == invoice.customerNumber
+        }
+        let site = invoice.siteID.flatMap { siteID in
+            store.sites.first { $0.id == siteID }
+        }
+
+        return ThermalReceiptRenderer.renderPrintableDocument(
+            invoice: invoice,
+            businessProfile: store.businessProfile,
+            customer: customer,
+            site: site,
+            catalogItems: store.serviceCatalogItems
+        )
+    }
+
+    private func hasPendingDecline(_ job: JobRecord) -> Bool {
+        guard let assignment = store.assignment(forJobID: job.id) else { return false }
+        return declineCenter.hasPendingReview(assignmentID: assignment.id)
+    }
+
+    private func canAddWorkday(_ job: JobRecord) -> Bool {
+        job.lifecycleStatus == .active && job.status != .completed && job.status != .cancelled
+    }
+
     private func canMove(_ job: JobRecord) -> Bool {
-        guard let assignment = store.assignment(forJobID: job.id),
-              assignment.status == .scheduled || assignment.status == .dispatched else {
+        guard job.lifecycleStatus == .active,
+              job.status != .completed,
+              job.status != .cancelled else { return false }
+        let isAdditionalWorkday = store.isAdditionalJobWorkday(
+            jobID: job.id,
+            scheduledDate: job.scheduledDate
+        )
+        if !isAdditionalWorkday {
+            guard job.workflowState == .notStarted,
+                  job.status == .toBeScheduled ||
+                  job.status == .scheduled ||
+                  job.status == .assigned else { return false }
+        }
+        if store.canManageCompany {
+            return true
+        }
+        guard let assignment = store.assignment(forJobID: job.id) else {
             return false
         }
-        return store.canManageCompany ||
-            (store.cloudEmployeeID == currentEmployee.id &&
-             assignment.primaryTechnicianID == currentEmployee.id)
+        return store.cloudEmployeeID == currentEmployee.id &&
+            assignment.primaryTechnicianID == currentEmployee.id &&
+            (isAdditionalWorkday ||
+             assignment.status == .scheduled || assignment.status == .dispatched)
+    }
+
+    private func canSkip(_ job: JobRecord) -> Bool {
+        store.canManageCompany &&
+            job.recurringWorkTemplateID != nil &&
+            job.lifecycleStatus == .active &&
+            job.workflowState == .notStarted &&
+            (job.status == .toBeScheduled ||
+             job.status == .scheduled ||
+             job.status == .assigned)
     }
 
     private func declineSheet(for job: JobRecord) -> some View {
@@ -1060,10 +1478,11 @@ struct TechnicianDailyAgendaView: View {
             systemImage: action.systemImage,
             tint: action.presentation.accent.color
         ) {
-            performWorkflowAction(
-                action,
-                for: job
-            )
+            if action == .pauseWork {
+                pauseJob = job
+            } else {
+                performWorkflowAction(action, for: job)
+            }
         }
     }
 
@@ -1083,11 +1502,17 @@ struct TechnicianDailyAgendaView: View {
         isTechnicianComplete(job)
     }
 
-    private var finishedJobIDs: [UUID] {
+    private var agendaOrderingSignature: [String] {
         agenda.jobs
-            .filter(isFinishedForAgenda)
-            .map(\.id)
-            .sorted { $0.uuidString < $1.uuidString }
+            .map { job in
+                [
+                    job.id.uuidString,
+                    job.status.rawValue,
+                    job.workflowState.rawValue,
+                    isFinishedForAgenda(job) ? "finished" : "open"
+                ].joined(separator: "|")
+            }
+            .sorted()
     }
 
     private func completionDate(for job: JobRecord) -> Date {
@@ -1125,6 +1550,19 @@ struct TechnicianDailyAgendaView: View {
             action: action,
             employeeID: currentEmployee.id
         )
+    }
+
+    private func pauseSelectedJob(scheduleContinuation: Bool) {
+        guard let job = pauseJob else { return }
+        let succeeded = workflowCoordinator().performWorkflowAction(
+            jobID: job.id,
+            action: .pauseWork,
+            employeeID: currentEmployee.id
+        )
+        pauseJob = nil
+        if succeeded && scheduleContinuation {
+            continuationJob = store.jobs.first(where: { $0.id == job.id }) ?? job
+        }
     }
 
     private func summaryMetric(
@@ -1298,10 +1736,7 @@ struct TechnicianDailyAgendaView: View {
         )
 
         store.updateEmployee(updatedEmployee)
-        displayedJobs = sortedJobs
-        routeSummary = nil
-        isRouteOptimized = false
-        optimizedStartByJobID = [:]
+        refreshDisplayedJobs(resetRouteOptimization: true)
     }
 
     private var greetingText: String {
@@ -1686,7 +2121,13 @@ struct TechnicianDailyAgendaView: View {
                     )
                     store.rememberAcceptedRoutePlan(routePlan)
                     optimizedStartByJobID = optimizedStarts
-                    displayedJobs = sortedJobs
+                    let planMap = calculatePlannedStartByJobID()
+                    plannedStartByJobID = planMap
+                    displayedJobs = orderedJobs(
+                        agenda.jobs,
+                        plannedStarts: planMap,
+                        optimizedStarts: optimizedStarts
+                    )
                     routeSummary = summary
                     isRouteOptimized = !routePlan.stops.isEmpty
                     if routePlan.hasBlockingConflicts {

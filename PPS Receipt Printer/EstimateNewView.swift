@@ -16,23 +16,29 @@ struct EstimateNewView: View {
     @State private var selectedSiteID: UUID?
 
     @State private var lineItems: [ServiceLineItem] = []
-    @State private var discount = ""
+    @State private var discountMethod: PricingDiscountMethod = .fixedAmount
+    @State private var discountInputValue: Double = 0
 
     @State private var salesperson = ""
     @State private var status: EstimateRecordStatus = .draft
-    @State private var expirationDate = Calendar.current.date(byAdding: .day, value: 30, to: Date()) ?? Date()
+    @State private var expirationDate = Calendar.current.date(byAdding: .day, value: 31, to: Date()) ?? Date()
+    @State private var estimateTitle = ""
+    @State private var scopeOfWork = ""
 
     @FocusState private var isInputFocused: Bool
     @State private var activeSheet: ActiveSheet?
+    @State private var compactEditorDestination: CompactWorkOrderEditorDestination?
 
     init(
         preselectedCustomerNumber: String = "",
-        preselectedSiteID: UUID? = nil
+        preselectedSiteID: UUID? = nil,
+        initialLineItems: [ServiceLineItem] = []
     ) {
         _selectedCustomerNumber = State(
             initialValue: preselectedCustomerNumber
         )
         _selectedSiteID = State(initialValue: preselectedSiteID)
+        _lineItems = State(initialValue: initialLineItems)
     }
 
     private enum ActiveSheet: Identifiable {
@@ -55,7 +61,11 @@ struct EstimateNewView: View {
     }
 
     private var discountValue: Double {
-        Double(discount) ?? 0
+        DiscountCalculator.amount(
+            subtotal: subtotalValue,
+            method: discountMethod,
+            inputValue: discountInputValue
+        )
     }
 
     private var totalValue: Double {
@@ -103,59 +113,26 @@ struct EstimateNewView: View {
 
     var body: some View {
         Form {
-                Section("New Estimate") {
-                    SearchableRecordSelectionField(
-                        title: "Lead",
-                        placeholder: "None",
-                        options: leadOptions,
-                        selection: $selectedLeadNumber,
-                        allowsNone: true
-                    )
-                    .onChange(of: selectedLeadNumber) { _, leadNumber in
-                        guard !leadNumber.isEmpty else { return }
-                        selectedCustomerNumber = ""
-                        selectedSiteID = nil
-                    }
+                CompactCustomerInfoSection(
+                    leadNumber: $selectedLeadNumber,
+                    customerNumber: $selectedCustomerNumber,
+                    siteID: $selectedSiteID,
+                    salesperson: $salesperson,
+                    expirationDate: $expirationDate,
+                    onSelect: { compactEditorDestination = .customerInfo }
+                )
 
-                    SearchableRecordSelectionField(
-                        title: "Customer",
-                        placeholder: "Select Customer",
-                        options: customerOptions,
-                        selection: $selectedCustomerNumber
-                    )
-                    .onChange(of: selectedCustomerNumber) { _, customerNumber in
-                        guard !customerNumber.isEmpty else {
-                            selectedSiteID = nil
-                            return
-                        }
-                        selectedLeadNumber = ""
-                        if !availableSites.contains(where: { $0.id == selectedSiteID }) {
-                            selectedSiteID = nil
-                        }
-                    }
+                CompactTitleSection(
+                    title: $estimateTitle,
+                    onSelect: { compactEditorDestination = .title }
+                )
 
-                    Picker("Site", selection: $selectedSiteID) {
-                        Text("Select Site").tag(UUID?.none)
-                        ForEach(availableSites) { site in
-                            Text(site.siteName.isEmpty ? site.serviceAddress : site.siteName)
-                                .tag(Optional(site.id))
-                        }
-                    }
-
-                    Picker("Salesperson", selection: $salesperson) {
-                        Text("Unassigned").tag("")
-                        ForEach(salesEmployees) { employee in
-                            Text(employee.displayName).tag(employee.displayName)
-                        }
-                    }
-
+                Section("Status") {
                     Picker("Status", selection: $status) {
                         ForEach(EstimateRecordStatus.allCases) { status in
                             Text(status.rawValue).tag(status)
                         }
                     }
-
-                    DatePicker("Expiration Date", selection: $expirationDate, displayedComponents: .date)
                 }
 
                 WorkOrderEditorView(
@@ -173,30 +150,17 @@ struct EstimateNewView: View {
                     }
                 )
 
-                Section("Pricing") {
-                    LabeledContent("Discount") {
-                        SelectAllTextField(
-                            placeholder: "0.00",
-                            text: $discount
-                        )
-                        .frame(minWidth: 90, minHeight: 30)
-                        .focused($isInputFocused)
-                    }
+                CompactPricingSection(
+                    method: $discountMethod,
+                    inputValue: $discountInputValue,
+                    subtotal: subtotalValue,
+                    onSelect: { compactEditorDestination = .pricing }
+                )
 
-                    HStack {
-                        Text("Subtotal")
-                        Spacer()
-                        Text(subtotalValue, format: .currency(code: "USD"))
-                            .bold()
-                    }
-
-                    HStack {
-                        Text("Total")
-                        Spacer()
-                        Text(totalValue, format: .currency(code: "USD"))
-                            .bold()
-                    }
-                }
+                CompactScopeSection(
+                    scope: $scopeOfWork,
+                    onSelect: { compactEditorDestination = .scope }
+                )
 
             }
             .navigationTitle("New Estimate")
@@ -215,6 +179,20 @@ struct EstimateNewView: View {
                     .disabled(!hasValidEstimateRecipient || lineItems.isEmpty)
                 }
             }
+            .compactWorkOrderEditorSheet(
+                destination: $compactEditorDestination,
+                leadNumber: $selectedLeadNumber,
+                customerNumber: $selectedCustomerNumber,
+                siteID: $selectedSiteID,
+                salesperson: $salesperson,
+                expirationDate: $expirationDate,
+                title: $estimateTitle,
+                discountMethod: $discountMethod,
+                discountInputValue: $discountInputValue,
+                subtotal: subtotalValue,
+                scope: $scopeOfWork,
+                store: store
+            )
             .sheet(item: $activeSheet) { sheet in
                 switch sheet {
                 case .catalogPicker:
@@ -242,6 +220,7 @@ struct EstimateNewView: View {
 
         let estimate = EstimateRecord(
             estimateNumber: store.generateEstimateNumber(),
+            title: estimateTitle.trimmingCharacters(in: .whitespacesAndNewlines),
             leadNumber: selectedLeadNumber,
             customerNumber: selectedCustomerNumber,
             siteID: selectedSiteID,
@@ -257,7 +236,10 @@ struct EstimateNewView: View {
             salesperson: salesperson,
             status: status,
             createdDate: Date(),
-            expirationDate: expirationDate
+            expirationDate: expirationDate,
+            scopeOfWork: scopeOfWork.trimmingCharacters(in: .whitespacesAndNewlines),
+            discountMethod: discountMethod,
+            discountInputValue: discountInputValue
         )
 
         store.addEstimate(estimate)
@@ -267,10 +249,13 @@ struct EstimateNewView: View {
         selectedCustomerNumber = ""
         selectedSiteID = nil
         lineItems = []
-        discount = ""
+        discountMethod = .fixedAmount
+        discountInputValue = 0
         salesperson = ""
         status = .draft
-        expirationDate = Calendar.current.date(byAdding: .day, value: 30, to: Date()) ?? Date()
+        expirationDate = Calendar.current.date(byAdding: .day, value: 31, to: Date()) ?? Date()
+        estimateTitle = ""
+        scopeOfWork = ""
     }
 
     private func customerName(_ customer: Customer) -> String {

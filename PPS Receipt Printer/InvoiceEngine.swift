@@ -52,6 +52,9 @@ struct InvoiceEngine {
         at timestamp: Date = Date()
     ) -> InvoiceRecord {
         var result = invoice
+        // Combined charges retain multiple historical tax jurisdictions.
+        // They must not be repriced through the single-jurisdiction editor.
+        if result.combination != nil || result.paymentCorrection != nil { return normalizedAfterInvoiceEdit(result, at: timestamp) }
         result.lineItems = PricingCalculator.updatedLineItems(result.lineItems)
         result.subtotal = PricingCalculator.subtotal(for: result.lineItems)
         result.discount = nonnegativeCurrency(result.discount)
@@ -62,6 +65,22 @@ struct InvoiceEngine {
             taxSnapshot: result.taxSnapshot
         )
         return normalizedAfterInvoiceEdit(result, at: timestamp)
+    }
+
+    /// Recalculates an invoice while honoring a Paid status that the user
+    /// explicitly selected during this edit. Existing paid invoices that are
+    /// merely repriced continue through `recalculated` so historical payment
+    /// evidence is never increased without an explicit collection action.
+    static func recalculatedForEditorSave(
+        _ invoice: InvoiceRecord,
+        explicitlyMarkedPaid: Bool,
+        at timestamp: Date = Date()
+    ) -> InvoiceRecord {
+        var result = recalculated(invoice, at: timestamp)
+        guard explicitlyMarkedPaid else { return result }
+
+        result.status = .paid
+        return normalizedPaymentState(for: result, at: timestamp)
     }
 
     /// Reconciles a corrected invoice without inventing or erasing payment.
@@ -83,7 +102,11 @@ struct InvoiceEngine {
         }
 
         result.balanceDue = nonnegativeCurrency(result.total - result.amountPaid)
-        if result.total > 0, result.amountPaid >= result.total {
+        // An explicitly closed zero-dollar invoice owes nothing, but has no
+        // payment to record. Keep new zero-dollar drafts open until selected
+        // as Paid; never invent collection or discard prior payment evidence.
+        if (result.total > 0 && result.amountPaid >= result.total)
+            || (result.total == 0 && result.status == .paid) {
             result.status = .paid
             result.paidDate = result.paidDate ?? timestamp
         } else if result.amountPaid > 0 {
@@ -167,7 +190,14 @@ struct InvoiceEngine {
         forJobNumber jobNumber: String,
         in invoices: [InvoiceRecord]
     ) -> InvoiceRecord? {
-        invoices.first { $0.jobNumber == jobNumber }
+        if let combined = invoices.first(where: {
+            $0.combination != nil && $0.status != .void && $0.jobNumbers.contains(jobNumber)
+        }) { return combined }
+        guard let original = invoices.first(where: { $0.jobNumber == jobNumber }) else { return nil }
+        if let target = original.combinedIntoInvoiceID {
+            return invoices.first { $0.id == target } ?? original
+        }
+        return original
     }
 
     private static func refreshedTaxSnapshot(

@@ -6,14 +6,20 @@
 //
 
 import SwiftUI
+import Combine
 
 struct DashboardView: View {
     @EnvironmentObject private var store: AppDataStore
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var mileageRepository = MileageTripRepository.shared
     @ObservedObject private var declineCenter = PFSSJobDeclineReviewCenter.shared
+    @ObservedObject private var notificationRouter =
+        PFSSNotificationNavigationRouter.shared
     @StateObject private var cloudManager = PFSSCloudflareBetaManager()
     @State private var synchronizationHealth: PFSSSynchronizationHealth?
+    @State private var offlineQueueRevision = 0
+    @State private var notificationPath:
+        [PFSSNotificationNavigationDestination] = []
     @Binding var selectedSection: AppSection
 
     private var todaysJobCount: Int {
@@ -22,29 +28,79 @@ struct DashboardView: View {
         }.count
     }
 
-    private var dispatchQueueCount: Int {
-        store.assignmentEngine.unassignedAssignments.count
+    private var mileageReviewCount: Int {
+        mileageRepository.unclassifiedTrips.count
     }
 
-    private var monthToDateMileage: Int {
-        Int(ceil(mileageRepository.monthToDateMileageMiles()))
-    }
-
-    private var mileageReviewSubtitle: String {
-        let count = mileageRepository.unclassifiedTrips.count
-        return "\(count) \(count == 1 ? "Trip" : "Trips") to Review"
-    }
-
-    private var dashboardTileIDs: [String] {
-        var tileIDs = ["sales", "service", "myDay", "mileage", "operations"]
-        if store.shouldPresentAdminDashboardTile {
-            tileIDs.append("admin")
+    private var deviceMyDayEmployee: EmployeeRecord? {
+        guard let employee = store.authenticatedCloudEmployee,
+              employee.isActive,
+              employee.lifecycleStatus == .active,
+              employee.hasRole(.technician)
+                || employee.hasRole(.manager)
+                || employee.hasRole(.owner) else {
+            return nil
         }
-        return tileIDs
+        return employee
+    }
+
+    private var actionableDispatchJobCount: Int {
+        let activeJobIDs = Set(
+            store.activeJobs
+                .filter { $0.status != .completed && $0.status != .cancelled }
+                .map(\.id)
+        )
+        return Set(
+            store.assignmentEngine.unassignedAssignments
+                .map(\.jobID)
+                .filter(activeJobIDs.contains)
+        ).count
+    }
+
+    private var operationsAttentionCount: Int {
+        actionableDispatchJobCount
+            + PFSSConflictInbox.unresolvedItems(
+                in: store.offlineOperationQueue.orderedOperations
+            ).count
+            + PFSSQuarantineInbox.unresolvedItems(
+                in: store.offlineOperationQueue.orderedOperations
+            ).count
+            + store.recurringWorkTemplates.filter { $0.status == .held }.count
+    }
+
+    private var monthToDateRevenue: Double {
+        RevenueSummaryEngine.summary(
+            for: .monthly,
+            jobs: store.activeJobs,
+            invoices: store.invoices
+        ).collected
+    }
+
+    private var homeFeatureTileIDs: [String] {
+        store.canManageCompany
+            ? ["myDay", "mileage", "operations", "revenue"]
+            : ["myDay", "mileage"]
+    }
+
+    private var canOpenSalesCalendar: Bool {
+        store.canManageCompany
+            || store.authenticatedCloudEmployee?.hasRole(.salesperson) == true
+    }
+
+    private var canOpenJobsCalendar: Bool {
+        store.canManageCompany
+            || store.authenticatedCloudEmployee?.hasRole(.technician) == true
+    }
+
+    private var homeShortcutTileIDs: [String] {
+        var ids = ["addLead", "customers", "estimates", "invoices", "jobs", "tools"]
+        if canOpenSalesCalendar { ids.append("salesCalendar") }
+        if canOpenJobsCalendar { ids.append("jobsCalendar") }
+        return ids
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $notificationPath) {
             ScrollView {
                 VStack(spacing: 16) {
                     if let health = synchronizationHealth,
@@ -83,85 +139,99 @@ struct DashboardView: View {
                     } else if store.cloudSynchronizationAccessStatus == .suspended {
                         suspendedAccessNotice
                     } else {
-                        CustomizableTileGrid(
-                            storageKey: "pfss.tile-layout.dashboard.v1",
-                            defaultTileIDs: dashboardTileIDs
-                        ) { tileID in
-                            switch tileID {
-                            case "sales":
-                                dashboardTile(
-                                    title: "Sales",
-                                    value: "\(store.activeLeads.count + store.activeEstimates.count)",
-                                    icon: "chart.line.uptrend.xyaxis",
-                                    subtitle: "Leads and estimates",
-                                    color: .blue,
-                                    section: .sales
-                                )
-                            case "service":
-                                dashboardTile(
-                                    title: "Service",
-                                    value: "\(store.activeJobs.count)",
-                                    icon: "wrench.and.screwdriver.fill",
-                                    subtitle: "Jobs and customers",
-                                    color: .orange,
-                                    section: .service
-                                )
-                            case "myDay":
-                                dashboardTile(
-                                    title: "My Day",
-                                    value: "\(todaysJobCount)",
-                                    icon: "calendar.day.timeline.left",
-                                    subtitle: "Today's technician work",
-                                    color: .cyan,
-                                    section: .myDay
-                                )
-                            case "operations":
-                                if store.canManageCompany {
+                        VStack(spacing: 18) {
+                            CustomizableTileGrid(
+                                storageKey: "pfss.tile-layout.home.shortcuts.v1",
+                                defaultTileIDs: homeShortcutTileIDs,
+                                columnCount: 4
+                            ) { tileID in
+                                homeShortcut(tileID)
+                            }
+
+                            CustomizableTileGrid(
+                                storageKey: "pfss.tile-layout.home.features.v1",
+                                defaultTileIDs: homeFeatureTileIDs,
+                                columnCount: 3
+                            ) { tileID in
+                                switch tileID {
+                                case "myDay":
+                                    if let employee = deviceMyDayEmployee {
+                                        NavigationLink {
+                                            TechnicianDailyAgendaView(employee: employee)
+                                                .environmentObject(store)
+                                        } label: {
+                                            LargeHomeTile(
+                                                title: "My Day",
+                                                icon: "calendar.day.timeline.left",
+                                                badgeCount: todaysJobCount,
+                                                accentColor: .cyan
+                                            )
+                                        }
+                                        .buttonStyle(.plain)
+                                        .accessibilityHint(
+                                            "Opens today's plan for \(employee.displayName)"
+                                        )
+                                    } else {
+                                        Button {
+                                            selectedSection = .myDay
+                                        } label: {
+                                            LargeHomeTile(
+                                                title: "My Day",
+                                                icon: "calendar.day.timeline.left",
+                                                badgeCount: todaysJobCount,
+                                                accentColor: .cyan
+                                            )
+                                        }
+                                        .buttonStyle(.plain)
+                                        .accessibilityHint("Opens the technician selector")
+                                    }
+                                case "mileage":
                                     NavigationLink {
-                                        OperationsView()
+                                        MileageWorkspaceView()
                                     } label: {
-                                        DashboardStatCard(
-                                            title: "Operations",
-                                            value: "\(dispatchQueueCount)",
-                                            icon: "person.3.sequence.fill",
-                                            subtitle: "Awaiting dispatch",
-                                            accentColor: .purple,
-                                            trend: .neutral,
-                                            navigationIndicator: true
+                                        LargeHomeTile(
+                                            title: "Mileage",
+                                            icon: "car.rear.road.lane",
+                                            badgeCount: mileageReviewCount,
+                                            accentColor: .green
                                         )
                                     }
                                     .buttonStyle(.plain)
-                                    .accessibilityHint("Opens Operations")
+                                    .accessibilityHint("Opens mileage review and manual entry")
+                                case "operations":
+                                    if store.canManageCompany {
+                                        NavigationLink {
+                                            OperationsView()
+                                        } label: {
+                                            LargeHomeTile(
+                                                title: "Operations",
+                                                icon: "person.3.sequence.fill",
+                                                badgeCount: operationsAttentionCount,
+                                                showsBadge: operationsAttentionCount > 0,
+                                                accentColor: .orange
+                                            )
+                                        }
+                                        .buttonStyle(.plain)
+                                        .accessibilityHint("Opens jobs awaiting dispatch")
+                                    }
+                                case "revenue":
+                                    if store.canManageCompany {
+                                        NavigationLink {
+                                            OperationsRevenueView()
+                                        } label: {
+                                            LargeHomeTile(
+                                                title: "Revenue",
+                                                icon: "dollarsign.circle.fill",
+                                                badgeText: compactCurrency(monthToDateRevenue),
+                                                accentColor: .green
+                                            )
+                                        }
+                                        .buttonStyle(.plain)
+                                        .accessibilityHint("Opens revenue summaries")
+                                    }
+                                default:
+                                    EmptyView()
                                 }
-                            case "mileage":
-                                NavigationLink {
-                                    MileageWorkspaceView()
-                                } label: {
-                                    DashboardStatCard(
-                                        title: "Mileage",
-                                        value: "\(monthToDateMileage) mi",
-                                        icon: "car.rear.road.lane",
-                                        subtitle: mileageReviewSubtitle,
-                                        accentColor: .green,
-                                        trend: .neutral,
-                                        navigationIndicator: true
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityHint("Opens mileage review and manual entry")
-                            case "admin":
-                                if store.shouldPresentAdminDashboardTile {
-                                    dashboardTile(
-                                        title: "Settings",
-                                        value: "Manage",
-                                        icon: "gearshape.2.fill",
-                                        subtitle: "Business settings",
-                                        color: .gray,
-                                        section: .admin
-                                    )
-                                }
-                            default:
-                                EmptyView()
                             }
                         }
                     }
@@ -169,8 +239,22 @@ struct DashboardView: View {
                 .padding()
             }
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Dashboard")
+            .navigationTitle("Home")
             .navigationBarTitleDisplayMode(.large)
+            .navigationDestination(
+                for: PFSSNotificationNavigationDestination.self
+            ) { destination in
+                notificationDestination(destination)
+            }
+        }
+        .onAppear {
+            openPendingNotificationDestination()
+        }
+        .onChange(of: notificationRouter.latestRequest) { _, _ in
+            openPendingNotificationDestination()
+        }
+        .onChange(of: store.cloudSynchronizationAccessStatus) { _, _ in
+            openPendingNotificationDestination()
         }
         .task {
             declineCenter.start()
@@ -194,6 +278,47 @@ struct DashboardView: View {
             else { return }
             synchronizationHealth = health.summary.activeAlerts > 0 ? health : nil
         }
+        .onReceive(store.offlineOperationQueue.objectWillChange) { _ in
+            offlineQueueRevision &+= 1
+        }
+    }
+
+    @ViewBuilder
+    private func notificationDestination(
+        _ destination: PFSSNotificationNavigationDestination
+    ) -> some View {
+        switch destination {
+        case let .job(jobID):
+            if let job = store.jobs.first(where: { $0.id == jobID }) {
+                JobDetailView(job: job)
+            } else {
+                ContentUnavailableView(
+                    "Job Unavailable",
+                    systemImage: "briefcase.fill",
+                    description: Text(
+                        "This job is not currently available on this device."
+                    )
+                )
+            }
+        case .mileage:
+            MileageWorkspaceView()
+        }
+    }
+
+    private func openPendingNotificationDestination() {
+        switch store.cloudSynchronizationAccessStatus {
+        case .accountHold, .suspended:
+            return
+        case .checking, .available, .unavailable:
+            break
+        }
+
+        guard let request = notificationRouter.latestRequest,
+              !notificationRouter.isHandled(request) else {
+            return
+        }
+        notificationPath = [request.destination]
+        notificationRouter.markHandled(request)
     }
 
     private func synchronizationHealthBanner(
@@ -321,28 +446,228 @@ struct DashboardView: View {
         .accessibilityLabel("\(title). \(message)")
     }
 
-    private func dashboardTile(
-        title: String,
-        value: String,
-        icon: String,
-        subtitle: String,
-        color: Color,
-        section: AppSection
-    ) -> some View {
-        Button {
-            selectedSection = section
-        } label: {
-            DashboardStatCard(
-                title: title,
-                value: value,
-                icon: icon,
-                subtitle: subtitle,
-                accentColor: color,
-                trend: .neutral,
-                navigationIndicator: true
-            )
+    @ViewBuilder
+    private func homeShortcut(_ tileID: String) -> some View {
+        switch tileID {
+        case "addLead":
+            NavigationLink {
+                LeadNewView()
+            } label: {
+                CompactHomeTile(
+                    title: "New Lead",
+                    icon: "person.crop.circle.badge.plus",
+                    accentColor: .blue
+                )
+            }
+            .buttonStyle(.plain)
+        case "customers":
+            NavigationLink {
+                CustomersView()
+            } label: {
+                CompactHomeTile(
+                    title: "Customers",
+                    icon: "person.2.fill",
+                    accentColor: .indigo
+                )
+            }
+            .buttonStyle(.plain)
+        case "estimates":
+            NavigationLink {
+                EstimatesView()
+            } label: {
+                CompactHomeTile(
+                    title: "Estimates",
+                    icon: "doc.text.magnifyingglass",
+                    accentColor: .blue
+                )
+            }
+            .buttonStyle(.plain)
+        case "invoices":
+            NavigationLink {
+                InvoiceRecordsListView()
+            } label: {
+                CompactHomeTile(
+                    title: "Invoices",
+                    icon: "doc.text.fill",
+                    accentColor: .green
+                )
+            }
+            .buttonStyle(.plain)
+        case "jobs":
+            NavigationLink {
+                JobsView()
+            } label: {
+                CompactHomeTile(
+                    title: "Jobs",
+                    icon: "wrench.and.screwdriver.fill",
+                    accentColor: .orange
+                )
+            }
+            .buttonStyle(.plain)
+        case "tools":
+            NavigationLink {
+                ToolsDashboardView()
+            } label: {
+                CompactHomeTile(
+                    title: "Tools",
+                    icon: "hammer.fill",
+                    accentColor: .orange
+                )
+            }
+            .buttonStyle(.plain)
+        case "salesCalendar":
+            if canOpenSalesCalendar {
+                NavigationLink {
+                    SalesFollowUpCalendarView(
+                        initialEmployeeID: store.authenticatedCloudEmployee?.id
+                    )
+                    .environmentObject(store)
+                } label: {
+                    CompactHomeTile(
+                        title: "Sales Cal",
+                        icon: "calendar.badge.clock",
+                        accentColor: .blue
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        case "jobsCalendar":
+            if canOpenJobsCalendar {
+                NavigationLink {
+                    TechnicianCalendarView(
+                        initialEmployeeID: store.authenticatedCloudEmployee?.id
+                    )
+                    .environmentObject(store)
+                } label: {
+                    CompactHomeTile(
+                        title: "Jobs Cal",
+                        icon: "calendar.badge.checkmark",
+                        accentColor: .orange
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        default:
+            EmptyView()
         }
-        .buttonStyle(.plain)
+    }
+
+    private func compactCurrency(_ amount: Double) -> String {
+        let value = max(amount, 0)
+        if value >= 1_000_000 {
+            return "$\((value / 1_000_000).formatted(.number.precision(.fractionLength(0...1))))M"
+        }
+        if value >= 1_000 {
+            return "$\((value / 1_000).formatted(.number.precision(.fractionLength(0...1))))K"
+        }
+        return value.formatted(.currency(code: "USD").precision(.fractionLength(0)))
+    }
+}
+
+private struct LargeHomeTile: View {
+    let title: String
+    let icon: String
+    let accentColor: Color
+    private let badgeText: String
+    private let showsBadge: Bool
+
+    init(
+        title: String,
+        icon: String,
+        badgeCount: Int,
+        showsBadge: Bool = true,
+        accentColor: Color
+    ) {
+        self.title = title
+        self.icon = icon
+        self.badgeText = badgeCount.formatted()
+        self.showsBadge = showsBadge
+        self.accentColor = accentColor
+    }
+
+    init(
+        title: String,
+        icon: String,
+        badgeText: String,
+        showsBadge: Bool = true,
+        accentColor: Color
+    ) {
+        self.title = title
+        self.icon = icon
+        self.badgeText = badgeText
+        self.showsBadge = showsBadge
+        self.accentColor = accentColor
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            VStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 34, weight: .semibold))
+
+                Text(title)
+                    .font(
+                        title == "Operations"
+                            ? .system(size: 13, weight: .bold)
+                            : .subheadline.weight(.bold)
+                    )
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+            }
+            .foregroundStyle(.white)
+            .frame(width: 96, height: 96)
+            .background(
+                accentColor.gradient,
+                in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+            )
+            .shadow(color: accentColor.opacity(0.25), radius: 7, y: 4)
+
+            if showsBadge {
+                Text(badgeText)
+                    .font(.caption.bold())
+                    .foregroundStyle(.white)
+                    .frame(minWidth: 26, minHeight: 26)
+                    .padding(.horizontal, badgeText.count > 2 ? 5 : 0)
+                    .background(.red, in: Capsule())
+                    .overlay {
+                        Capsule().stroke(.white, lineWidth: 2)
+                    }
+                    .offset(x: 8, y: -8)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title), \(badgeText)")
+    }
+}
+
+private struct CompactHomeTile: View {
+    let title: String
+    let icon: String
+    let accentColor: Color
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 26, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 58, height: 58)
+                .background(accentColor.gradient, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                .shadow(color: accentColor.opacity(0.22), radius: 5, y: 3)
+
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.center)
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+        }
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
         .accessibilityHint("Opens \(title)")
     }
 }

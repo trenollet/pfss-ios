@@ -11,6 +11,7 @@ import UIKit
 enum InvoicePDFRendererError: LocalizedError {
     case unableToCreateLogo
     case unableToWritePDF
+    case splitInvoice
 
     var errorDescription: String? {
         switch self {
@@ -19,6 +20,8 @@ enum InvoicePDFRendererError: LocalizedError {
 
         case .unableToWritePDF:
             return "The invoice PDF could not be created."
+        case .splitInvoice:
+            return "This combined invoice was split. Share the restored invoices instead."
         }
     }
 }
@@ -40,6 +43,9 @@ struct InvoicePDFRenderer {
         site: CustomerSite?,
         catalogItems: [ServiceCatalogItem]
     ) throws -> URL {
+        if let correction = invoice.paymentCorrection, correction.rootInvoiceID == invoice.id, correction.retainedInvoiceIDs.isEmpty {
+            throw InvoicePDFRendererError.splitInvoice
+        }
         let pageBounds = CGRect(
             x: 0,
             y: 0,
@@ -145,7 +151,12 @@ struct InvoicePDFRenderer {
 
                 currentY += 26
 
-                for item in invoice.lineItems {
+                for originalItem in invoice.lineItems {
+                    var item = originalItem
+                    if let origin = invoice.combination?.lines.first(where: { $0.item.id == item.id }),
+                       let source = invoice.combination?.sourceInvoices.first(where: { $0.id == origin.sourceInvoiceID }) {
+                        item.description = "\(source.invoiceNumber) · \(source.jobNumber)\n" + item.description
+                    }
                     let itemHeight = lineItemHeight(
                         for: item
                     )
@@ -170,7 +181,25 @@ struct InvoicePDFRenderer {
                     currentY += itemHeight
                 }
 
-                let summaryHeight: CGFloat = 150
+                if let combination = invoice.combination {
+                    for source in combination.sourceInvoices {
+                        guard let tax = source.taxSnapshot else { continue }
+                        let text = "Tax · \(source.invoiceNumber) · \(source.jobNumber) · \(tax.jurisdiction): \(currency(NSDecimalNumber(decimal: tax.addedTax).doubleValue))"
+                        let height = ceil((text as NSString).boundingRect(
+                            with: CGSize(width: contentWidth, height: CGFloat.greatestFiniteMagnitude),
+                            options: [.usesLineFragmentOrigin, .usesFontLeading],
+                            attributes: [.font: UIFont.systemFont(ofSize: 9)], context: nil
+                        ).height) + 8
+                        if currentY + height > pageHeight - pageMargin - footerHeight {
+                            finishPage()
+                            beginPage(showColumnHeadings: false)
+                        }
+                        currentY = drawText(text, in: CGRect(x: pageMargin, y: currentY + 4,
+                            width: contentWidth, height: height), font: .systemFont(ofSize: 9), color: .darkGray) + 4
+                    }
+                }
+
+                let summaryHeight: CGFloat = 180
                 let maximumSummaryY =
                     pageHeight -
                     pageMargin -
@@ -193,7 +222,10 @@ struct InvoicePDFRenderer {
                         in: .whitespacesAndNewlines
                     )
                     .isEmpty {
-
+                    if currentY + 128 > maximumSummaryY {
+                        finishPage()
+                        beginPage(showColumnHeadings: false)
+                    }
                     currentY += 18
 
                     currentY = drawNotes(
@@ -207,7 +239,10 @@ struct InvoicePDFRenderer {
                         in: .whitespacesAndNewlines
                     )
                     .isEmpty {
-
+                    if currentY + 96 > maximumSummaryY {
+                        finishPage()
+                        beginPage(showColumnHeadings: false)
+                    }
                     currentY += 16
 
                     _ = drawText(
@@ -450,8 +485,13 @@ struct InvoicePDFRenderer {
         Issue Date: \(formattedDate(invoice.issueDate))
         Due Date: \(formattedDate(invoice.dueDate))
         Status: \(invoice.status.rawValue)
-        Job: \(invoice.jobNumber)
+        Jobs: \(invoice.jobNumbers.joined(separator: ", "))
         """
+        let detailHeight = ceil((detailsText as NSString).boundingRect(
+            with: CGSize(width: 235, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: UIFont.systemFont(ofSize: 10)], context: nil
+        ).height) + 4
 
         drawText(
             detailsText,
@@ -459,14 +499,14 @@ struct InvoicePDFRenderer {
                 x: pageWidth - pageMargin - 235,
                 y: currentY,
                 width: 235,
-                height: 100
+                height: max(100, detailHeight)
             ),
             font: .systemFont(ofSize: 10),
             color: .black,
             alignment: .right
         )
 
-        return currentY + 92
+        return currentY + max(92, detailHeight + 12)
     }
 
     // MARK: - Line Items
@@ -556,6 +596,10 @@ struct InvoicePDFRenderer {
             descriptionText += "\n\(item.description)"
         }
 
+        if let discountText = itemDiscountText(item) {
+            descriptionText += "\n\(discountText)"
+        }
+
         drawText(
             descriptionText,
             in: CGRect(
@@ -629,7 +673,33 @@ struct InvoicePDFRenderer {
     private static func lineItemHeight(
         for item: ServiceLineItem
     ) -> CGFloat {
-        item.description.isEmpty ? 34 : 50
+        var descriptionText = item.description.isEmpty
+            ? lineItemName(for: item, catalogItems: [])
+            : "\(lineItemName(for: item, catalogItems: []))\n\(item.description)"
+        if let discountText = itemDiscountText(item) {
+            descriptionText += "\n\(discountText)"
+        }
+        let textHeight = (descriptionText as NSString).boundingRect(
+            with: CGSize(width: 270, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: UIFont.systemFont(ofSize: 9)],
+            context: nil
+        ).height
+        return max(34, ceil(textHeight) + 16)
+    }
+
+    private static func itemDiscountText(_ item: ServiceLineItem) -> String? {
+        let grossTotal = max(item.quantity * item.unitPrice, 0)
+        let amount = DiscountCalculator.amount(
+            subtotal: grossTotal,
+            method: item.discountMethod,
+            inputValue: item.discountInputValue
+        )
+        guard amount > 0 else { return nil }
+        if item.discountMethod == .percentage {
+            return "Item discount: \(formattedQuantity(item.discountInputValue))% (-\(currency(amount)))"
+        }
+        return "Item discount: -\(currency(amount))"
     }
 
     // MARK: - Financial Summary
@@ -657,11 +727,11 @@ struct InvoicePDFRenderer {
 
         currentY += 23
 
-        if let tax = invoice.taxSnapshot {
+        if invoice.taxSnapshot != nil || invoice.combination != nil {
             drawSummaryRow(
                 label: "Tax",
                 value: currency(
-                    NSDecimalNumber(decimal: tax.addedTax).doubleValue
+                    NSDecimalNumber(decimal: invoice.addedTaxAmount).doubleValue
                 ),
                 labelX: labelX,
                 valueX: valueX,

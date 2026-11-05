@@ -93,6 +93,39 @@ final class ReceiptEngineTests: XCTestCase {
         XCTAssertEqual(decoded.receipts?.first?.paymentAmount, 110)
     }
 
+    func testPrintableDocumentIsInvoiceBeforePaymentAndReceiptAfterPayment() {
+        let unpaid = makeInvoice(amountPaid: 0, balanceDue: 110)
+        let invoiceText = ThermalReceiptRenderer.renderPrintableDocument(
+            invoice: unpaid,
+            businessProfile: BusinessProfile(),
+            customer: nil,
+            site: nil,
+            catalogItems: []
+        )
+        XCTAssertTrue(invoiceText.contains("INVOICE"))
+
+        var paid = unpaid
+        paid.amountPaid = 110
+        paid.balanceDue = 0
+        paid.status = .paid
+        paid = ReceiptEngine.recordingPayment(
+            previous: unpaid,
+            proposed: paid,
+            receiptNumber: "RCT-PRINT-001"
+        )
+        let receiptText = ThermalReceiptRenderer.renderPrintableDocument(
+            invoice: paid,
+            businessProfile: BusinessProfile(),
+            customer: nil,
+            site: nil,
+            catalogItems: []
+        )
+        XCTAssertTrue(receiptText.contains("RECEIPT"))
+        XCTAssertTrue(receiptText.contains("RCT-PRINT-001"))
+        XCTAssertFalse(receiptText.contains("Method"))
+        XCTAssertFalse(receiptText.contains("Not Specified"))
+    }
+
     private func makeInvoice(
         amountPaid: Double,
         balanceDue: Double

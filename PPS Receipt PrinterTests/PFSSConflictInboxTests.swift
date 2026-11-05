@@ -155,12 +155,20 @@ final class PFSSConflictInboxTests: XCTestCase {
         resolved.metadata["serverQuarantineID"] = UUID().uuidString
         resolved.metadata["serverQuarantineStatus"] = "resolved"
         resolved.metadata["quarantineResolvedAt"] = "1970-01-01T00:02:00Z"
+        var sourceDeviceItem = serverItem
+        sourceDeviceItem.id = UUID()
+        sourceDeviceItem.metadata["serverQuarantineID"] = UUID().uuidString
+        sourceDeviceItem.metadata.removeValue(forKey: "serverQuarantineStatus")
+        sourceDeviceItem.metadata["quarantineDeliveryStatus"] = "sentForReview"
 
         let items = PFSSQuarantineInbox.unresolvedItems(
-            in: [localOnly, resolved, serverItem]
+            in: [localOnly, resolved, serverItem, sourceDeviceItem]
         )
 
-        XCTAssertEqual(items.map(\.id), [serverItem.id])
+        XCTAssertEqual(
+            Set(items.map(\.id)),
+            Set([serverItem.id, sourceDeviceItem.id])
+        )
     }
 
     func testManagerOnlyAssignmentFailureUsesPlainLanguageExplanation() {

@@ -88,17 +88,42 @@ extension AppDataStore {
     func applyServerConflictResolutionReceipts(
         _ receipts: [PFSSCloudflareConflictResolutionReceipt]
     ) {
-        for receipt in receipts {
-            synchronizedRecordRevisions[
+        guard !receipts.isEmpty else { return }
+
+        // The server returns durable receipt history on every poll. Build the
+        // queue indexes once instead of rescanning the entire durable queue for
+        // every historical receipt on the main actor.
+        let operations = offlineOperationQueue.operations
+        let recordMutationsByKey = Dictionary(
+            grouping: operations.filter {
+                $0.type == .recordMutation &&
+                    $0.entityID != nil
+            },
+            by: { operation in
                 synchronizationKey(
-                    type: receipt.entityType,
-                    id: receipt.entityID
+                    type: operation.entityType,
+                    id: operation.entityID!
                 )
-            ] = receipt.finalRevision
-            for queued in offlineOperationQueue.operations where
-                queued.type == .recordMutation &&
-                queued.entityType == receipt.entityType &&
-                queued.entityID == receipt.entityID &&
+            }
+        )
+        var conflictsByServerID: [String: PendingOfflineOperation] = [:]
+        for operation in operations where operation.status == .conflicted {
+            if let serverID = operation.metadata["serverConflictID"] {
+                conflictsByServerID[serverID] = operation
+            }
+        }
+        var revisionsChanged = false
+
+        for receipt in receipts {
+            let key = synchronizationKey(
+                type: receipt.entityType,
+                id: receipt.entityID
+            )
+            if synchronizedRecordRevisions[key] != receipt.finalRevision {
+                synchronizedRecordRevisions[key] = receipt.finalRevision
+                revisionsChanged = true
+            }
+            for queued in recordMutationsByKey[key, default: []] where
                 queued.createdAt >= receipt.resolvedAt &&
                 [.pending, .waitingForRetry, .failed].contains(queued.status) {
                 try? offlineOperationQueue.mutate(id: queued.id) {
@@ -114,10 +139,7 @@ extension AppDataStore {
                     }
                 }
             }
-            guard let local = offlineOperationQueue.operations.first(where: {
-                $0.status == .conflicted &&
-                $0.metadata["serverConflictID"] == receipt.id
-            }) else { continue }
+            guard let local = conflictsByServerID[receipt.id] else { continue }
             let resolution: OfflineConflictResolution
             switch receipt.resolution {
             case "keptCloud": resolution = .keptRemote
@@ -135,7 +157,9 @@ extension AppDataStore {
                 resubmitLocal: false
             )
         }
-        saveSynchronizedRecordRevisions()
+        if revisionsChanged {
+            saveSynchronizedRecordRevisions()
+        }
     }
 
     func reconcileServerConflictInbox(
@@ -264,12 +288,23 @@ extension AppDataStore {
     func applyServerQuarantineResolutionReceipts(
         _ receipts: [PFSSCloudflareQuarantineResolutionReceipt]
     ) {
+        guard !receipts.isEmpty else { return }
+
+        let operations = offlineOperationQueue.operations
+        var operationsByID: [UUID: PendingOfflineOperation] = [:]
+        var operationsByServerID: [String: PendingOfflineOperation] = [:]
+        for operation in operations {
+            operationsByID[operation.id] = operation
+            if let serverID = operation.metadata["serverQuarantineID"] {
+                operationsByServerID[serverID] = operation
+            }
+        }
+        var appliedRetry = false
+
         for receipt in receipts {
-            guard let operation = offlineOperationQueue.operation(
-                id: receipt.operationID
-            ) ?? offlineOperationQueue.operations.first(where: {
-                $0.metadata["serverQuarantineID"] == receipt.id
-            }) else { continue }
+            guard let operation = operationsByID[receipt.operationID]
+                    ?? operationsByServerID[receipt.id]
+            else { continue }
             let wasAlreadyFinalized =
                 operation.metadata["appliedQuarantineResolutionID"] == receipt.id &&
                 (receipt.action == "retry" || operation.status == .cancelled)
@@ -294,11 +329,14 @@ extension AppDataStore {
                         $0.metadata.removeValue(forKey: "quarantineDeliveryError")
                     }
                 }
+                if receipt.action == "retry" {
+                    appliedRetry = true
+                }
             } catch {
                 // Leave the receipt eligible for the next synchronization poll.
             }
         }
-        if receipts.contains(where: { $0.action == "retry" }) {
+        if appliedRetry {
             offlineSynchronizationService?.syncNow()
         }
     }
@@ -538,9 +576,11 @@ extension AppDataStore {
         guard !recordOperations.isEmpty else { return }
 
         isApplyingRemoteSynchronization = true
+        isDeferringRemoteBatchPersistence = true
         defer {
             synchronizedRecordState = makeSynchronizedRecordState()
             isApplyingRemoteSynchronization = false
+            persistDeferredRemoteBatch()
         }
 
         for operation in recordOperations {
@@ -1003,6 +1043,15 @@ extension AppDataStore {
                 baseRecordData: baseRecordData,
                 recordData: recordData
             )
+            if try coalescePendingRecordMutationIfPossible(
+                entityType: entityType,
+                entityID: entityID,
+                recordData: recordData,
+                modifiedAt: modifiedAt
+            ) {
+                lastOfflineOperationError = nil
+                return
+            }
             let payload = try OfflineRecordMutationCodec.envelopePayload(
                 operationID: operationID,
                 entityType: entityType,
@@ -1041,6 +1090,65 @@ extension AppDataStore {
         } catch {
             lastOfflineOperationError = error.localizedDescription
         }
+    }
+
+    /// Rapid edits to one record should not manufacture a ladder of remote
+    /// revisions before the first edit has even started uploading. Replace the
+    /// newest untouched snapshot when it is still the dependency group's last
+    /// operation and the combined mutation remains the same policy command.
+    /// Workflow/payment operations and attempted uploads are never compacted.
+    private func coalescePendingRecordMutationIfPossible(
+        entityType: OfflineEntityType,
+        entityID: UUID,
+        recordData: Data,
+        modifiedAt: Date
+    ) throws -> Bool {
+        let related = offlineOperationQueue.orderedOperations.filter {
+            !$0.status.isTerminal &&
+                $0.entityType == entityType &&
+                $0.entityID == entityID
+        }
+        guard var existing = related.last,
+              existing.type == .recordMutation,
+              existing.status == .pending,
+              existing.attemptCount == 0,
+              existing.failure == nil,
+              existing.conflict == nil,
+              var envelope = try? existing.payload.decode(
+                SynchronizationMutationEnvelope.self,
+                decoder: Self.recordSynchronizationDecoder
+              ),
+              envelope.schemaVersion >= SynchronizationMutationEnvelope.currentSchemaVersion
+        else { return false }
+
+        let classification = SynchronizationMutationClassifier.classify(
+            entityType: entityType,
+            baseRecordData: envelope.baseRecordData,
+            recordData: recordData
+        )
+        guard classification.kind == envelope.mutationKind,
+              classification.commandName == envelope.commandName else {
+            return false
+        }
+
+        envelope.recordData = recordData
+        envelope.deviceModifiedAt = modifiedAt
+        envelope.changedFields = classification.changedFields
+        envelope.commandName = classification.commandName
+        existing.payload = try OfflineOperationPayload(
+            envelope,
+            contentType: existing.payload.contentType,
+            encoder: Self.recordSynchronizationEncoder
+        )
+        existing.updatedAt = modifiedAt
+        existing.metadata["mutationKind"] = classification.kind.rawValue
+        existing.metadata["changedFields"] = classification.changedFields.joined(separator: ",")
+        existing.metadata["commandName"] = classification.commandName ?? ""
+        existing.metadata["coalescedSaveCount"] = String(
+            (Int(existing.metadata["coalescedSaveCount"] ?? "1") ?? 1) + 1
+        )
+        try offlineOperationQueue.update(existing)
+        return true
     }
 
     static let recordSynchronizationEncoder: JSONEncoder = {

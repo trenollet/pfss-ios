@@ -26,6 +26,21 @@ struct LineItemRowView: View {
                 Text("\(item.quantity, specifier: "%.2f") × \(item.unitPrice, format: .currency(code: "USD"))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                let itemDiscount = DiscountCalculator.amount(
+                    subtotal: max(item.quantity * item.unitPrice, 0),
+                    method: item.discountMethod,
+                    inputValue: item.discountInputValue
+                )
+                if itemDiscount > 0 {
+                    Text(
+                        item.discountMethod == .percentage
+                            ? "Item discount: \(item.discountInputValue.formatted(.number.precision(.fractionLength(0...2))))% (\(itemDiscount.formatted(.currency(code: "USD"))))"
+                            : "Item discount: \(itemDiscount.formatted(.currency(code: "USD")))"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.green)
+                }
             }
 
             Spacer()

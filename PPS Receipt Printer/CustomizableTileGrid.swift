@@ -29,24 +29,29 @@ private struct CustomizableTilePosition: Codable, Hashable, Identifiable {
 struct CustomizableTileGrid<Tile: View>: View {
     let storageKey: String
     let defaultTileIDs: [String]
+    let columnCount: Int
     let tile: (String) -> Tile
 
     @State private var positions: [CustomizableTilePosition]
     @State private var isArranging = false
     @State private var draggedID: String?
 
-    private let columns = [
-        GridItem(.flexible()),
-        GridItem(.flexible())
-    ]
+    private var columns: [GridItem] {
+        Array(
+            repeating: GridItem(.flexible(), spacing: 12),
+            count: max(columnCount, 1)
+        )
+    }
 
     init(
         storageKey: String,
         defaultTileIDs: [String],
+        columnCount: Int = 2,
         @ViewBuilder tile: @escaping (String) -> Tile
     ) {
         self.storageKey = storageKey
         self.defaultTileIDs = defaultTileIDs
+        self.columnCount = columnCount
         self.tile = tile
         _positions = State(
             initialValue: Self.load(
@@ -60,7 +65,7 @@ struct CustomizableTileGrid<Tile: View>: View {
         VStack(alignment: .leading, spacing: 12) {
             arrangementControls
 
-            LazyVGrid(columns: columns, spacing: 16) {
+            LazyVGrid(columns: columns, spacing: columnCount > 2 ? 10 : 16) {
                 ForEach(positions) { position in
                     positionView(position)
                         .onDrag {
@@ -179,7 +184,7 @@ struct CustomizableTileGrid<Tile: View>: View {
                     .accessibilityLabel("Remove blank space")
                 }
             }
-            .frame(minHeight: 135)
+            .frame(minHeight: columnCount > 2 ? 82 : 135)
             .contentShape(Rectangle())
             .accessibilityHidden(!isArranging)
         } else {
@@ -207,10 +212,13 @@ struct CustomizableTileGrid<Tile: View>: View {
         if position.kind == .space {
             RoundedRectangle(cornerRadius: 16)
                 .fill(Color.secondary.opacity(0.16))
-                .frame(width: 160, height: 135)
+                .frame(
+                    width: columnCount > 2 ? 74 : 160,
+                    height: columnCount > 2 ? 82 : 135
+                )
         } else {
             tile(position.id)
-                .frame(width: 180)
+                .frame(width: columnCount > 2 ? 82 : 180)
                 .allowsHitTesting(false)
         }
     }
